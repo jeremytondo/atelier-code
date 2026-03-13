@@ -9,9 +9,11 @@ import SwiftUI
 
 @main
 struct AtelierCodeApp: App {
+    @State private var store = CodexStore()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(store: store)
         }
     }
 }
