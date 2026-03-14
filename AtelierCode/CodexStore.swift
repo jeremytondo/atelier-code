@@ -8,31 +8,6 @@
 import Foundation
 import Observation
 
-nonisolated enum ConnectionState: String, Sendable {
-    case disconnected
-    case connecting
-    case ready
-    case streaming
-}
-
-nonisolated enum ConversationRole: String, Codable, Sendable {
-    case user
-    case assistant
-    case system
-}
-
-nonisolated struct ConversationMessage: Identifiable, Equatable, Sendable {
-    let id: UUID
-    let role: ConversationRole
-    var text: String
-
-    init(id: UUID = UUID(), role: ConversationRole, text: String) {
-        self.id = id
-        self.role = role
-        self.text = text
-    }
-}
-
 nonisolated struct JSONRPCRequest<Params: Encodable & Sendable>: Encodable, Sendable {
     let jsonrpc = "2.0"
     let id: Int?

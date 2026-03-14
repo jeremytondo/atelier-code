@@ -94,6 +94,14 @@ final class ACPSessionClient {
         )
     }
 
+    func reset() {
+        pendingResponses.removeAll()
+        nextRequestID = 1
+        isTransportStarted = false
+        negotiatedProtocolVersion = nil
+        sessionID = nil
+    }
+
     private func startTransportIfNeeded() throws {
         guard !isTransportStarted else { return }
         try transport.start()
@@ -164,6 +172,7 @@ final class ACPSessionClient {
             handleIncomingData(data)
         case .failure(let error):
             failPendingResponses(with: error)
+            reset()
             onTransportError?(error)
         }
     }
