@@ -95,6 +95,7 @@ final class ACPSessionClient {
     }
 
     func reset() {
+        transport.stop()
         pendingResponses.removeAll()
         nextRequestID = 1
         isTransportStarted = false

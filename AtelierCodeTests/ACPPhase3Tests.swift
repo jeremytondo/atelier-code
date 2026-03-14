@@ -282,6 +282,74 @@ struct ACPPhase3Tests {
         #expect(store.statusText == FakeACPStoreTransportError.transportStopped.localizedDescription)
         #expect(store.canSendPrompt == false)
     }
+
+    @Test func promptFailureStopsTransportAndAllowsReconnect() async {
+        let transport = FakeACPStoreTransport()
+        let store = ACPStore(transport: transport, cwd: "/tmp/atelier")
+        var sessionCounter = 0
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                sessionCounter += 1
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "sessionId": "session_\(sessionCounter)"
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionPrompt.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "error": {
+                    "code": -32000,
+                    "message": "Prompt failed"
+                  }
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        await store.connect()
+        await store.sendMessage("Trigger failure")
+
+        #expect(store.connectionState == .disconnected)
+        #expect(store.isSending == false)
+        #expect(store.isErrorVisible == true)
+        #expect(store.statusText.contains("Prompt failed"))
+        #expect(transport.stopCallCount == 1)
+
+        await store.connect()
+
+        #expect(store.connectionState == .ready)
+        #expect(store.isConnecting == false)
+        #expect(store.isErrorVisible == false)
+        #expect(transport.startCallCount == 2)
+    }
 }
 
 @MainActor
@@ -290,9 +358,14 @@ private final class FakeACPStoreTransport: AgentTransport {
     var onSend: ((Data) throws -> Void)?
 
     private(set) var startCallCount = 0
+    private(set) var stopCallCount = 0
 
     func start() throws {
         startCallCount += 1
+    }
+
+    func stop() {
+        stopCallCount += 1
     }
 
     func send(message: Data) throws {

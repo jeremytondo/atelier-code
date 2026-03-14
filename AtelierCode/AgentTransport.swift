@@ -12,5 +12,6 @@ protocol AgentTransport: AnyObject {
     var onReceive: ((Result<Data, any Error>) -> Void)? { get set }
 
     func start() throws
+    func stop()
     func send(message: Data) throws
 }

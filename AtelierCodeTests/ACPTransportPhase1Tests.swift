@@ -123,6 +123,16 @@ struct ACPTransportPhase1Tests {
         #expect(messages[1] == Data("{\"id\":2}".utf8))
     }
 
+    @Test func jsonlFramingHandlesCRLFAndFlushesRemainingBufferedData() {
+        var framer = JSONLMessageFramer()
+
+        let firstMessages = framer.ingest(Data("{\"id\":1}\r\n{\"id\":2}".utf8))
+        let remainingMessages = framer.finish()
+
+        #expect(firstMessages == [Data("{\"id\":1}".utf8)])
+        #expect(remainingMessages == [Data("{\"id\":2}".utf8)])
+    }
+
     @Test func jsonlFramingAppendsTrailingNewlineForOutgoingMessages() {
         let framedMessage = JSONLMessageFramer.frame(Data("{\"method\":\"initialize\"}".utf8))
 

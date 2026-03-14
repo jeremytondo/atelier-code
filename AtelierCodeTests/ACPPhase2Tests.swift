@@ -109,6 +109,51 @@ struct ACPPhase2Tests {
         #expect(notification.params.agentMessageChunkText == "Hello from Gemini")
     }
 
+    @Test func sessionUpdateIgnoresUnsupportedContentBlocks() throws {
+        let payload = """
+        {
+          "jsonrpc": "2.0",
+          "method": "session/update",
+          "params": {
+            "sessionId": "session_123",
+            "update": {
+              "sessionUpdate": "agent_message_chunk",
+              "content": {
+                "type": "image",
+                "url": "file:///tmp/output.png"
+              }
+            }
+          }
+        }
+        """
+
+        let notification = try JSONDecoder().decode(
+            ACPNotification<ACPSessionUpdateNotificationParams>.self,
+            from: Data(payload.utf8)
+        )
+
+        #expect(notification.params.sessionId == "session_123")
+        #expect(notification.params.agentMessageChunkText == nil)
+    }
+
+    @Test func sessionClientRequiresSessionBeforePrompt() async {
+        let client = ACPSessionClient(transport: FakeAgentTransport())
+
+        do {
+            _ = try await client.sendPrompt("Hello")
+            #expect(Bool(false))
+        } catch let error as ACPSessionClientError {
+            switch error {
+            case .sessionNotCreated:
+                #expect(Bool(true))
+            default:
+                Issue.record("Unexpected ACP error: \(error.localizedDescription)")
+            }
+        } catch {
+            #expect(Bool(false))
+        }
+    }
+
     @Test func sessionClientRunsInitializeSessionAndPromptFlow() async throws {
         let transport = FakeAgentTransport()
         let client = ACPSessionClient(transport: transport)
@@ -193,6 +238,53 @@ struct ACPPhase2Tests {
         #expect(streamedChunks == ["Streaming reply"])
         #expect(promptResponse.stopReason == "end_turn")
     }
+
+    @Test func connectReusesExistingSessionWithoutRestartingTransport() async throws {
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+        var sentMethods: [String] = []
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id)
+            sentMethods.append(method)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "sessionId": "session_123"
+                  }
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        try await client.connect(cwd: "/tmp/atelier")
+        try await client.connect(cwd: "/tmp/atelier")
+
+        #expect(transport.startCallCount == 1)
+        #expect(sentMethods == ["initialize", "session/new"])
+        #expect(client.sessionID == "session_123")
+    }
 }
 
 @MainActor
@@ -201,9 +293,14 @@ private final class FakeAgentTransport: AgentTransport {
     var onSend: ((Data) throws -> Void)?
 
     private(set) var startCallCount = 0
+    private(set) var stopCallCount = 0
 
     func start() throws {
         startCallCount += 1
+    }
+
+    func stop() {
+        stopCallCount += 1
     }
 
     func send(message: Data) throws {

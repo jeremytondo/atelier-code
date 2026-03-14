@@ -112,3 +112,8 @@ Commit boundary:
 - Debug-local subprocess execution is acceptable for v1; strict sandbox-safe packaging is a follow-up.
 - Unknown ACP update item types, tool calls, and richer content blocks are ignored unless needed for stable streaming.
 - Each phase should land as its own commit before moving to the next so regressions are isolated quickly.
+
+## Deferred Sandbox Follow-up
+- v1 intentionally launches a local `gemini --experimental-acp` subprocess with `Process`.
+- No helper tool, XPC service, or sandbox-safe packaging path is partially implemented in this migration.
+- Future hardening should package process launch separately instead of mixing it into the ACP store or protocol layers.

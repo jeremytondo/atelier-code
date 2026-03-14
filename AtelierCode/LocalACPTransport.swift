@@ -167,6 +167,18 @@ final class LocalACPTransport: AgentTransport {
         try standardInputPipe.fileHandleForWriting.write(contentsOf: JSONLMessageFramer.frame(message))
     }
 
+    func stop() {
+        standardOutputPipe?.fileHandleForReading.readabilityHandler = nil
+        standardErrorPipe?.fileHandleForReading.readabilityHandler = nil
+        process?.terminationHandler = nil
+
+        if process?.isRunning == true {
+            process?.terminate()
+        }
+
+        cleanupProcessState()
+    }
+
     private func consumeStandardOutput(_ data: Data) {
         guard !data.isEmpty else {
             standardOutputPipe?.fileHandleForReading.readabilityHandler = nil
@@ -198,8 +210,22 @@ final class LocalACPTransport: AgentTransport {
     }
 
     private func handleTermination(status: Int32, reason: String) {
+        emitBufferedStandardOutput()
         emitDiagnostics(from: stderrFramer.finish())
 
+        cleanupProcessState()
+
+        onTermination?(status)
+        onReceive?(.failure(LocalACPTransportError.processTerminated(status: status, reason: reason)))
+    }
+
+    private func emitBufferedStandardOutput() {
+        for message in stdoutFramer.finish() {
+            onReceive?(.success(message))
+        }
+    }
+
+    private func cleanupProcessState() {
         standardOutputPipe?.fileHandleForReading.readabilityHandler = nil
         standardErrorPipe?.fileHandleForReading.readabilityHandler = nil
         process?.terminationHandler = nil
@@ -208,8 +234,7 @@ final class LocalACPTransport: AgentTransport {
         standardInputPipe = nil
         standardOutputPipe = nil
         standardErrorPipe = nil
-
-        onTermination?(status)
-        onReceive?(.failure(LocalACPTransportError.processTerminated(status: status, reason: reason)))
+        stdoutFramer = JSONLMessageFramer()
+        stderrFramer = JSONLMessageFramer()
     }
 }
