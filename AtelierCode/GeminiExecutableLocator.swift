@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Darwin
 
 nonisolated enum GeminiExecutableLocatorError: LocalizedError, Sendable {
     case executableNotFound(executableName: String, searchedPaths: [String])
@@ -27,14 +28,19 @@ nonisolated struct GeminiExecutableLocator: Sendable {
     typealias WhichLookupHandler = @Sendable (String) throws -> String?
 
     static var commonInstallPaths: [String] {
-        let homeDirectory = NSHomeDirectory()
+        commonInstallPaths(userHomeDirectory: userHomeDirectory())
+    }
 
-        return [
+    static func commonInstallPaths(userHomeDirectory: String) -> [String] {
+        uniquePaths(
+            [
             "/opt/homebrew/bin/gemini",
             "/usr/local/bin/gemini",
-            "\(homeDirectory)/.local/bin/gemini",
-            "\(homeDirectory)/bin/gemini"
-        ]
+            "\(userHomeDirectory)/.local/bin/gemini",
+            "\(userHomeDirectory)/bin/gemini",
+            "\(userHomeDirectory)/.local/share/mise/shims/gemini"
+            ] + miseInstallExecutablePaths(userHomeDirectory: userHomeDirectory)
+        )
     }
 
     let knownPaths: [String]
@@ -43,11 +49,12 @@ nonisolated struct GeminiExecutableLocator: Sendable {
     private let whichLookup: WhichLookupHandler
 
     init(
-        knownPaths: [String] = Self.commonInstallPaths,
+        knownPaths: [String]? = nil,
+        userHomeDirectory: String = Self.userHomeDirectory(),
         fileExists: @escaping FileExistsHandler = { FileManager.default.isExecutableFile(atPath: $0) },
         whichLookup: @escaping WhichLookupHandler = Self.systemWhichLookup
     ) {
-        self.knownPaths = knownPaths
+        self.knownPaths = knownPaths ?? Self.commonInstallPaths(userHomeDirectory: userHomeDirectory)
         self.fileExists = fileExists
         self.whichLookup = whichLookup
     }
@@ -101,5 +108,46 @@ nonisolated struct GeminiExecutableLocator: Sendable {
         }
 
         return resolvedPath.isEmpty ? nil : resolvedPath
+    }
+
+    private static func userHomeDirectory() -> String {
+        if let homeDirectory = passwdHomeDirectory() {
+            return homeDirectory
+        }
+
+        return NSHomeDirectory()
+    }
+
+    private static func passwdHomeDirectory() -> String? {
+        guard let homeDirectory = getpwuid(getuid())?.pointee.pw_dir else {
+            return nil
+        }
+
+        return String(cString: homeDirectory)
+    }
+
+    private static func miseInstallExecutablePaths(userHomeDirectory: String) -> [String] {
+        let installsDirectoryURL = URL(fileURLWithPath: userHomeDirectory, isDirectory: true)
+            .appendingPathComponent(".local/share/mise/installs/gemini", isDirectory: true)
+
+        guard
+            let versionDirectoryURLs = try? FileManager.default.contentsOfDirectory(
+                at: installsDirectoryURL,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )
+        else {
+            return []
+        }
+
+        return versionDirectoryURLs
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+            .map { $0.appendingPathComponent("bin/gemini").path }
+    }
+
+    private static func uniquePaths(_ paths: [String]) -> [String] {
+        var seenPaths = Set<String>()
+
+        return paths.filter { seenPaths.insert($0).inserted }
     }
 }

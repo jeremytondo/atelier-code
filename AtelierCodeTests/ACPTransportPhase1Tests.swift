@@ -38,6 +38,42 @@ struct ACPTransportPhase1Tests {
         #expect(url.path == "/resolved/from/which")
     }
 
+    @Test func executableLocatorDiscoversMiseInstallUnderUserHome() throws {
+        let fileManager = FileManager.default
+        let tempHomeURL = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let executableURL = tempHomeURL
+            .appendingPathComponent(".local/share/mise/installs/gemini/0.33.1/bin/gemini")
+
+        try fileManager.createDirectory(
+            at: executableURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("#!/bin/sh\n".utf8).write(to: executableURL)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+        defer {
+            try? fileManager.removeItem(at: tempHomeURL)
+        }
+
+        let locator = GeminiExecutableLocator(
+            userHomeDirectory: tempHomeURL.path,
+            fileExists: { $0 == executableURL.path },
+            whichLookup: { _ in nil }
+        )
+
+        let url = try locator.locate()
+
+        #expect(url.path == executableURL.path)
+    }
+
+    @Test func commonInstallPathsIncludeMiseShimPath() {
+        let homeDirectory = "/Users/tester"
+
+        let paths = GeminiExecutableLocator.commonInstallPaths(userHomeDirectory: homeDirectory)
+
+        #expect(paths.contains("\(homeDirectory)/.local/share/mise/shims/gemini"))
+    }
+
     @Test func missingExecutableReturnsClearError() {
         let locator = GeminiExecutableLocator(
             knownPaths: ["/known/gemini", "/fallback/gemini"],

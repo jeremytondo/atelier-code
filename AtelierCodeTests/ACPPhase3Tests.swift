@@ -62,7 +62,7 @@ struct ACPPhase3Tests {
         #expect(store.connectionState == .ready)
         #expect(store.isConnecting == false)
         #expect(store.isSending == false)
-        #expect(store.statusText == "Ready")
+        #expect(store.statusText == "ACP session ready")
         #expect(store.isErrorVisible == false)
     }
 
