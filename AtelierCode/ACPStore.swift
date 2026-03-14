@@ -59,13 +59,13 @@ final class ACPStore {
 
         switch connectionState {
         case .disconnected:
-            return "Disconnected"
+            return "Gemini offline"
         case .connecting:
-            return "Connecting"
+            return "Starting Gemini ACP"
         case .ready:
-            return "Ready"
+            return "ACP session ready"
         case .streaming:
-            return "Streaming"
+            return "Streaming reply"
         }
     }
 

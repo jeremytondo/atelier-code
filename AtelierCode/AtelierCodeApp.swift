@@ -9,7 +9,7 @@ import SwiftUI
 
 @main
 struct AtelierCodeApp: App {
-    @State private var store = CodexStore()
+    @State private var store = ACPStore()
 
     var body: some Scene {
         WindowGroup {

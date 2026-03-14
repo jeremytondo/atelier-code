@@ -8,7 +8,7 @@
 import SwiftUI
 
 struct ContentView: View {
-    @Bindable var store: CodexStore
+    @Bindable var store: ACPStore
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -64,10 +64,10 @@ struct ContentView: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Codex App Server PoC")
+                Text("Gemini ACP Chat")
                     .font(.system(size: 24, weight: .semibold, design: .rounded))
 
-                Text("Local WebSocket session at 127.0.0.1:4500")
+                Text("Local Gemini CLI session over ACP stdio")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -94,7 +94,7 @@ struct ContentView: View {
             Text("Waiting for your first prompt")
                 .font(.title3.weight(.semibold))
 
-            Text("The app connects on launch, creates a single thread, and streams assistant text into one live response bubble.")
+            Text("The app connects on launch, creates one ACP session, and streams Gemini output into a single live response bubble.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -112,7 +112,7 @@ struct ContentView: View {
 
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 12) {
-            TextField("Ask the local Codex server anything…", text: $store.draftPrompt, axis: .vertical)
+            TextField("Ask the local Gemini agent anything…", text: $store.draftPrompt, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.body)
                 .lineLimit(1 ... 5)
@@ -156,7 +156,7 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView(store: CodexStore())
+    ContentView(store: ACPStore())
 }
 
 private struct MessageRow: View {
@@ -189,7 +189,7 @@ private struct MessageRow: View {
     @ViewBuilder
     private var messageContent: some View {
         if message.text.isEmpty, message.role == .assistant {
-            Text("Waiting for assistant response...")
+            Text("Waiting for Gemini response...")
                 .font(.body)
                 .italic()
                 .foregroundStyle(.secondary)
