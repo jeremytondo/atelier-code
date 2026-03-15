@@ -74,6 +74,28 @@ struct ACPTransportPhase1Tests {
         #expect(paths.contains("\(homeDirectory)/.local/share/mise/shims/gemini"))
     }
 
+    @Test func commonInstallPathsPreferMiseInstallBeforeHomebrew() throws {
+        let fileManager = FileManager.default
+        let tempHomeURL = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let executableURL = tempHomeURL
+            .appendingPathComponent(".local/share/mise/installs/gemini/0.33.1/bin/gemini")
+
+        try? fileManager.createDirectory(
+            at: executableURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? fileManager.removeItem(at: tempHomeURL)
+        }
+
+        let paths = GeminiExecutableLocator.commonInstallPaths(userHomeDirectory: tempHomeURL.path)
+        let miseInstallIndex = try #require(paths.firstIndex(of: executableURL.path))
+        let homebrewIndex = try #require(paths.firstIndex(of: "/opt/homebrew/bin/gemini"))
+
+        #expect(miseInstallIndex < homebrewIndex)
+    }
+
     @Test func missingExecutableReturnsClearError() {
         let locator = GeminiExecutableLocator(
             knownPaths: ["/known/gemini", "/fallback/gemini"],
@@ -137,5 +159,39 @@ struct ACPTransportPhase1Tests {
         let framedMessage = JSONLMessageFramer.frame(Data("{\"method\":\"initialize\"}".utf8))
 
         #expect(String(decoding: framedMessage, as: UTF8.self) == "{\"method\":\"initialize\"}\n")
+    }
+
+    @Test func processEnvironmentAddsExecutableDirectoryAndFallbackPATHEntries() {
+        let environment = GeminiProcessEnvironment.make(
+            currentEnvironment: ["PATH": "/usr/bin:/bin"],
+            userHomeDirectory: "/Users/tester",
+            executableDirectory: "/opt/homebrew/bin"
+        )
+
+        #expect(
+            environment["PATH"] ==
+            "/opt/homebrew/bin:/usr/bin:/bin:/Users/tester/.local/share/mise/shims:/Users/tester/.local/bin:/Users/tester/bin:/usr/local/bin:/usr/sbin:/sbin"
+        )
+        #expect(environment["HOME"] == "/Users/tester")
+    }
+
+    @Test func processEnvironmentSetsNoBrowser() {
+        let environment = GeminiProcessEnvironment.make(
+            currentEnvironment: [:],
+            userHomeDirectory: "/Users/tester",
+            executableDirectory: nil
+        )
+
+        #expect(environment["NO_BROWSER"] == "1")
+    }
+
+    @Test func processEnvironmentPreservesExistingHomeValue() {
+        let environment = GeminiProcessEnvironment.make(
+            currentEnvironment: ["HOME": "/custom/home"],
+            userHomeDirectory: "/Users/tester",
+            executableDirectory: nil
+        )
+
+        #expect(environment["HOME"] == "/custom/home")
     }
 }

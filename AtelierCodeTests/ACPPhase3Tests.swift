@@ -20,7 +20,7 @@ struct ACPPhase3Tests {
         transport.onSend = { data in
             let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
             let method = try #require(envelope.method)
-            let requestID = try #require(envelope.id)
+            let requestID = try #require(envelope.id?.intValue)
             sentMethods.append(method)
 
             switch method {
@@ -66,6 +66,24 @@ struct ACPPhase3Tests {
         #expect(store.isErrorVisible == false)
     }
 
+    @Test func appWorkingDirectoryAvoidsFilesystemRootFallback() {
+        #expect(
+            AppWorkingDirectory.resolve(
+                currentEnvironment: ["PWD": "/Users/jeremytondo/Projects/AtelierCode"],
+                currentDirectoryPath: "/",
+                userHomeDirectory: "/Users/jeremytondo"
+            ) == "/Users/jeremytondo/Projects/AtelierCode"
+        )
+
+        #expect(
+            AppWorkingDirectory.resolve(
+                currentEnvironment: [:],
+                currentDirectoryPath: "/",
+                userHomeDirectory: "/Users/jeremytondo"
+            ) == "/Users/jeremytondo"
+        )
+    }
+
     @Test func sendMessageAppendsRowsAndStreamsChunksIntoAssistantMessage() async {
         let transport = FakeACPStoreTransport()
         let store = ACPStore(transport: transport, cwd: "/tmp/atelier")
@@ -73,7 +91,7 @@ struct ACPPhase3Tests {
         transport.onSend = { data in
             let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
             let method = try #require(envelope.method)
-            let requestID = try #require(envelope.id)
+            let requestID = try #require(envelope.id?.intValue)
 
             switch method {
             case ACPMethod.initialize.rawValue:
@@ -168,7 +186,7 @@ struct ACPPhase3Tests {
         transport.onSend = { data in
             let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
             let method = try #require(envelope.method)
-            let requestID = try #require(envelope.id)
+            let requestID = try #require(envelope.id?.intValue)
 
             switch method {
             case ACPMethod.initialize.rawValue:
@@ -239,7 +257,7 @@ struct ACPPhase3Tests {
         transport.onSend = { data in
             let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
             let method = try #require(envelope.method)
-            let requestID = try #require(envelope.id)
+            let requestID = try #require(envelope.id?.intValue)
 
             switch method {
             case ACPMethod.initialize.rawValue:
@@ -291,7 +309,7 @@ struct ACPPhase3Tests {
         transport.onSend = { data in
             let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
             let method = try #require(envelope.method)
-            let requestID = try #require(envelope.id)
+            let requestID = try #require(envelope.id?.intValue)
 
             switch method {
             case ACPMethod.initialize.rawValue:

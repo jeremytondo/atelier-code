@@ -7,6 +7,56 @@
 
 import Foundation
 
+nonisolated struct GeminiProcessEnvironment: Sendable {
+    static func make(
+        currentEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        userHomeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        executableDirectory: String? = nil
+    ) -> [String: String] {
+        var environment = currentEnvironment
+        let mergedPathDirectories = uniquePaths(
+            (executableDirectory.map { [$0] } ?? []) +
+            pathDirectories(from: currentEnvironment["PATH"]) +
+            fallbackPATHDirectories(userHomeDirectory: userHomeDirectory)
+        )
+
+        environment["PATH"] = mergedPathDirectories.joined(separator: ":")
+        environment["NO_BROWSER"] = "1"
+
+        if environment["HOME"]?.isEmpty != false {
+            environment["HOME"] = userHomeDirectory
+        }
+
+        return environment
+    }
+
+    static func fallbackPATHDirectories(userHomeDirectory: String) -> [String] {
+        uniquePaths(
+            [
+                "\(userHomeDirectory)/.local/share/mise/shims",
+                "\(userHomeDirectory)/.local/bin",
+                "\(userHomeDirectory)/bin",
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin",
+                "/usr/sbin",
+                "/sbin"
+            ]
+        )
+    }
+
+    private static func pathDirectories(from path: String?) -> [String] {
+        guard let path, !path.isEmpty else { return [] }
+        return path.split(separator: ":").map(String.init)
+    }
+
+    private static func uniquePaths(_ paths: [String]) -> [String] {
+        var seenPaths = Set<String>()
+        return paths.filter { !($0.isEmpty) && seenPaths.insert($0).inserted }
+    }
+}
+
 nonisolated struct JSONLMessageFramer: Sendable {
     private var buffer = Data()
 
@@ -111,6 +161,9 @@ final class LocalACPTransport: AgentTransport {
 
         process.executableURL = executableURL
         process.arguments = arguments
+        process.environment = GeminiProcessEnvironment.make(
+            executableDirectory: executableURL.deletingLastPathComponent().path
+        )
         process.standardInput = standardInputPipe
         process.standardOutput = standardOutputPipe
         process.standardError = standardErrorPipe

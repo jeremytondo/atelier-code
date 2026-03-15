@@ -34,12 +34,13 @@ nonisolated struct GeminiExecutableLocator: Sendable {
     static func commonInstallPaths(userHomeDirectory: String) -> [String] {
         uniquePaths(
             [
-            "/opt/homebrew/bin/gemini",
-            "/usr/local/bin/gemini",
+            ] + miseInstallExecutablePaths(userHomeDirectory: userHomeDirectory) + [
+            "\(userHomeDirectory)/.local/share/mise/shims/gemini",
             "\(userHomeDirectory)/.local/bin/gemini",
             "\(userHomeDirectory)/bin/gemini",
-            "\(userHomeDirectory)/.local/share/mise/shims/gemini"
-            ] + miseInstallExecutablePaths(userHomeDirectory: userHomeDirectory)
+            "/opt/homebrew/bin/gemini",
+            "/usr/local/bin/gemini"
+            ]
         )
     }
 

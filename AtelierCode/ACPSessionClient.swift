@@ -42,6 +42,8 @@ final class ACPSessionClient {
 
     private(set) var negotiatedProtocolVersion: Int?
     private(set) var sessionID: String?
+    private(set) var agentCapabilities: ACPAgentCapabilities?
+    private(set) var authMethods: [ACPAuthMethod] = []
 
     init(transport: AgentTransport) {
         self.transport = transport
@@ -69,6 +71,8 @@ final class ACPSessionClient {
             )
         )
         negotiatedProtocolVersion = initializeResponse.protocolVersion
+        agentCapabilities = initializeResponse.agentCapabilities
+        authMethods = initializeResponse.authMethods ?? []
 
         let newSessionResponse: ACPNewSessionResponse = try await sendRequest(
             method: .sessionNew,
@@ -101,6 +105,8 @@ final class ACPSessionClient {
         isTransportStarted = false
         negotiatedProtocolVersion = nil
         sessionID = nil
+        agentCapabilities = nil
+        authMethods = []
     }
 
     private func startTransportIfNeeded() throws {
@@ -184,12 +190,29 @@ final class ACPSessionClient {
         }
 
         if let method = envelope.method {
-            handleNotification(method: method, data: data)
+            if envelope.id != nil {
+                handleRequest(method: method, id: envelope.id, data: data)
+            } else {
+                handleNotification(method: method, data: data)
+            }
             return
         }
 
-        if let id = envelope.id {
+        if let id = envelope.id?.intValue {
             pendingResponses.removeValue(forKey: id)?(.success(data))
+        }
+    }
+
+    private func handleRequest(method: String, id: ACPRequestID?, data: Data) {
+        switch method {
+        case ACPMethod.sessionRequestPermission.rawValue:
+            handlePermissionRequest(id: id, data: data)
+        default:
+            sendClientErrorResponse(
+                id: id,
+                code: -32601,
+                message: "AtelierCode does not support client ACP method \(method)."
+            )
         }
     }
 
@@ -209,6 +232,64 @@ final class ACPSessionClient {
         }
 
         onAgentMessageChunk?(text)
+    }
+
+    private func handlePermissionRequest(id: ACPRequestID?, data: Data) {
+        guard
+            let request = try? decoder.decode(
+                ACPInboundRequest<ACPRequestPermissionRequest>.self,
+                from: data
+            )
+        else {
+            sendClientErrorResponse(
+                id: id,
+                code: -32602,
+                message: "AtelierCode could not decode the permission request."
+            )
+            return
+        }
+
+        let preferredOption =
+            request.params.options.first(where: { $0.kind == "allow_once" }) ??
+            request.params.options.first(where: { $0.kind == "allow_always" }) ??
+            request.params.options.first
+
+        let outcome = preferredOption.map { ACPRequestPermissionOutcome.selected(optionId: $0.optionId) }
+            ?? .cancelled
+
+        sendClientResponse(
+            ACPClientResponse(
+                id: request.id,
+                result: ACPRequestPermissionResponse(outcome: outcome)
+            )
+        )
+    }
+
+    private func sendClientResponse<Result: Encodable & Sendable>(_ response: ACPClientResponse<Result>) {
+        do {
+            try transport.send(message: encoder.encode(response))
+        } catch {
+            failPendingResponses(with: error)
+            reset()
+            onTransportError?(error)
+        }
+    }
+
+    private func sendClientErrorResponse(id: ACPRequestID?, code: Int, message: String) {
+        do {
+            try transport.send(
+                message: encoder.encode(
+                    ACPClientErrorResponse(
+                        id: id,
+                        error: ACPClientError(code: code, message: message)
+                    )
+                )
+            )
+        } catch {
+            failPendingResponses(with: error)
+            reset()
+            onTransportError?(error)
+        }
     }
 
     private func failPendingResponses(with error: any Error) {

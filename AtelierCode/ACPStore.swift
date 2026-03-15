@@ -8,6 +8,32 @@
 import Foundation
 import Observation
 
+nonisolated enum AppWorkingDirectory: Sendable {
+    static func resolve(
+        currentEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        currentDirectoryPath: String = FileManager.default.currentDirectoryPath,
+        userHomeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> String {
+        if let presentWorkingDirectory = sanitized(path: currentEnvironment["PWD"]) {
+            return presentWorkingDirectory
+        }
+
+        if let currentDirectory = sanitized(path: currentDirectoryPath) {
+            return currentDirectory
+        }
+
+        return userHomeDirectory
+    }
+
+    private static func sanitized(path: String?) -> String? {
+        guard let path else { return nil }
+
+        let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPath.isEmpty, trimmedPath != "/" else { return nil }
+        return trimmedPath
+    }
+}
+
 @MainActor
 @Observable
 final class ACPStore {
@@ -28,7 +54,7 @@ final class ACPStore {
 
     init(
         transport: AgentTransport = LocalACPTransport(),
-        cwd: String = FileManager.default.currentDirectoryPath,
+        cwd: String = AppWorkingDirectory.resolve(),
         clientInfo: ACPImplementationInfo = .atelierCode,
         clientCapabilities: ACPClientCapabilities = .atelierCodeDefaults,
         mcpServers: [ACPMCPServer] = []
