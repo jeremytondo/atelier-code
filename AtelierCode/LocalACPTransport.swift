@@ -135,7 +135,7 @@ final class LocalACPTransport: AgentTransport {
 
     init(
         executableLocator: GeminiExecutableLocator = GeminiExecutableLocator(),
-        arguments: [String] = ["--experimental-acp"],
+        arguments: [String] = ["--acp", "--model", "gemini-2.5-pro"],
         processFactory: @escaping () -> Process = { Process() },
         pipeFactory: @escaping () -> Pipe = { Pipe() }
     ) {
