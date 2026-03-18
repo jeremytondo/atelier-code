@@ -12,6 +12,12 @@ import Testing
 @MainActor
 struct ACPSessionClientTests {
 
+    @Test func supportedProtocolVersionPolicyIsExplicit() {
+        #expect(ACPProtocolVersion.supported == [ACPProtocolVersion.current])
+        #expect(ACPProtocolVersion.isSupported(ACPProtocolVersion.current))
+        #expect(ACPProtocolVersion.isSupported(99) == false)
+    }
+
     @Test func initializeRequestEncodesExpectedShape() throws {
         let request = ACPRequest(
             id: 1,
@@ -626,6 +632,55 @@ struct ACPSessionClientTests {
         #expect(transport.startCallCount == 1)
         #expect(sentMethods == ["initialize", "session/new"])
         #expect(client.sessionID == "session_123")
+    }
+
+    @Test func connectRejectsUnsupportedProtocolVersionBeforeCreatingSession() async {
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+        var sentMethods: [String] = []
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id?.intValue)
+            sentMethods.append(method)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 2
+                  }
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        do {
+            try await client.connect(cwd: "/tmp/atelier")
+            Issue.record("Expected connect to reject unsupported ACP protocol version.")
+        } catch let error as ACPSessionClientError {
+            switch error {
+            case .unsupportedProtocolVersion(let received, let supported):
+                #expect(received == 2)
+                #expect(supported == [1])
+            default:
+                Issue.record("Unexpected ACP error: \(error.localizedDescription)")
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error.localizedDescription)")
+        }
+
+        #expect(transport.startCallCount == 1)
+        #expect(sentMethods == ["initialize"])
+        #expect(client.negotiatedProtocolVersion == nil)
+        #expect(client.sessionID == nil)
     }
 }
 

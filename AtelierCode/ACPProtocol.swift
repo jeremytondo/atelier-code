@@ -20,6 +20,11 @@ nonisolated enum ACPMethod: String, Sendable {
 
 nonisolated enum ACPProtocolVersion {
     static let current = 1
+    static let supported: Set<Int> = [current]
+
+    static func isSupported(_ version: Int) -> Bool {
+        supported.contains(version)
+    }
 }
 
 nonisolated struct ACPRequest<Params: Encodable & Sendable>: Encodable, Sendable {

@@ -12,6 +12,7 @@ nonisolated enum ACPSessionClientError: LocalizedError {
     case invalidResponse(method: String)
     case missingResult(method: String)
     case serverError(method: String, message: String)
+    case unsupportedProtocolVersion(received: Int, supported: [Int])
 
     var errorDescription: String? {
         switch self {
@@ -23,6 +24,9 @@ nonisolated enum ACPSessionClientError: LocalizedError {
             return "The ACP response for \(method) did not include a result."
         case .serverError(let method, let message):
             return "The ACP request \(method) failed: \(message)"
+        case .unsupportedProtocolVersion(let received, let supported):
+            let supportedList = supported.map(String.init).joined(separator: ", ")
+            return "The ACP initialize response negotiated unsupported protocol version \(received). AtelierCode supports: \(supportedList)."
         }
     }
 }
@@ -70,6 +74,14 @@ final class ACPSessionClient {
                 clientInfo: clientInfo
             )
         )
+
+        guard ACPProtocolVersion.isSupported(initializeResponse.protocolVersion) else {
+            throw ACPSessionClientError.unsupportedProtocolVersion(
+                received: initializeResponse.protocolVersion,
+                supported: ACPProtocolVersion.supported.sorted()
+            )
+        }
+
         negotiatedProtocolVersion = initializeResponse.protocolVersion
         agentCapabilities = initializeResponse.agentCapabilities
         authMethods = initializeResponse.authMethods ?? []
