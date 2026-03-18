@@ -107,12 +107,153 @@ nonisolated struct ACPClientError: Encodable, Sendable {
     let message: String
 }
 
+nonisolated enum ACPJSONValue: Codable, Equatable, Sendable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+    case object([String: ACPJSONValue])
+    case array([ACPJSONValue])
+    case null
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .int(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .double(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([String: ACPJSONValue].self) {
+            self = .object(value)
+        } else if let value = try? container.decode([ACPJSONValue].self) {
+            self = .array(value)
+        } else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unsupported ACP JSON value."
+            )
+        }
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .int(let value):
+            try container.encode(value)
+        case .double(let value):
+            try container.encode(value)
+        case .bool(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
+        case .null:
+            try container.encodeNil()
+        }
+    }
+
+    var compactText: String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+
+        guard
+            let data = try? encoder.encode(self),
+            let text = String(data: data, encoding: .utf8)
+        else {
+            return String(describing: self)
+        }
+
+        return text
+    }
+
+    var flattenedText: String {
+        switch self {
+        case .string(let value):
+            return value
+        case .int(let value):
+            return String(value)
+        case .double(let value):
+            return String(value)
+        case .bool(let value):
+            return String(value)
+        case .object(let value):
+            return value
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key) \($0.value.flattenedText)" }
+                .joined(separator: " ")
+        case .array(let value):
+            return value.map(\.flattenedText).joined(separator: " ")
+        case .null:
+            return "null"
+        }
+    }
+}
+
 nonisolated struct ACPError: Decodable, LocalizedError, Sendable {
     let code: Int
     let message: String
+    let data: ACPJSONValue?
 
     var errorDescription: String? {
         message
+    }
+
+    var contextDescription: String? {
+        data?.compactText
+    }
+
+    var isAuthenticationRelated: Bool {
+        let text = searchableText.lowercased()
+        let markers = [
+            "authrequired",
+            "authenticate",
+            "authentication",
+            "oauth",
+            "login",
+            "log in",
+            "sign in",
+            "credential",
+            "reauth",
+            "re-auth",
+            "token expired",
+            "unauthorized",
+            "forbidden",
+        ]
+        return markers.contains(where: text.contains)
+    }
+
+    var isModelRelated: Bool {
+        let text = searchableText.lowercased()
+        let directMarkers = [
+            "modelnotfounderror",
+            "model not found",
+            "unknown model",
+            "unsupported model",
+            "invalid model",
+            "requested entity was not found",
+        ]
+
+        if directMarkers.contains(where: text.contains) {
+            return true
+        }
+
+        return (text.contains("404") || text.contains("not found")) && text.contains("model")
+    }
+
+    private var searchableText: String {
+        [message, data?.flattenedText]
+            .compactMap { $0 }
+            .joined(separator: " ")
     }
 }
 

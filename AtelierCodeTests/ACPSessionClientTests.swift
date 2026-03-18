@@ -89,6 +89,38 @@ struct ACPSessionClientTests {
         #expect(response.result?.sessionId == "session_123")
     }
 
+    @Test func responseErrorDecodesStructuredContext() throws {
+        let payload = """
+        {
+          "jsonrpc": "2.0",
+          "id": 7,
+          "error": {
+            "code": 404,
+            "message": "Requested entity was not found",
+            "data": {
+              "type": "ModelNotFoundError",
+              "model": "gemini-2.0-flash",
+              "status": 404
+            }
+          }
+        }
+        """
+
+        let response = try JSONDecoder().decode(
+            ACPResponse<ACPPromptResponse>.self,
+            from: Data(payload.utf8)
+        )
+
+        let error = try #require(response.error)
+        let context = try #require(error.contextDescription)
+
+        #expect(error.code == 404)
+        #expect(error.message == "Requested entity was not found")
+        #expect(context.contains("ModelNotFoundError"))
+        #expect(context.contains("gemini-2.0-flash"))
+        #expect(error.isModelRelated)
+    }
+
     @Test func initializeResponseDecodesAuthMethodsAndAgentCapabilities() throws {
         let payload = """
         {
@@ -431,6 +463,291 @@ struct ACPSessionClientTests {
             }
         } catch {
             #expect(Bool(false))
+        }
+    }
+
+    @Test func sessionClientTimesOutInitializeRequest() async {
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport, requestTimeouts: .testValue)
+        var sentMethods: [String] = []
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            sentMethods.append(try #require(envelope.method))
+        }
+
+        do {
+            try await client.connect(cwd: "/tmp/atelier")
+            Issue.record("Expected initialize to time out.")
+        } catch let error as ACPSessionClientError {
+            switch error {
+            case .requestTimedOut(let method, let timeout):
+                #expect(method == ACPMethod.initialize.rawValue)
+                #expect(abs(timeout - ACPSessionClientTimeouts.testValue.initialize) < 0.001)
+            default:
+                Issue.record("Unexpected ACP error: \(error.localizedDescription)")
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error.localizedDescription)")
+        }
+
+        #expect(transport.startCallCount == 1)
+        #expect(sentMethods == ["initialize"])
+        #expect(client.sessionID == nil)
+    }
+
+    @Test func sessionClientTimesOutSessionNewRequest() async {
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport, requestTimeouts: .testValue)
+        var sentMethods: [String] = []
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id?.intValue)
+            sentMethods.append(method)
+
+            if method == ACPMethod.initialize.rawValue {
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+            }
+        }
+
+        do {
+            try await client.connect(cwd: "/tmp/atelier")
+            Issue.record("Expected session/new to time out.")
+        } catch let error as ACPSessionClientError {
+            switch error {
+            case .requestTimedOut(let method, let timeout):
+                #expect(method == ACPMethod.sessionNew.rawValue)
+                #expect(abs(timeout - ACPSessionClientTimeouts.testValue.sessionNew) < 0.001)
+            default:
+                Issue.record("Unexpected ACP error: \(error.localizedDescription)")
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error.localizedDescription)")
+        }
+
+        #expect(sentMethods == ["initialize", "session/new"])
+        #expect(client.negotiatedProtocolVersion == 1)
+        #expect(client.sessionID == nil)
+    }
+
+    @Test func sessionClientTimesOutPromptRequest() async throws {
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport, requestTimeouts: .testValue)
+        var sentMethods: [String] = []
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id?.intValue)
+            sentMethods.append(method)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "sessionId": "session_123"
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionPrompt.rawValue:
+                break
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        try await client.connect(cwd: "/tmp/atelier")
+
+        do {
+            _ = try await client.sendPrompt("Hello")
+            Issue.record("Expected session/prompt to time out.")
+        } catch let error as ACPSessionClientError {
+            switch error {
+            case .requestTimedOut(let method, let timeout):
+                #expect(method == ACPMethod.sessionPrompt.rawValue)
+                #expect(abs(timeout - ACPSessionClientTimeouts.testValue.sessionPrompt) < 0.001)
+            default:
+                Issue.record("Unexpected ACP error: \(error.localizedDescription)")
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error.localizedDescription)")
+        }
+
+        #expect(sentMethods == ["initialize", "session/new", "session/prompt"])
+        #expect(client.sessionID == "session_123")
+    }
+
+    @Test func sessionClientClassifiesAuthenticationFailures() async throws {
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id?.intValue)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "sessionId": "session_123"
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionPrompt.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "error": {
+                    "code": 401,
+                    "message": "AuthRequired: Gemini login expired",
+                    "data": {
+                      "authMethod": "oauth-personal",
+                      "status": "expired"
+                    }
+                  }
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        try await client.connect(cwd: "/tmp/atelier")
+
+        do {
+            _ = try await client.sendPrompt("Hello")
+            Issue.record("Expected prompt to surface an authentication failure.")
+        } catch let error as ACPSessionClientError {
+            switch error {
+            case .authenticationRequired(let method, let serverError):
+                #expect(method == ACPMethod.sessionPrompt.rawValue)
+                #expect(serverError.code == 401)
+                #expect(serverError.contextDescription?.contains("oauth-personal") == true)
+                #expect(error.localizedDescription.contains("Re-authenticate in a terminal"))
+            default:
+                Issue.record("Unexpected ACP error: \(error.localizedDescription)")
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error.localizedDescription)")
+        }
+    }
+
+    @Test func sessionClientClassifiesModelFailures() async throws {
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id?.intValue)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "sessionId": "session_123"
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionPrompt.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "error": {
+                    "code": 404,
+                    "message": "Requested entity was not found",
+                    "data": {
+                      "type": "ModelNotFoundError",
+                      "model": "gemini-2.0-flash",
+                      "status": 404
+                    }
+                  }
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        try await client.connect(cwd: "/tmp/atelier")
+
+        do {
+            _ = try await client.sendPrompt("Hello")
+            Issue.record("Expected prompt to surface a model failure.")
+        } catch let error as ACPSessionClientError {
+            switch error {
+            case .modelUnavailable(let method, let serverError):
+                #expect(method == ACPMethod.sessionPrompt.rawValue)
+                #expect(serverError.code == 404)
+                #expect(serverError.contextDescription?.contains("ModelNotFoundError") == true)
+                #expect(serverError.contextDescription?.contains("gemini-2.0-flash") == true)
+                #expect(error.localizedDescription.contains("configured Gemini model"))
+            default:
+                Issue.record("Unexpected ACP error: \(error.localizedDescription)")
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error.localizedDescription)")
         }
     }
 
@@ -813,4 +1130,12 @@ private final class FakeAgentTransport: AgentTransport {
     func deliver(_ json: String) {
         onReceive?(.success(Data(json.utf8)))
     }
+}
+
+private extension ACPSessionClientTimeouts {
+    static let testValue = ACPSessionClientTimeouts(
+        initialize: 0.05,
+        sessionNew: 0.05,
+        sessionPrompt: 0.05
+    )
 }
