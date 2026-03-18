@@ -40,7 +40,7 @@ Future ACP work will be hard to evaluate if the baseline is already noisy. A red
 
 ### Tasks
 
-- Fix the brittle temp-path assertions in `ACPTransportPhase1Tests.swift`.
+- Fix the brittle temp-path assertions in `ACPTransportTests.swift`.
 - Normalize or canonicalize temp-directory paths in the affected tests.
 - Re-run the ACP-focused tests until they pass consistently.
 - Re-run the full Xcode test suite and confirm there are no known flaky ACP failures left.

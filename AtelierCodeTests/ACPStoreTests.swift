@@ -1,5 +1,5 @@
 //
-//  ACPPhase3Tests.swift
+//  ACPStoreTests.swift
 //  AtelierCodeTests
 //
 //  Created by Codex on 3/14/26.
@@ -10,7 +10,7 @@ import Testing
 @testable import AtelierCode
 
 @MainActor
-struct ACPPhase3Tests {
+struct ACPStoreTests {
 
     @Test func connectCreatesSessionAndTransitionsToReady() async {
         let transport = FakeACPStoreTransport()

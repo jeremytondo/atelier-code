@@ -167,8 +167,8 @@ Client                              Gemini CLI
 
 ## Test Changes
 
-- **`ACPPhase2Tests`**: Updated `initializeRequestEncodesExpectedShape` to verify new capability values (`true/true`, `terminal: true`, `_meta`). Updated `sessionClientRunsInitializeSessionAndPromptFlow` to expect `["initialize", "session/new", "session/prompt"]` (no `authenticate`). Renamed `sessionClientSkipsAuthenticateWhenOAuthPersonalIsUnavailable` to `sessionClientDefersAuthenticationToAgent`.
-- **`ACPTransportPhase1Tests`**: Added `processEnvironmentSetsNoBrowser` test.
+- **`ACPSessionClientTests`**: Updated `initializeRequestEncodesExpectedShape` to verify new capability values (`true/true`, `terminal: true`, `_meta`). Updated `sessionClientRunsInitializeSessionAndPromptFlow` to expect `["initialize", "session/new", "session/prompt"]` (no `authenticate`). Renamed `sessionClientSkipsAuthenticateWhenOAuthPersonalIsUnavailable` to `sessionClientDefersAuthenticationToAgent`.
+- **`ACPTransportTests`**: Added `processEnvironmentSetsNoBrowser` test.
 
 ## Files Changed
 
@@ -177,8 +177,8 @@ Client                              Gemini CLI
 | `ACPProtocol.swift` | Added `_meta` to `ACPClientCapabilities`, updated defaults to `fs: supported`, `terminal: true` |
 | `ACPSessionClient.swift` | Removed eager `authenticate` call and `selectAuthenticationMethodID` |
 | `LocalACPTransport.swift` | Added `NO_BROWSER=1` to process environment |
-| `ACPPhase2Tests.swift` | Updated capability assertions, removed `authenticate` from expected flow |
-| `ACPTransportPhase1Tests.swift` | Added `NO_BROWSER` test |
+| `ACPSessionClientTests.swift` | Updated capability assertions, removed `authenticate` from expected flow |
+| `ACPTransportTests.swift` | Added `NO_BROWSER` test |
 
 ## Prior Fixes (from earlier troubleshooting)
 

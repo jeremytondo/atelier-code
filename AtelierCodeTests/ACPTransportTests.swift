@@ -1,5 +1,5 @@
 //
-//  ACPTransportPhase1Tests.swift
+//  ACPTransportTests.swift
 //  AtelierCodeTests
 //
 //  Created by Codex on 3/14/26.
@@ -9,7 +9,26 @@ import Foundation
 import Testing
 @testable import AtelierCode
 
-struct ACPTransportPhase1Tests {
+struct ACPTransportTests {
+    private func canonicalPath(_ path: String) -> String {
+        let fileManager = FileManager.default
+        var existingURL = URL(fileURLWithPath: path).standardizedFileURL
+        var missingPathComponents: [String] = []
+
+        while
+            existingURL.path != "/",
+            !fileManager.fileExists(atPath: existingURL.path)
+        {
+            missingPathComponents.insert(existingURL.lastPathComponent, at: 0)
+            existingURL.deleteLastPathComponent()
+        }
+
+        return missingPathComponents
+            .reduce(existingURL.resolvingSymlinksInPath()) { partialURL, component in
+                partialURL.appendingPathComponent(component)
+            }
+            .path
+    }
 
     @Test func executableLocatorResolvesKnownInstallPaths() throws {
         let locator = GeminiExecutableLocator(
@@ -51,19 +70,21 @@ struct ACPTransportPhase1Tests {
         )
         try Data("#!/bin/sh\n".utf8).write(to: executableURL)
         try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+        let canonicalTempHomePath = canonicalPath(tempHomeURL.path)
+        let canonicalExecutablePath = canonicalPath(executableURL.path)
         defer {
             try? fileManager.removeItem(at: tempHomeURL)
         }
 
         let locator = GeminiExecutableLocator(
-            userHomeDirectory: tempHomeURL.path,
-            fileExists: { $0 == executableURL.path },
+            userHomeDirectory: canonicalTempHomePath,
+            fileExists: { canonicalPath($0) == canonicalExecutablePath },
             whichLookup: { _ in nil }
         )
 
         let url = try locator.locate()
 
-        #expect(url.path == executableURL.path)
+        #expect(canonicalPath(url.path) == canonicalExecutablePath)
     }
 
     @Test func commonInstallPathsIncludeMiseShimPath() {
@@ -85,12 +106,15 @@ struct ACPTransportPhase1Tests {
             at: executableURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        let canonicalTempHomePath = canonicalPath(tempHomeURL.path)
+        let canonicalExecutablePath = canonicalPath(executableURL.path)
         defer {
             try? fileManager.removeItem(at: tempHomeURL)
         }
 
-        let paths = GeminiExecutableLocator.commonInstallPaths(userHomeDirectory: tempHomeURL.path)
-        let miseInstallIndex = try #require(paths.firstIndex(of: executableURL.path))
+        let paths = GeminiExecutableLocator.commonInstallPaths(userHomeDirectory: canonicalTempHomePath)
+        let normalizedPaths = paths.map(canonicalPath)
+        let miseInstallIndex = try #require(normalizedPaths.firstIndex(of: canonicalExecutablePath))
         let homebrewIndex = try #require(paths.firstIndex(of: "/opt/homebrew/bin/gemini"))
 
         #expect(miseInstallIndex < homebrewIndex)

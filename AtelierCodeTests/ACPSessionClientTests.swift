@@ -1,5 +1,5 @@
 //
-//  ACPPhase2Tests.swift
+//  ACPSessionClientTests.swift
 //  AtelierCodeTests
 //
 //  Created by Codex on 3/14/26.
@@ -10,7 +10,7 @@ import Testing
 @testable import AtelierCode
 
 @MainActor
-struct ACPPhase2Tests {
+struct ACPSessionClientTests {
 
     @Test func initializeRequestEncodesExpectedShape() throws {
         let request = ACPRequest(
