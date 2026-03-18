@@ -131,9 +131,13 @@ Gemini may send requests *to* the client (requests with an `id` and `method`). C
 | Method | Handler | Behavior |
 |---|---|---|
 | `session/request_permission` | `handlePermissionRequest` | Auto-approves with `allow_once` preference |
+| `fs/read_text_file`, `fs/write_text_file` | Explicit fallback | Returns JSON-RPC error `-32601` with a compatibility-only message |
+| `terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, `terminal/release` | Explicit fallback | Returns JSON-RPC error `-32601` with a compatibility-only message |
 | All others | Default | Returns JSON-RPC error `-32601` (method not found) |
 
-**Future work:** Zed implements `fs/read_text_file`, `fs/write_text_file`, and a full terminal suite (`terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, `terminal/release`). We advertise these capabilities but don't yet handle the requests. This hasn't caused issues so far because simple prompts don't trigger tool use, but it should be implemented.
+This is an intentional interim strategy. AtelierCode keeps the broader capability advertisement because Gemini's currently working ACP path depends on the Zed-style `initialize` payload, but the delegated file-system and terminal client methods are still unimplemented. When Gemini reaches for one of those methods today, the client now fails clearly instead of returning a generic unsupported-method error.
+
+**Future work:** Zed implements `fs/read_text_file`, `fs/write_text_file`, and a full terminal suite (`terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, `terminal/release`). AtelierCode should implement those handlers so the advertised capability surface and actual method support converge.
 
 ## Client Capabilities
 
@@ -146,7 +150,7 @@ static let atelierCodeDefaults = ACPClientCapabilities(
 )
 ```
 
-These values must match the Zed reference implementation. Gemini CLI uses them to determine internal code paths, including how it routes API calls through the Code Assist backend. Incorrect capabilities cause silent hangs. See [Capabilities Bug](#1-incorrect-client-capabilities).
+These values are intentionally part of AtelierCode's current interim capability strategy: keep Gemini-compatible advertisement now, then backfill the delegated client methods in later ACP work. Gemini CLI uses these values to determine internal code paths, including how it routes API calls through the Code Assist backend. Incorrect capabilities cause silent hangs. See [Capabilities Bug](#1-incorrect-client-capabilities).
 
 | Field | Value | Purpose |
 |---|---|---|

@@ -190,16 +190,56 @@ nonisolated struct ACPAgentCapabilities: Decodable, Equatable, Sendable {
     }
 }
 
+// AtelierCode intentionally keeps Gemini-compatible capability advertisement
+// until the corresponding file-system and terminal client handlers exist.
+nonisolated enum ACPInterimCapabilityStrategy: String, CaseIterable, Sendable {
+    case geminiCompatibility
+
+    var clientCapabilities: ACPClientCapabilities {
+        switch self {
+        case .geminiCompatibility:
+            return ACPClientCapabilities(
+                fs: .supported,
+                terminal: true,
+                _meta: ["terminal_output": true, "terminal-auth": true]
+            )
+        }
+    }
+
+    var compatibilityOnlyClientMethods: Set<String> {
+        switch self {
+        case .geminiCompatibility:
+            return [
+                "fs/read_text_file",
+                "fs/write_text_file",
+                "terminal/create",
+                "terminal/output",
+                "terminal/wait_for_exit",
+                "terminal/kill",
+                "terminal/release",
+            ]
+        }
+    }
+
+    func fallbackErrorMessage(for method: String) -> String? {
+        guard compatibilityOnlyClientMethods.contains(method) else {
+            return nil
+        }
+
+        let capabilityArea = method.hasPrefix("fs/") ? "file-system" : "terminal"
+        return
+            "AtelierCode advertises \(capabilityArea) ACP capabilities temporarily for current Gemini compatibility, but the client method \(method) is not implemented yet."
+    }
+
+    static let atelierCodeCurrent = ACPInterimCapabilityStrategy.geminiCompatibility
+}
+
 nonisolated struct ACPClientCapabilities: Codable, Equatable, Sendable {
     let fs: ACPFileSystemCapabilities?
     let terminal: Bool?
     let _meta: [String: Bool]?
 
-    static let atelierCodeDefaults = ACPClientCapabilities(
-        fs: ACPFileSystemCapabilities(readTextFile: true, writeTextFile: true),
-        terminal: true,
-        _meta: ["terminal_output": true, "terminal-auth": true]
-    )
+    static let atelierCodeDefaults = ACPInterimCapabilityStrategy.atelierCodeCurrent.clientCapabilities
 }
 
 nonisolated struct ACPInitializeRequestParams: Codable, Equatable, Sendable {

@@ -18,6 +18,26 @@ struct ACPSessionClientTests {
         #expect(ACPProtocolVersion.isSupported(99) == false)
     }
 
+    @Test func interimCapabilityStrategyIsExplicitlyGeminiCompatibility() {
+        #expect(ACPInterimCapabilityStrategy.atelierCodeCurrent == .geminiCompatibility)
+        #expect(
+            ACPClientCapabilities.atelierCodeDefaults ==
+            ACPInterimCapabilityStrategy.atelierCodeCurrent.clientCapabilities
+        )
+        #expect(
+            ACPInterimCapabilityStrategy.atelierCodeCurrent.compatibilityOnlyClientMethods ==
+            [
+                "fs/read_text_file",
+                "fs/write_text_file",
+                "terminal/create",
+                "terminal/output",
+                "terminal/wait_for_exit",
+                "terminal/kill",
+                "terminal/release",
+            ]
+        )
+    }
+
     @Test func initializeRequestEncodesExpectedShape() throws {
         let request = ACPRequest(
             id: 1,
@@ -308,6 +328,92 @@ struct ACPSessionClientTests {
         #expect(object["id"] as? String == "permission_1")
         #expect(outcome["outcome"] as? String == "selected")
         #expect(outcome["optionId"] as? String == "allow_once")
+    }
+
+    @Test func sessionClientReturnsExplicitCompatibilityErrorForUnimplementedFileSystemMethod() throws {
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+        var errorResponse: [String: Any]?
+
+        transport.onSend = { data in
+            errorResponse = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "fs_1",
+          "method": "fs/read_text_file",
+          "params": {}
+        }
+        """)
+
+        let response = try #require(errorResponse)
+        let error = try #require(response["error"] as? [String: Any])
+        let message = try #require(error["message"] as? String)
+        _ = client
+
+        #expect(response["id"] as? String == "fs_1")
+        #expect(error["code"] as? Int == -32601)
+        #expect(message.contains("Gemini compatibility"))
+        #expect(message.contains("fs/read_text_file"))
+    }
+
+    @Test func sessionClientReturnsExplicitCompatibilityErrorForUnimplementedTerminalMethod() throws {
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+        var errorResponse: [String: Any]?
+
+        transport.onSend = { data in
+            errorResponse = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "terminal_1",
+          "method": "terminal/create",
+          "params": {}
+        }
+        """)
+
+        let response = try #require(errorResponse)
+        let error = try #require(response["error"] as? [String: Any])
+        let message = try #require(error["message"] as? String)
+        _ = client
+
+        #expect(response["id"] as? String == "terminal_1")
+        #expect(error["code"] as? Int == -32601)
+        #expect(message.contains("Gemini compatibility"))
+        #expect(message.contains("terminal/create"))
+    }
+
+    @Test func sessionClientKeepsGenericErrorForOtherUnsupportedClientMethods() throws {
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+        var errorResponse: [String: Any]?
+
+        transport.onSend = { data in
+            errorResponse = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "custom_1",
+          "method": "custom/unknown",
+          "params": {}
+        }
+        """)
+
+        let response = try #require(errorResponse)
+        let error = try #require(response["error"] as? [String: Any])
+        let message = try #require(error["message"] as? String)
+        _ = client
+
+        #expect(response["id"] as? String == "custom_1")
+        #expect(error["code"] as? Int == -32601)
+        #expect(message == "AtelierCode does not support client ACP method custom/unknown.")
     }
 
     @Test func sessionClientRequiresSessionBeforePrompt() async {

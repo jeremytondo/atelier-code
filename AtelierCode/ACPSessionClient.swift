@@ -220,10 +220,13 @@ final class ACPSessionClient {
         case ACPMethod.sessionRequestPermission.rawValue:
             handlePermissionRequest(id: id, data: data)
         default:
+            let errorMessage =
+                ACPInterimCapabilityStrategy.atelierCodeCurrent.fallbackErrorMessage(for: method)
+                ?? "AtelierCode does not support client ACP method \(method)."
             sendClientErrorResponse(
                 id: id,
                 code: -32601,
-                message: "AtelierCode does not support client ACP method \(method)."
+                message: errorMessage
             )
         }
     }
