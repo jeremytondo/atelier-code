@@ -751,100 +751,229 @@ struct ACPSessionClientTests {
         }
     }
 
-    @Test func sessionClientRunsInitializeSessionAndPromptFlow() async throws {
-        let transport = FakeAgentTransport()
+    @Test func sessionClientHappyPathTranscriptCoversHandshakeStreamingAndPromptResponse() async throws {
+        let transport = TranscriptAgentTransport(
+            exchanges: [
+                ACPTranscriptExchange(
+                    expectedMethod: ACPMethod.initialize.rawValue,
+                    assertRequest: { request in
+                        let params = try TranscriptAgentTransport.dictionaryValue(forKey: "params", in: request)
+                        let clientInfo = try TranscriptAgentTransport.dictionaryValue(forKey: "clientInfo", in: params)
+                        let clientCapabilities = try TranscriptAgentTransport.dictionaryValue(forKey: "clientCapabilities", in: params)
+
+                        #expect(params["protocolVersion"] as? Int == ACPProtocolVersion.current)
+                        #expect(clientInfo["name"] as? String == "AtelierCode")
+                        #expect(clientCapabilities["terminal"] as? Bool == true)
+                    },
+                    responses: { requestID in
+                        ["""
+                        {
+                          "jsonrpc": "2.0",
+                          "id": \(requestID),
+                          "result": {
+                            "protocolVersion": 1,
+                            "authMethods": [
+                              {
+                                "id": "oauth-personal",
+                                "name": "Log in with Google"
+                              }
+                            ],
+                            "agentCapabilities": {
+                              "loadSession": true,
+                              "promptCapabilities": {
+                                "image": true
+                              }
+                            },
+                            "agentInfo": {
+                              "name": "Gemini",
+                              "version": "0.1.0"
+                            }
+                          }
+                        }
+                        """]
+                    }
+                ),
+                ACPTranscriptExchange(
+                    expectedMethod: ACPMethod.sessionNew.rawValue,
+                    assertRequest: { request in
+                        let params = try TranscriptAgentTransport.dictionaryValue(forKey: "params", in: request)
+                        #expect(params["cwd"] as? String == "/tmp/atelier")
+                    },
+                    responses: { requestID in
+                        ["""
+                        {
+                          "jsonrpc": "2.0",
+                          "id": \(requestID),
+                          "result": {
+                            "sessionId": "session_123"
+                          }
+                        }
+                        """]
+                    }
+                ),
+                ACPTranscriptExchange(
+                    expectedMethod: ACPMethod.sessionPrompt.rawValue,
+                    assertRequest: { request in
+                        let params = try TranscriptAgentTransport.dictionaryValue(forKey: "params", in: request)
+                        let prompt = try TranscriptAgentTransport.arrayValue(forKey: "prompt", in: params)
+                        let firstBlock = try #require(prompt.first as? [String: Any])
+
+                        #expect(params["sessionId"] as? String == "session_123")
+                        #expect(firstBlock["type"] as? String == "text")
+                        #expect(firstBlock["text"] as? String == "Hello, Gemini")
+                    },
+                    responses: { requestID in
+                        [
+                            """
+                            {
+                              "jsonrpc": "2.0",
+                              "method": "session/update",
+                              "params": {
+                                "sessionId": "session_123",
+                                "update": {
+                                  "sessionUpdate": "agent_message_chunk",
+                                  "content": {
+                                    "type": "text",
+                                    "text": "Streaming"
+                                  }
+                                }
+                              }
+                            }
+                            """,
+                            """
+                            {
+                              "jsonrpc": "2.0",
+                              "method": "session/update",
+                              "params": {
+                                "sessionId": "session_123",
+                                "update": {
+                                  "sessionUpdate": "agent_message_chunk",
+                                  "content": {
+                                    "type": "text",
+                                    "text": " reply"
+                                  }
+                                }
+                              }
+                            }
+                            """,
+                            """
+                            {
+                              "jsonrpc": "2.0",
+                              "id": \(requestID),
+                              "result": {
+                                "stopReason": "end_turn"
+                              }
+                            }
+                            """,
+                        ]
+                    }
+                ),
+            ]
+        )
         let client = ACPSessionClient(transport: transport)
         var streamedChunks: [String] = []
-        var sentMethods: [String] = []
 
         client.onAgentMessageChunk = { streamedChunks.append($0) }
-
-        transport.onSend = { data in
-            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
-            let method = try #require(envelope.method)
-            let requestID = try #require(envelope.id?.intValue)
-            sentMethods.append(method)
-
-            switch method {
-            case ACPMethod.initialize.rawValue:
-                transport.deliver("""
-                {
-                  "jsonrpc": "2.0",
-                  "id": \(requestID),
-                  "result": {
-                    "protocolVersion": 1,
-                    "authMethods": [
-                      {
-                        "id": "oauth-personal",
-                        "name": "Log in with Google"
-                      }
-                    ],
-                    "agentCapabilities": {
-                      "loadSession": true
-                    },
-                    "agentInfo": {
-                      "name": "Gemini",
-                      "version": "0.1.0"
-                    }
-                  }
-                }
-                """)
-
-            case ACPMethod.sessionNew.rawValue:
-                transport.deliver("""
-                {
-                  "jsonrpc": "2.0",
-                  "id": \(requestID),
-                  "result": {
-                    "sessionId": "session_123"
-                  }
-                }
-                """)
-
-            case ACPMethod.sessionPrompt.rawValue:
-                transport.deliver("""
-                {
-                  "jsonrpc": "2.0",
-                  "method": "session/update",
-                  "params": {
-                    "sessionId": "session_123",
-                    "update": {
-                      "sessionUpdate": "agent_message_chunk",
-                      "content": {
-                        "type": "text",
-                        "text": "Streaming reply"
-                      }
-                    }
-                  }
-                }
-                """)
-
-                transport.deliver("""
-                {
-                  "jsonrpc": "2.0",
-                  "id": \(requestID),
-                  "result": {
-                    "stopReason": "end_turn"
-                  }
-                }
-                """)
-
-            default:
-                Issue.record("Unexpected method \(method)")
-            }
-        }
 
         try await client.connect(cwd: "/tmp/atelier")
         let promptResponse = try await client.sendPrompt("Hello, Gemini")
 
         #expect(transport.startCallCount == 1)
-        #expect(sentMethods == ["initialize", "session/new", "session/prompt"])
+        #expect(transport.sentMethods == ["initialize", "session/new", "session/prompt"])
+        #expect(transport.isExhausted)
         #expect(client.negotiatedProtocolVersion == 1)
         #expect(client.authMethods.first?.id == "oauth-personal")
         #expect(client.agentCapabilities?.loadSession == true)
+        #expect(client.agentCapabilities?.promptCapabilities?.image == true)
         #expect(client.sessionID == "session_123")
-        #expect(streamedChunks == ["Streaming reply"])
+        #expect(streamedChunks == ["Streaming", " reply"])
         #expect(promptResponse.stopReason == "end_turn")
+    }
+
+    @Test func sessionClientPromptFailureTranscriptSurfacesServerError() async throws {
+        let transport = TranscriptAgentTransport(
+            exchanges: [
+                ACPTranscriptExchange(
+                    expectedMethod: ACPMethod.initialize.rawValue,
+                    responses: { requestID in
+                        ["""
+                        {
+                          "jsonrpc": "2.0",
+                          "id": \(requestID),
+                          "result": {
+                            "protocolVersion": 1
+                          }
+                        }
+                        """]
+                    }
+                ),
+                ACPTranscriptExchange(
+                    expectedMethod: ACPMethod.sessionNew.rawValue,
+                    responses: { requestID in
+                        ["""
+                        {
+                          "jsonrpc": "2.0",
+                          "id": \(requestID),
+                          "result": {
+                            "sessionId": "session_123"
+                          }
+                        }
+                        """]
+                    }
+                ),
+                ACPTranscriptExchange(
+                    expectedMethod: ACPMethod.sessionPrompt.rawValue,
+                    assertRequest: { request in
+                        let params = try TranscriptAgentTransport.dictionaryValue(forKey: "params", in: request)
+                        let prompt = try TranscriptAgentTransport.arrayValue(forKey: "prompt", in: params)
+                        let firstBlock = try #require(prompt.first as? [String: Any])
+
+                        #expect(params["sessionId"] as? String == "session_123")
+                        #expect(firstBlock["text"] as? String == "Trigger failure")
+                    },
+                    responses: { requestID in
+                        ["""
+                        {
+                          "jsonrpc": "2.0",
+                          "id": \(requestID),
+                          "error": {
+                            "code": -32000,
+                            "message": "Prompt failed",
+                            "data": {
+                              "reason": "upstream_error"
+                            }
+                          }
+                        }
+                        """]
+                    }
+                ),
+            ]
+        )
+        let client = ACPSessionClient(transport: transport)
+
+        try await client.connect(cwd: "/tmp/atelier")
+
+        do {
+            _ = try await client.sendPrompt("Trigger failure")
+            Issue.record("Expected transcript prompt failure.")
+        } catch let error as ACPSessionClientError {
+            switch error {
+            case .serverError(let method, let serverError):
+                #expect(method == ACPMethod.sessionPrompt.rawValue)
+                #expect(serverError.code == -32000)
+                #expect(serverError.message == "Prompt failed")
+                #expect(serverError.contextDescription?.contains("upstream_error") == true)
+            default:
+                Issue.record("Unexpected ACP error: \(error.localizedDescription)")
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error.localizedDescription)")
+        }
+
+        #expect(transport.startCallCount == 1)
+        #expect(transport.sentMethods == ["initialize", "session/new", "session/prompt"])
+        #expect(transport.isExhausted)
+        #expect(client.sessionID == "session_123")
     }
 
     @Test func sessionClientDefersAuthenticationToAgent() async throws {
@@ -1129,6 +1258,138 @@ private final class FakeAgentTransport: AgentTransport {
 
     func deliver(_ json: String) {
         onReceive?(.success(Data(json.utf8)))
+    }
+}
+
+private struct ACPTranscriptExchange {
+    let expectedMethod: String
+    let assertRequest: ([String: Any]) throws -> Void
+    let responses: (Int) -> [String]
+
+    init(
+        expectedMethod: String,
+        assertRequest: @escaping ([String: Any]) throws -> Void = { _ in },
+        responses: @escaping (Int) -> [String]
+    ) {
+        self.expectedMethod = expectedMethod
+        self.assertRequest = assertRequest
+        self.responses = responses
+    }
+}
+
+@MainActor
+private final class TranscriptAgentTransport: AgentTransport {
+    var onReceive: ((Result<Data, any Error>) -> Void)?
+
+    private let exchanges: [ACPTranscriptExchange]
+    private var nextExchangeIndex = 0
+
+    private(set) var startCallCount = 0
+    private(set) var stopCallCount = 0
+    private(set) var sentMethods: [String] = []
+
+    init(exchanges: [ACPTranscriptExchange]) {
+        self.exchanges = exchanges
+    }
+
+    var isExhausted: Bool {
+        nextExchangeIndex == exchanges.count
+    }
+
+    func start() throws {
+        startCallCount += 1
+    }
+
+    func stop() {
+        stopCallCount += 1
+    }
+
+    func send(message: Data) throws {
+        let request = try Self.object(from: message)
+        let method = try Self.stringValue(forKey: "method", in: request)
+
+        guard nextExchangeIndex < exchanges.count else {
+            throw TranscriptAgentTransportError.unexpectedExtraRequest(method: method)
+        }
+
+        let exchange = exchanges[nextExchangeIndex]
+        guard method == exchange.expectedMethod else {
+            throw TranscriptAgentTransportError.unexpectedMethod(
+                expected: exchange.expectedMethod,
+                actual: method,
+                index: nextExchangeIndex
+            )
+        }
+
+        sentMethods.append(method)
+        try exchange.assertRequest(request)
+
+        let requestID = try Self.intValue(forKey: "id", in: request)
+        nextExchangeIndex += 1
+
+        for response in exchange.responses(requestID) {
+            onReceive?(.success(Data(response.utf8)))
+        }
+    }
+
+    static func dictionaryValue(forKey key: String, in object: [String: Any]) throws -> [String: Any] {
+        guard let value = object[key] as? [String: Any] else {
+            throw TranscriptAgentTransportError.missingField(key)
+        }
+
+        return value
+    }
+
+    static func arrayValue(forKey key: String, in object: [String: Any]) throws -> [Any] {
+        guard let value = object[key] as? [Any] else {
+            throw TranscriptAgentTransportError.missingField(key)
+        }
+
+        return value
+    }
+
+    private static func object(from data: Data) throws -> [String: Any] {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw TranscriptAgentTransportError.invalidOutgoingMessage
+        }
+
+        return object
+    }
+
+    private static func stringValue(forKey key: String, in object: [String: Any]) throws -> String {
+        guard let value = object[key] as? String else {
+            throw TranscriptAgentTransportError.missingField(key)
+        }
+
+        return value
+    }
+
+    private static func intValue(forKey key: String, in object: [String: Any]) throws -> Int {
+        guard let value = object[key] as? Int else {
+            throw TranscriptAgentTransportError.missingField(key)
+        }
+
+        return value
+    }
+}
+
+private enum TranscriptAgentTransportError: LocalizedError {
+    case invalidOutgoingMessage
+    case missingField(String)
+    case unexpectedMethod(expected: String, actual: String, index: Int)
+    case unexpectedExtraRequest(method: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidOutgoingMessage:
+            return "The transcript transport could not decode the outgoing ACP request."
+        case .missingField(let key):
+            return "The transcript transport expected the outgoing ACP request to include \(key)."
+        case .unexpectedMethod(let expected, let actual, let index):
+            return "The transcript transport expected request \(index + 1) to be \(expected), but received \(actual)."
+        case .unexpectedExtraRequest(let method):
+            return "The transcript transport received an unexpected extra ACP request for \(method)."
+        }
     }
 }
 
