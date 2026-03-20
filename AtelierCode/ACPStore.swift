@@ -39,6 +39,7 @@ nonisolated enum AppWorkingDirectory: Sendable {
 final class ACPStore {
     var connectionState: ConnectionState = .disconnected
     var messages: [ConversationMessage] = []
+    var activitiesByMessageID: [UUID: [ACPMessageActivity]] = [:]
     var terminalStates: [String: ACPTerminalState] = [:]
     var draftPrompt = ""
     var isConnecting = false
@@ -52,6 +53,10 @@ final class ACPStore {
     @ObservationIgnored private let clientInfo: ACPImplementationInfo
     @ObservationIgnored private let clientCapabilities: ACPClientCapabilities
     @ObservationIgnored private let mcpServers: [ACPMCPServer]
+    @ObservationIgnored private var nextActivitySequence = 1
+    @ObservationIgnored private var terminalMessageIDs: [String: UUID] = [:]
+    @ObservationIgnored private var toolCallMessageIDs: [String: UUID] = [:]
+    @ObservationIgnored private var terminalOutputSnapshots: [String: String] = [:]
 
     init(
         transport: AgentTransport = LocalACPTransport(),
@@ -65,14 +70,19 @@ final class ACPStore {
         self.clientCapabilities = clientCapabilities
         self.mcpServers = mcpServers
         sessionClient = ACPSessionClient(transport: transport)
-        sessionClient.onAgentMessageChunk = { [weak self] text in
-            self?.appendAssistantChunk(text)
+        sessionClient.onSessionUpdate = { [weak self] params in
+            self?.handleSessionUpdate(params)
+        }
+        sessionClient.onPermissionDecision = { [weak self] decision in
+            self?.handlePermissionDecision(decision)
         }
         sessionClient.onTerminalStateChange = { [weak self] state in
-            self?.terminalStates[state.id] = state
+            self?.handleTerminalStateChange(state)
         }
         sessionClient.onTerminalStatesReset = { [weak self] in
             self?.terminalStates.removeAll()
+            self?.terminalOutputSnapshots.removeAll()
+            self?.terminalMessageIDs.removeAll()
         }
         sessionClient.onTransportError = { [weak self] error in
             self?.handleFailure(error)
@@ -184,9 +194,11 @@ final class ACPStore {
         messages.append(ConversationMessage(role: .user, text: prompt))
         scrollTargetMessageID = messages.last?.id
 
-        messages.append(ConversationMessage(role: .assistant, text: ""))
+        let assistantMessage = ConversationMessage(role: .assistant, text: "")
+        messages.append(assistantMessage)
         currentAssistantMessageIndex = messages.indices.last
-        scrollTargetMessageID = messages.last?.id
+        activitiesByMessageID[assistantMessage.id] = []
+        scrollTargetMessageID = assistantMessage.id
 
         lastErrorDescription = nil
         isSending = true
@@ -210,6 +222,177 @@ final class ACPStore {
         isSending = true
     }
 
+    private func handleSessionUpdate(_ params: ACPSessionUpdateNotificationParams) {
+        switch params.update.kind {
+        case .agentMessageChunk:
+            if let text = params.update.agentMessageChunkText {
+                appendAssistantChunk(text)
+            }
+        case .agentThoughtChunk:
+            appendActivity(
+                kind: .thinking,
+                title: "Gemini is thinking",
+                detail: params.update.summaryText,
+                update: params.update
+            )
+        case .availableCommands:
+            let commandNames = params.update.availableCommands?.map(\.name).joined(separator: ", ")
+            appendActivity(
+                kind: .availableCommands,
+                title: "Available commands updated",
+                detail: commandNames,
+                update: params.update,
+                commands: params.update.availableCommands ?? []
+            )
+        case .tool:
+            let title = params.update.titleText.map { "Tool: \($0)" } ?? "Tool activity"
+            appendActivity(
+                kind: .tool,
+                title: title,
+                detail: params.update.summaryText,
+                update: params.update
+            )
+        case .permission:
+            appendActivity(
+                kind: .permission,
+                title: "Permission update",
+                detail: params.update.summaryText,
+                update: params.update
+            )
+        case .terminal:
+            appendActivity(
+                kind: .terminal,
+                title: "Terminal update",
+                detail: params.update.summaryText,
+                update: params.update
+            )
+        case .other:
+            break
+        }
+    }
+
+    private func handlePermissionDecision(_ decision: ACPPermissionDecision) {
+        let title: String
+        let detail: String?
+
+        switch decision.outcome {
+        case .cancelled:
+            title = "Permission denied"
+            detail = decision.options.map(\.name).joined(separator: ", ")
+        case .selected:
+            let selectedName = decision.selectedOption?.name ?? "Allowed"
+            title = "Permission granted"
+            detail = selectedName
+        }
+
+        appendActivity(
+            kind: .permission,
+            title: title,
+            detail: detail,
+            toolCallId: decision.toolCallId
+        )
+    }
+
+    private func handleTerminalStateChange(_ state: ACPTerminalState) {
+        let previousState = terminalStates[state.id]
+        terminalStates[state.id] = state
+
+        let messageID = messageID(forTerminalID: state.id)
+        terminalMessageIDs[state.id] = messageID
+
+        let previousOutput = terminalOutputSnapshots[state.id] ?? previousState?.output ?? ""
+        let outputDelta = deltaOutput(from: previousOutput, to: state.output)
+        terminalOutputSnapshots[state.id] = state.output
+
+        if previousState == nil {
+            appendActivity(
+                to: messageID,
+                ACPMessageActivity(
+                    sequence: nextSequence(),
+                    kind: .terminal,
+                    title: "Started terminal",
+                    detail: "\(state.command) in \(state.cwd)",
+                    terminal: ACPTerminalActivitySnapshot(
+                        terminalId: state.id,
+                        command: state.command,
+                        cwd: state.cwd,
+                        newOutput: nil,
+                        fullOutput: state.output,
+                        truncated: state.truncated,
+                        exitStatus: state.exitStatus,
+                        isReleased: state.isReleased
+                    )
+                )
+            )
+        }
+
+        if let outputDelta, !outputDelta.isEmpty {
+            appendActivity(
+                to: messageID,
+                ACPMessageActivity(
+                    sequence: nextSequence(),
+                    kind: .terminal,
+                    title: "Terminal output",
+                    detail: nil,
+                    terminal: ACPTerminalActivitySnapshot(
+                        terminalId: state.id,
+                        command: state.command,
+                        cwd: state.cwd,
+                        newOutput: outputDelta,
+                        fullOutput: state.output,
+                        truncated: state.truncated,
+                        exitStatus: state.exitStatus,
+                        isReleased: state.isReleased
+                    )
+                )
+            )
+        }
+
+        if previousState?.exitStatus != state.exitStatus, let exitStatus = state.exitStatus {
+            appendActivity(
+                to: messageID,
+                ACPMessageActivity(
+                    sequence: nextSequence(),
+                    kind: .terminal,
+                    title: "Terminal finished",
+                    detail: terminalExitDescription(exitStatus),
+                    terminal: ACPTerminalActivitySnapshot(
+                        terminalId: state.id,
+                        command: state.command,
+                        cwd: state.cwd,
+                        newOutput: nil,
+                        fullOutput: state.output,
+                        truncated: state.truncated,
+                        exitStatus: exitStatus,
+                        isReleased: state.isReleased
+                    )
+                )
+            )
+        }
+
+        if previousState?.isReleased != state.isReleased, state.isReleased {
+            appendActivity(
+                to: messageID,
+                ACPMessageActivity(
+                    sequence: nextSequence(),
+                    kind: .terminal,
+                    title: "Terminal released",
+                    detail: state.command,
+                    terminal: ACPTerminalActivitySnapshot(
+                        terminalId: state.id,
+                        command: state.command,
+                        cwd: state.cwd,
+                        newOutput: nil,
+                        fullOutput: state.output,
+                        truncated: state.truncated,
+                        exitStatus: state.exitStatus,
+                        isReleased: state.isReleased
+                    )
+                )
+            )
+        }
+    }
+
     private func finishStreaming() {
         currentAssistantMessageIndex = nil
         isSending = false
@@ -220,10 +403,112 @@ final class ACPStore {
     private func handleFailure(_ error: any Error) {
         sessionClient.reset()
         terminalStates.removeAll()
+        terminalOutputSnapshots.removeAll()
+        terminalMessageIDs.removeAll()
+        toolCallMessageIDs.removeAll()
         lastErrorDescription = error.localizedDescription
         isConnecting = false
         isSending = false
         currentAssistantMessageIndex = nil
         connectionState = .disconnected
+    }
+
+    func activities(for messageID: UUID) -> [ACPMessageActivity] {
+        activitiesByMessageID[messageID, default: []]
+            .sorted { $0.sequence < $1.sequence }
+    }
+
+    private func appendActivity(
+        kind: ACPMessageActivityKind,
+        title: String,
+        detail: String?,
+        update: ACPSessionUpdate? = nil,
+        toolCallId: String? = nil,
+        commands: [ACPAvailableCommand] = []
+    ) {
+        let messageID = messageID(
+            forToolCallID: toolCallId ?? update?.toolCallId,
+            terminalID: update?.terminalId
+        )
+
+        appendActivity(
+            to: messageID,
+            ACPMessageActivity(
+                sequence: nextSequence(),
+                kind: kind,
+                title: title,
+                detail: detail,
+                sessionUpdate: update?.sessionUpdate,
+                toolCallId: toolCallId ?? update?.toolCallId,
+                commands: commands
+            )
+        )
+    }
+
+    private func appendActivity(to messageID: UUID?, _ activity: ACPMessageActivity) {
+        guard let messageID else { return }
+        activitiesByMessageID[messageID, default: []].append(activity)
+        scrollTargetMessageID = messageID
+    }
+
+    private func messageID(forToolCallID toolCallID: String?, terminalID: String?) -> UUID? {
+        if let toolCallID, let messageID = toolCallMessageIDs[toolCallID] {
+            return messageID
+        }
+
+        if let terminalID, let messageID = terminalMessageIDs[terminalID] {
+            return messageID
+        }
+
+        guard let currentMessageID = currentAssistantMessageID else {
+            return nil
+        }
+
+        if let toolCallID {
+            toolCallMessageIDs[toolCallID] = currentMessageID
+        }
+
+        if let terminalID {
+            terminalMessageIDs[terminalID] = currentMessageID
+        }
+
+        return currentMessageID
+    }
+
+    private func messageID(forTerminalID terminalID: String) -> UUID? {
+        messageID(forToolCallID: nil, terminalID: terminalID)
+    }
+
+    private var currentAssistantMessageID: UUID? {
+        guard let currentAssistantMessageIndex else { return nil }
+        guard messages.indices.contains(currentAssistantMessageIndex) else { return nil }
+        return messages[currentAssistantMessageIndex].id
+    }
+
+    private func nextSequence() -> Int {
+        defer { nextActivitySequence += 1 }
+        return nextActivitySequence
+    }
+
+    private func deltaOutput(from previous: String, to current: String) -> String? {
+        guard current != previous else { return nil }
+
+        if current.hasPrefix(previous) {
+            return String(current.dropFirst(previous.count))
+        }
+
+        return current
+    }
+
+    private func terminalExitDescription(_ exitStatus: ACPTerminalExitStatus) -> String {
+        if let exitCode = exitStatus.exitCode {
+            return "Exit code \(exitCode)"
+        }
+
+        if let signal = exitStatus.signal {
+            return signal
+        }
+
+        return "Finished"
     }
 }

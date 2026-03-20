@@ -179,6 +179,143 @@ struct ACPStoreTests {
         #expect(store.scrollTargetMessageID == store.messages[1].id)
     }
 
+    @Test func sendMessageRetainsRichActivitiesAlongsideAssistantText() async throws {
+        let transport = FakeACPStoreTransport()
+        let store = ACPStore(transport: transport, cwd: "/tmp/atelier")
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id?.intValue)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "sessionId": "session_123"
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionPrompt.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "method": "session/update",
+                  "params": {
+                    "sessionId": "session_123",
+                    "update": {
+                      "sessionUpdate": "available_commands_update",
+                      "availableCommands": [
+                        {
+                          "name": "memory",
+                          "description": "Manage memory."
+                        }
+                      ]
+                    }
+                  }
+                }
+                """)
+
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "method": "session/update",
+                  "params": {
+                    "sessionId": "session_123",
+                    "update": {
+                      "sessionUpdate": "agent_thought_chunk",
+                      "content": {
+                        "type": "text",
+                        "text": "Inspecting the request"
+                      }
+                    }
+                  }
+                }
+                """)
+
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "method": "session/update",
+                  "params": {
+                    "sessionId": "session_123",
+                    "update": {
+                      "sessionUpdate": "tool_call_update",
+                      "toolCallId": "tool_123",
+                      "title": "Read workspace",
+                      "status": "running",
+                      "content": {
+                        "type": "text",
+                        "text": "Scanning project files"
+                      }
+                    }
+                  }
+                }
+                """)
+
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "method": "session/update",
+                  "params": {
+                    "sessionId": "session_123",
+                    "update": {
+                      "sessionUpdate": "agent_message_chunk",
+                      "content": {
+                        "type": "text",
+                        "text": "Ready."
+                      }
+                    }
+                  }
+                }
+                """)
+
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "stopReason": "end_turn"
+                  }
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        await store.sendMessage("Do some work")
+
+        let assistantMessageID = try #require(store.messages.last?.id)
+        let activities = store.activities(for: assistantMessageID)
+
+        #expect(store.messages.last?.text == "Ready.")
+        #expect(activities.count == 3)
+        #expect(activities[0].kind == .availableCommands)
+        #expect(activities[0].commands.first?.name == "memory")
+        #expect(activities[1].kind == .thinking)
+        #expect(activities[1].detail == "Inspecting the request")
+        #expect(activities[2].kind == .tool)
+        #expect(activities[2].toolCallId == "tool_123")
+        #expect(activities[2].detail?.contains("Scanning project files") == true)
+    }
+
     @Test func unsupportedNotificationsAreIgnored() async {
         let transport = FakeACPStoreTransport()
         let store = ACPStore(transport: transport, cwd: "/tmp/atelier")
@@ -329,6 +466,15 @@ struct ACPStoreTests {
             store.terminalStates[terminalID]?.output.contains("store terminal") == true
         }
         #expect(updated)
+
+        let activityAppended = await waitUntil {
+            let assistantMessageID = store.messages.last?.id
+            guard let assistantMessageID else { return false }
+            return store.activities(for: assistantMessageID).contains(where: {
+                $0.kind == .terminal && $0.terminal?.terminalId == terminalID
+            })
+        }
+        #expect(activityAppended)
     }
 
     @Test func transportFailureResetsSendabilityAndSurfacesError() async {

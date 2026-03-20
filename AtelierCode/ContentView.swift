@@ -24,7 +24,10 @@ struct ContentView: View {
                         }
 
                         ForEach(store.messages) { message in
-                            MessageRow(message: message)
+                            MessageRow(
+                                message: message,
+                                activities: store.activities(for: message.id)
+                            )
                                 .id(message.id)
                         }
                     }
@@ -161,29 +164,37 @@ struct ContentView: View {
 
 private struct MessageRow: View {
     let message: ConversationMessage
+    let activities: [ACPMessageActivity]
 
     var body: some View {
-        HStack {
-            if message.role == .user {
-                Spacer(minLength: 60)
+        VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 10) {
+            HStack {
+                if message.role == .user {
+                    Spacer(minLength: 60)
+                }
+
+                messageContent
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: 460, alignment: .leading)
+                    .background(bubbleBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(borderColor, lineWidth: 1)
+                    )
+
+                if message.role != .user {
+                    Spacer(minLength: 60)
+                }
             }
 
-            messageContent
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .frame(maxWidth: 460, alignment: .leading)
-                .background(bubbleBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(borderColor, lineWidth: 1)
-                )
-
-            if message.role != .user {
-                Spacer(minLength: 60)
+            if message.role == .assistant, !activities.isEmpty {
+                activityStack
+                    .padding(.leading, 12)
             }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
     }
 
     @ViewBuilder
@@ -240,5 +251,141 @@ private struct MessageRow: View {
         case .user:
             return Color.white.opacity(0.18)
         }
+    }
+
+    private var activityStack: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(activities) { activity in
+                ActivityCard(activity: activity)
+            }
+        }
+        .frame(maxWidth: 520, alignment: .leading)
+    }
+}
+
+private struct ActivityCard: View {
+    let activity: ACPMessageActivity
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(activity.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(primaryTextColor)
+
+                Spacer(minLength: 12)
+
+                if let badge = badgeText {
+                    Text(badge)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(badgeColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule()
+                                .fill(badgeColor.opacity(0.12))
+                        )
+                }
+            }
+
+            if let detail = activity.detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(secondaryTextColor)
+                    .lineLimit(activity.kind == .thinking ? 3 : nil)
+                    .textSelection(.enabled)
+            }
+
+            if !activity.commands.isEmpty {
+                Text(activity.commands.map(\.name).joined(separator: ", "))
+                    .font(.caption)
+                    .foregroundStyle(secondaryTextColor)
+                    .textSelection(.enabled)
+            }
+
+            if let terminal = activity.terminal {
+                if let newOutput = terminal.newOutput, !newOutput.isEmpty {
+                    Text(newOutput)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(Color(nsColor: .textColor))
+                        .textSelection(.enabled)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Color.black.opacity(0.06))
+                        )
+                }
+
+                if terminal.truncated {
+                    Text("Output truncated")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(cardBackground)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(cardBorderColor, lineWidth: 1)
+        )
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(badgeColor)
+                .frame(width: 4)
+                .padding(.vertical, 8)
+                .padding(.leading, 8)
+        }
+    }
+
+    private var badgeText: String? {
+        switch activity.kind {
+        case .thinking:
+            return "Thinking"
+        case .tool:
+            return "Tool"
+        case .availableCommands:
+            return "Commands"
+        case .permission:
+            return "Permission"
+        case .terminal:
+            return "Terminal"
+        }
+    }
+
+    private var badgeColor: Color {
+        switch activity.kind {
+        case .thinking:
+            return Color(red: 0.62, green: 0.42, blue: 0.18)
+        case .tool:
+            return Color(red: 0.12, green: 0.45, blue: 0.72)
+        case .availableCommands:
+            return Color(red: 0.22, green: 0.46, blue: 0.34)
+        case .permission:
+            return Color(red: 0.73, green: 0.42, blue: 0.14)
+        case .terminal:
+            return Color(red: 0.35, green: 0.33, blue: 0.62)
+        }
+    }
+
+    private var cardBackground: Color {
+        Color(nsColor: .textBackgroundColor).opacity(0.92)
+    }
+
+    private var cardBorderColor: Color {
+        badgeColor.opacity(0.35)
+    }
+
+    private var primaryTextColor: Color {
+        Color(nsColor: .textColor)
+    }
+
+    private var secondaryTextColor: Color {
+        Color(nsColor: .secondaryLabelColor)
     }
 }

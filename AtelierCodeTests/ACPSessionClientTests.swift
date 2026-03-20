@@ -300,6 +300,7 @@ struct ACPSessionClientTests {
         #expect(notification.params.sessionId == "session_123")
         #expect(notification.params.agentMessageChunkText == nil)
         #expect(notification.params.update.availableCommands?.first?.name == "memory")
+        #expect(notification.params.update.kind == .availableCommands)
     }
 
     @Test func sessionUpdateIgnoresArrayStructuredToolContentWithoutFailing() throws {
@@ -333,6 +334,35 @@ struct ACPSessionClientTests {
         #expect(notification.params.sessionId == "session_123")
         #expect(notification.params.agentMessageChunkText == nil)
         #expect(notification.params.update.sessionUpdate == "tool_call_update")
+        #expect(notification.params.update.kind == .tool)
+        #expect(notification.params.update.extractedText == "Finished")
+    }
+
+    @Test func sessionUpdateDecodesThoughtChunksForRendering() throws {
+        let payload = """
+        {
+          "jsonrpc": "2.0",
+          "method": "session/update",
+          "params": {
+            "sessionId": "session_123",
+            "update": {
+              "sessionUpdate": "agent_thought_chunk",
+              "content": {
+                "type": "text",
+                "text": "Checking the workspace state"
+              }
+            }
+          }
+        }
+        """
+
+        let notification = try JSONDecoder().decode(
+            ACPNotification<ACPSessionUpdateNotificationParams>.self,
+            from: Data(payload.utf8)
+        )
+
+        #expect(notification.params.update.kind == .agentThoughtChunk)
+        #expect(notification.params.update.extractedText == "Checking the workspace state")
     }
 
     @Test func requestPermissionOutcomeEncodesSelectedOption() throws {
@@ -1845,10 +1875,12 @@ struct ACPSessionClientTests {
         let transport = FakeAgentTransport()
         let client = ACPSessionClient(transport: transport)
         var streamedChunks: [String] = []
+        var decisions: [ACPPermissionDecision] = []
         var permissionOutcomeOptionID: String?
         var promptRequestID: Int?
 
         client.onAgentMessageChunk = { streamedChunks.append($0) }
+        client.onPermissionDecision = { decisions.append($0) }
 
         transport.onSend = { data in
             let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -1950,7 +1982,88 @@ struct ACPSessionClientTests {
 
         #expect(permissionOutcomeOptionID == "proceed_once")
         #expect(streamedChunks == ["The current directory is /tmp/atelier."])
+        #expect(decisions.count == 1)
+        #expect(decisions.first?.toolCallId == "tool_123")
+        #expect(decisions.first?.selectedOption?.optionId == "proceed_once")
         #expect(promptResponse.stopReason == "end_turn")
+    }
+
+    @Test func sessionClientSurfacesRichSessionUpdates() async throws {
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+        var observedUpdates: [ACPSessionUpdateNotificationParams] = []
+
+        client.onSessionUpdate = { observedUpdates.append($0) }
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id?.intValue)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "sessionId": "session_123"
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionPrompt.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "method": "session/update",
+                  "params": {
+                    "sessionId": "session_123",
+                    "update": {
+                      "sessionUpdate": "available_commands_update",
+                      "availableCommands": [
+                        {
+                          "name": "memory",
+                          "description": "Manage memory."
+                        }
+                      ]
+                    }
+                  }
+                }
+                """)
+
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "stopReason": "end_turn"
+                  }
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        try await client.connect(cwd: "/tmp/atelier")
+        _ = try await client.sendPrompt("List commands")
+
+        #expect(observedUpdates.count == 1)
+        #expect(observedUpdates.first?.update.kind == .availableCommands)
+        #expect(observedUpdates.first?.update.availableCommands?.first?.name == "memory")
     }
 
     @Test func sessionClientUsesInjectedPermissionPolicy() throws {

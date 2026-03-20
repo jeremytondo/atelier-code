@@ -223,6 +223,32 @@ nonisolated enum ACPJSONValue: Codable, Equatable, Sendable {
             return "null"
         }
     }
+
+    var stringValue: String? {
+        guard case .string(let value) = self else { return nil }
+        return value
+    }
+
+    var objectValue: [String: ACPJSONValue]? {
+        guard case .object(let value) = self else { return nil }
+        return value
+    }
+
+    var arrayValue: [ACPJSONValue]? {
+        guard case .array(let value) = self else { return nil }
+        return value
+    }
+
+    func decoded<T: Decodable>(_ type: T.Type) -> T? {
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+
+        guard let data = try? encoder.encode(self) else {
+            return nil
+        }
+
+        return try? decoder.decode(type, from: data)
+    }
 }
 
 nonisolated struct ACPError: Decodable, LocalizedError, Sendable {
@@ -609,27 +635,151 @@ nonisolated struct ACPSessionUpdateNotificationParams: Decodable, Equatable, Sen
     }
 }
 
+nonisolated enum ACPSessionUpdateKind: String, Equatable, Sendable {
+    case agentMessageChunk
+    case agentThoughtChunk
+    case availableCommands
+    case tool
+    case permission
+    case terminal
+    case other
+}
+
 nonisolated struct ACPSessionUpdate: Decodable, Equatable, Sendable {
     let sessionUpdate: String
-    let content: ACPContentBlock?
+    let content: ACPJSONValue?
     let availableCommands: [ACPAvailableCommand]?
-
-    private enum CodingKeys: String, CodingKey {
-        case sessionUpdate
-        case content
-        case availableCommands
-    }
+    let rawFields: [String: ACPJSONValue]
 
     init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        sessionUpdate = try container.decode(String.self, forKey: .sessionUpdate)
-        content = try? container.decode(ACPContentBlock.self, forKey: .content)
-        availableCommands = try? container.decode([ACPAvailableCommand].self, forKey: .availableCommands)
+        let container = try decoder.singleValueContainer()
+        rawFields = try container.decode([String: ACPJSONValue].self)
+
+        guard let sessionUpdate = rawFields["sessionUpdate"]?.stringValue else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Missing sessionUpdate field in ACP session/update payload."
+            )
+        }
+
+        self.sessionUpdate = sessionUpdate
+        content = rawFields["content"]
+        availableCommands = rawFields["availableCommands"]?.decoded([ACPAvailableCommand].self)
     }
 
     var agentMessageChunkText: String? {
         guard sessionUpdate == "agent_message_chunk" else { return nil }
-        return content?.textValue
+        return extractedText
+    }
+
+    var kind: ACPSessionUpdateKind {
+        let normalized = sessionUpdate.lowercased()
+
+        if normalized == "agent_message_chunk" {
+            return .agentMessageChunk
+        }
+
+        if normalized == "agent_thought_chunk" {
+            return .agentThoughtChunk
+        }
+
+        if normalized == "available_commands_update" {
+            return .availableCommands
+        }
+
+        if normalized.contains("permission") {
+            return .permission
+        }
+
+        if normalized.contains("terminal") {
+            return .terminal
+        }
+
+        if normalized.contains("tool") {
+            return .tool
+        }
+
+        return .other
+    }
+
+    var extractedText: String? {
+        Self.extractText(from: content)
+            ?? rawFields["text"]?.stringValue
+            ?? rawFields["message"]?.stringValue
+            ?? rawFields["detail"]?.stringValue
+    }
+
+    var toolCallId: String? {
+        rawFields["toolCallId"]?.stringValue
+            ?? rawFields["toolCall"]?.objectValue?["toolCallId"]?.stringValue
+            ?? rawFields["toolCall"]?.objectValue?["id"]?.stringValue
+    }
+
+    var terminalId: String? {
+        rawFields["terminalId"]?.stringValue
+            ?? rawFields["terminal"]?.objectValue?["terminalId"]?.stringValue
+            ?? rawFields["terminal"]?.objectValue?["id"]?.stringValue
+    }
+
+    var titleText: String? {
+        rawFields["title"]?.stringValue
+            ?? rawFields["label"]?.stringValue
+            ?? rawFields["name"]?.stringValue
+            ?? rawFields["toolName"]?.stringValue
+            ?? rawFields["toolCall"]?.objectValue?["name"]?.stringValue
+    }
+
+    var statusText: String? {
+        rawFields["status"]?.stringValue
+            ?? rawFields["state"]?.stringValue
+            ?? rawFields["phase"]?.stringValue
+    }
+
+    var summaryText: String? {
+        let summary = [
+            titleText,
+            statusText,
+            extractedText,
+        ]
+        .compactMap { value -> String? in
+            guard let value else { return nil }
+            let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmedValue.isEmpty ? nil : trimmedValue
+        }
+
+        guard !summary.isEmpty else { return nil }
+        return Array(NSOrderedSet(array: summary)).compactMap { $0 as? String }.joined(separator: " • ")
+    }
+
+    private static func extractText(from value: ACPJSONValue?) -> String? {
+        guard let value else { return nil }
+
+        switch value {
+        case .string(let text):
+            let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmedText.isEmpty ? nil : text
+        case .object(let object):
+            if let text = object["text"]?.stringValue {
+                let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedText.isEmpty {
+                    return text
+                }
+            }
+
+            if let contentText = extractText(from: object["content"]) {
+                return contentText
+            }
+
+            let nestedText = object.values.compactMap(extractText(from:))
+            guard !nestedText.isEmpty else { return nil }
+            return nestedText.joined(separator: "\n")
+        case .array(let array):
+            let textParts = array.compactMap(extractText(from:))
+            guard !textParts.isEmpty else { return nil }
+            return textParts.joined(separator: "\n")
+        default:
+            return nil
+        }
     }
 }
 

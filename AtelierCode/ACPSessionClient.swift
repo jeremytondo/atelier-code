@@ -921,6 +921,8 @@ final class ACPTerminalSessionManager {
 @MainActor
 final class ACPSessionClient {
     var onAgentMessageChunk: ((String) -> Void)?
+    var onSessionUpdate: ((ACPSessionUpdateNotificationParams) -> Void)?
+    var onPermissionDecision: ((ACPPermissionDecision) -> Void)?
     var onTerminalStateChange: ((ACPTerminalState) -> Void)?
     var onTerminalStatesReset: (() -> Void)?
     var onTransportError: ((any Error) -> Void)?
@@ -1164,13 +1166,20 @@ final class ACPSessionClient {
             let notification = try? decoder.decode(
                 ACPNotification<ACPSessionUpdateNotificationParams>.self,
                 from: data
-            ),
-            let text = notification.params.agentMessageChunkText
+            )
         else {
             return
         }
 
-        onAgentMessageChunk?(text)
+        if let sessionID, notification.params.sessionId != sessionID {
+            return
+        }
+
+        onSessionUpdate?(notification.params)
+
+        if let text = notification.params.agentMessageChunkText {
+            onAgentMessageChunk?(text)
+        }
     }
 
     private func handlePermissionRequest(id: ACPRequestID?, data: Data) {
@@ -1194,6 +1203,15 @@ final class ACPSessionClient {
                 category: .agentTool,
                 sessionId: request.params.sessionId,
                 toolCallId: request.params.toolCall?.toolCallId
+            )
+        )
+
+        onPermissionDecision?(
+            ACPPermissionDecision(
+                sessionId: request.params.sessionId,
+                toolCallId: request.params.toolCall?.toolCallId,
+                options: request.params.options,
+                outcome: outcome
             )
         )
 
