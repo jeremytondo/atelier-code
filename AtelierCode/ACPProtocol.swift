@@ -18,6 +18,11 @@ nonisolated enum ACPMethod: String, Sendable {
     case sessionUpdate = "session/update"
     case fsReadTextFile = "fs/read_text_file"
     case fsWriteTextFile = "fs/write_text_file"
+    case terminalCreate = "terminal/create"
+    case terminalOutput = "terminal/output"
+    case terminalWaitForExit = "terminal/wait_for_exit"
+    case terminalKill = "terminal/kill"
+    case terminalRelease = "terminal/release"
 }
 
 nonisolated enum ACPProtocolVersion {
@@ -104,7 +109,7 @@ nonisolated struct ACPClientErrorResponse: Encodable, Sendable {
     let error: ACPClientError
 }
 
-nonisolated struct ACPClientError: Encodable, Sendable {
+nonisolated struct ACPClientError: Encodable, LocalizedError, Sendable {
     let code: Int
     let message: String
     let data: ACPJSONValue?
@@ -113,6 +118,10 @@ nonisolated struct ACPClientError: Encodable, Sendable {
         self.code = code
         self.message = message
         self.data = data
+    }
+
+    var errorDescription: String? {
+        message
     }
 }
 
@@ -355,14 +364,14 @@ nonisolated struct ACPAgentCapabilities: Decodable, Equatable, Sendable {
 
 // AtelierCode keeps capability advertisement truthful to the behavior it implements.
 nonisolated enum ACPInterimCapabilityStrategy: String, CaseIterable, Sendable {
-    case readOnlyWorkspace
+    case workspaceAndTerminalLifecycle
 
     var clientCapabilities: ACPClientCapabilities {
         switch self {
-        case .readOnlyWorkspace:
+        case .workspaceAndTerminalLifecycle:
             return ACPClientCapabilities(
                 fs: .readOnly,
-                terminal: false,
+                terminal: true,
                 _meta: nil
             )
         }
@@ -370,14 +379,9 @@ nonisolated enum ACPInterimCapabilityStrategy: String, CaseIterable, Sendable {
 
     var unimplementedClientMethods: Set<String> {
         switch self {
-        case .readOnlyWorkspace:
+        case .workspaceAndTerminalLifecycle:
             return [
                 ACPMethod.fsWriteTextFile.rawValue,
-                "terminal/create",
-                "terminal/output",
-                "terminal/wait_for_exit",
-                "terminal/kill",
-                "terminal/release",
             ]
         }
     }
@@ -392,7 +396,7 @@ nonisolated enum ACPInterimCapabilityStrategy: String, CaseIterable, Sendable {
             "AtelierCode does not support \(capabilityArea) client ACP method \(method) yet."
     }
 
-    static let atelierCodeCurrent = ACPInterimCapabilityStrategy.readOnlyWorkspace
+    static let atelierCodeCurrent = ACPInterimCapabilityStrategy.workspaceAndTerminalLifecycle
 }
 
 nonisolated struct ACPClientCapabilities: Codable, Equatable, Sendable {
@@ -495,6 +499,64 @@ nonisolated struct ACPReadTextFileRequest: Codable, Equatable, Sendable {
 nonisolated struct ACPReadTextFileResponse: Codable, Equatable, Sendable {
     let content: String
 }
+
+nonisolated struct ACPEnvironmentVariable: Codable, Equatable, Sendable {
+    let name: String
+    let value: String
+}
+
+nonisolated struct ACPCreateTerminalRequest: Codable, Equatable, Sendable {
+    let sessionId: String
+    let command: String
+    let args: [String]?
+    let cwd: String?
+    let env: [ACPEnvironmentVariable]?
+    let outputByteLimit: Int?
+}
+
+nonisolated struct ACPCreateTerminalResponse: Codable, Equatable, Sendable {
+    let terminalId: String
+}
+
+nonisolated struct ACPTerminalOutputRequest: Codable, Equatable, Sendable {
+    let sessionId: String
+    let terminalId: String
+}
+
+nonisolated struct ACPTerminalExitStatus: Codable, Equatable, Sendable {
+    let exitCode: Int?
+    let signal: String?
+}
+
+nonisolated struct ACPTerminalOutputResponse: Codable, Equatable, Sendable {
+    let output: String
+    let truncated: Bool
+    let exitStatus: ACPTerminalExitStatus?
+}
+
+nonisolated struct ACPWaitForTerminalExitRequest: Codable, Equatable, Sendable {
+    let sessionId: String
+    let terminalId: String
+}
+
+nonisolated struct ACPWaitForTerminalExitResponse: Codable, Equatable, Sendable {
+    let exitCode: Int?
+    let signal: String?
+}
+
+nonisolated struct ACPReleaseTerminalRequest: Codable, Equatable, Sendable {
+    let sessionId: String
+    let terminalId: String
+}
+
+nonisolated struct ACPReleaseTerminalResponse: Codable, Equatable, Sendable {}
+
+nonisolated struct ACPKillTerminalRequest: Codable, Equatable, Sendable {
+    let sessionId: String
+    let terminalId: String
+}
+
+nonisolated struct ACPKillTerminalResponse: Codable, Equatable, Sendable {}
 
 nonisolated struct ACPPermissionOption: Decodable, Equatable, Sendable {
     let kind: String

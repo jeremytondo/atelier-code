@@ -31,3 +31,13 @@ nonisolated struct ConversationMessage: Identifiable, Equatable, Sendable {
         self.text = text
     }
 }
+
+nonisolated struct ACPTerminalState: Identifiable, Equatable, Sendable {
+    let id: String
+    var command: String
+    var cwd: String
+    var output: String
+    var truncated: Bool
+    var exitStatus: ACPTerminalExitStatus?
+    var isReleased: Bool
+}

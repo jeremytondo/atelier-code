@@ -39,6 +39,7 @@ nonisolated enum AppWorkingDirectory: Sendable {
 final class ACPStore {
     var connectionState: ConnectionState = .disconnected
     var messages: [ConversationMessage] = []
+    var terminalStates: [String: ACPTerminalState] = [:]
     var draftPrompt = ""
     var isConnecting = false
     var isSending = false
@@ -66,6 +67,12 @@ final class ACPStore {
         sessionClient = ACPSessionClient(transport: transport)
         sessionClient.onAgentMessageChunk = { [weak self] text in
             self?.appendAssistantChunk(text)
+        }
+        sessionClient.onTerminalStateChange = { [weak self] state in
+            self?.terminalStates[state.id] = state
+        }
+        sessionClient.onTerminalStatesReset = { [weak self] in
+            self?.terminalStates.removeAll()
         }
         sessionClient.onTransportError = { [weak self] error in
             self?.handleFailure(error)
@@ -212,6 +219,7 @@ final class ACPStore {
 
     private func handleFailure(_ error: any Error) {
         sessionClient.reset()
+        terminalStates.removeAll()
         lastErrorDescription = error.localizedDescription
         isConnecting = false
         isSending = false

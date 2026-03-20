@@ -250,6 +250,87 @@ struct ACPStoreTests {
         #expect(store.currentAssistantMessageIndex == nil)
     }
 
+    @Test func terminalLifecycleUpdatesStoreState() async throws {
+        let fileManager = FileManager.default
+        let workspaceURL = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: workspaceURL)
+        }
+
+        let transport = FakeACPStoreTransport()
+        let store = ACPStore(transport: transport, cwd: workspaceURL.path)
+        var outboundResponses: [String: [String: Any]] = [:]
+
+        transport.onSend = { data in
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+            if let method = object["method"] as? String {
+                let requestID = try #require(object["id"] as? Int)
+
+                switch method {
+                case ACPMethod.initialize.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "protocolVersion": 1
+                      }
+                    }
+                    """)
+
+                case ACPMethod.sessionNew.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "sessionId": "session_123"
+                      }
+                    }
+                    """)
+
+                default:
+                    Issue.record("Unexpected method \(method)")
+                }
+            } else if let responseID = object["id"] as? String {
+                outboundResponses[responseID] = object
+            }
+        }
+
+        await store.connect()
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "terminal_create_store",
+          "method": "terminal/create",
+          "params": {
+            "sessionId": "session_123",
+            "command": "/bin/sh",
+            "args": ["-lc", "printf 'store terminal'"],
+            "cwd": "."
+          }
+        }
+        """)
+
+        let created = await waitUntil {
+            outboundResponses["terminal_create_store"] != nil
+        }
+        #expect(created)
+
+        let createResponse = try #require(outboundResponses["terminal_create_store"])
+        let result = try #require(createResponse["result"] as? [String: Any])
+        let terminalID = try #require(result["terminalId"] as? String)
+
+        let updated = await waitUntil {
+            store.terminalStates[terminalID]?.output.contains("store terminal") == true
+        }
+        #expect(updated)
+    }
+
     @Test func transportFailureResetsSendabilityAndSurfacesError() async {
         let transport = FakeACPStoreTransport()
         let store = ACPStore(transport: transport, cwd: "/tmp/atelier")
@@ -408,4 +489,31 @@ private enum FakeACPStoreTransportError: LocalizedError {
             return "The fake ACP transport stopped."
         }
     }
+}
+
+@MainActor
+private func waitUntil(
+    timeout: TimeInterval = 2,
+    pollInterval: TimeInterval = 0.02,
+    condition: @escaping @MainActor () -> Bool
+) async -> Bool {
+    let timeoutNanoseconds = UInt64(timeout * 1_000_000_000)
+    let pollNanoseconds = UInt64(pollInterval * 1_000_000_000)
+    var elapsed: UInt64 = 0
+
+    while elapsed <= timeoutNanoseconds {
+        if condition() {
+            return true
+        }
+
+        do {
+            try await Task.sleep(nanoseconds: pollNanoseconds)
+        } catch {
+            return false
+        }
+
+        elapsed += pollNanoseconds
+    }
+
+    return condition()
 }

@@ -18,8 +18,8 @@ struct ACPSessionClientTests {
         #expect(ACPProtocolVersion.isSupported(99) == false)
     }
 
-    @Test func capabilityStrategyIsReadOnlyWorkspace() {
-        #expect(ACPInterimCapabilityStrategy.atelierCodeCurrent == .readOnlyWorkspace)
+    @Test func capabilityStrategySupportsTerminalLifecycle() {
+        #expect(ACPInterimCapabilityStrategy.atelierCodeCurrent == .workspaceAndTerminalLifecycle)
         #expect(
             ACPClientCapabilities.atelierCodeDefaults ==
             ACPInterimCapabilityStrategy.atelierCodeCurrent.clientCapabilities
@@ -28,11 +28,6 @@ struct ACPSessionClientTests {
             ACPInterimCapabilityStrategy.atelierCodeCurrent.unimplementedClientMethods ==
             [
                 "fs/write_text_file",
-                "terminal/create",
-                "terminal/output",
-                "terminal/wait_for_exit",
-                "terminal/kill",
-                "terminal/release",
             ]
         )
     }
@@ -59,7 +54,7 @@ struct ACPSessionClientTests {
         #expect(params["protocolVersion"] as? Int == 1)
         #expect(clientInfo["name"] as? String == "AtelierCode")
         #expect(clientInfo["version"] as? String == "0.1.0")
-        #expect(capabilities["terminal"] as? Bool == false)
+        #expect(capabilities["terminal"] as? Bool == true)
         #expect(fileSystem["readTextFile"] as? Bool == true)
         #expect(fileSystem["writeTextFile"] as? Bool == false)
         #expect(capabilities["_meta"] == nil)
@@ -663,33 +658,577 @@ struct ACPSessionClientTests {
         #expect(data["reason"] as? String == "not_found")
     }
 
-    @Test func sessionClientReturnsExplicitUnsupportedErrorForUnimplementedTerminalMethod() throws {
+    @Test func sessionClientCreatesReadsWaitsAndReleasesTerminal() async throws {
+        let fileManager = FileManager.default
+        let workspaceURL = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: workspaceURL)
+        }
+
         let transport = FakeAgentTransport()
         let client = ACPSessionClient(transport: transport)
-        var errorResponse: [String: Any]?
+        var outboundResponses: [String: [String: Any]] = [:]
+        var terminalStates: [String: ACPTerminalState] = [:]
+
+        client.onTerminalStateChange = { terminalStates[$0.id] = $0 }
 
         transport.onSend = { data in
-            errorResponse = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+            if let method = object["method"] as? String {
+                let requestID = try #require(object["id"] as? Int)
+
+                switch method {
+                case ACPMethod.initialize.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "protocolVersion": 1
+                      }
+                    }
+                    """)
+
+                case ACPMethod.sessionNew.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "sessionId": "session_123"
+                      }
+                    }
+                    """)
+
+                default:
+                    Issue.record("Unexpected method \(method)")
+                }
+            } else if let responseID = object["id"] as? String {
+                outboundResponses[responseID] = object
+            }
         }
+
+        try await client.connect(cwd: workspaceURL.path)
 
         transport.deliver("""
         {
           "jsonrpc": "2.0",
-          "id": "terminal_1",
+          "id": "terminal_create_1",
           "method": "terminal/create",
-          "params": {}
+          "params": {
+            "sessionId": "session_123",
+            "command": "/bin/sh",
+            "args": ["-lc", "printf 'hello'; sleep 0.1; printf ' world'"],
+            "cwd": "."
+          }
         }
         """)
 
-        let response = try #require(errorResponse)
-        let error = try #require(response["error"] as? [String: Any])
-        let message = try #require(error["message"] as? String)
-        _ = client
+        let createSucceeded = await waitUntil {
+            outboundResponses["terminal_create_1"] != nil
+        }
+        #expect(createSucceeded)
 
-        #expect(response["id"] as? String == "terminal_1")
-        #expect(error["code"] as? Int == ACPClientErrorCode.methodNotFound)
-        #expect(message.contains("does not support terminal client ACP method"))
-        #expect(message.contains("terminal/create"))
+        let createResponse = try #require(outboundResponses["terminal_create_1"])
+        let createResult = try #require(createResponse["result"] as? [String: Any])
+        let terminalID = try #require(createResult["terminalId"] as? String)
+
+        let sawOutput = await waitUntil {
+            terminalStates[terminalID]?.output.contains("hello") == true
+        }
+        #expect(sawOutput)
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "terminal_output_1",
+          "method": "terminal/output",
+          "params": {
+            "sessionId": "session_123",
+            "terminalId": "\(terminalID)"
+          }
+        }
+        """)
+
+        let outputResponded = await waitUntil {
+            outboundResponses["terminal_output_1"] != nil
+        }
+        #expect(outputResponded)
+
+        let outputResponse = try #require(outboundResponses["terminal_output_1"])
+        let outputResult = try #require(outputResponse["result"] as? [String: Any])
+        #expect((outputResult["output"] as? String)?.contains("hello") == true)
+        #expect(outputResult["truncated"] as? Bool == false)
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "terminal_wait_1",
+          "method": "terminal/wait_for_exit",
+          "params": {
+            "sessionId": "session_123",
+            "terminalId": "\(terminalID)"
+          }
+        }
+        """)
+
+        let waitResponded = await waitUntil {
+            outboundResponses["terminal_wait_1"] != nil
+        }
+        #expect(waitResponded)
+
+        let waitResponse = try #require(outboundResponses["terminal_wait_1"])
+        let waitResult = try #require(waitResponse["result"] as? [String: Any])
+        #expect(waitResult["exitCode"] as? Int == 0)
+        #expect(waitResult["signal"] == nil)
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "terminal_release_1",
+          "method": "terminal/release",
+          "params": {
+            "sessionId": "session_123",
+            "terminalId": "\(terminalID)"
+          }
+        }
+        """)
+
+        let releaseResponded = await waitUntil {
+            outboundResponses["terminal_release_1"] != nil
+        }
+        #expect(releaseResponded)
+        #expect(terminalStates[terminalID]?.exitStatus?.exitCode == 0)
+        #expect(terminalStates[terminalID]?.isReleased == true)
+        #expect(terminalStates[terminalID]?.output.contains("hello world") == true)
+    }
+
+    @Test func sessionClientKillsTerminalAndPreservesFinalOutput() async throws {
+        let fileManager = FileManager.default
+        let workspaceURL = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: workspaceURL)
+        }
+
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+        var outboundResponses: [String: [String: Any]] = [:]
+        var terminalStates: [String: ACPTerminalState] = [:]
+
+        client.onTerminalStateChange = { terminalStates[$0.id] = $0 }
+
+        transport.onSend = { data in
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+            if let method = object["method"] as? String {
+                let requestID = try #require(object["id"] as? Int)
+
+                switch method {
+                case ACPMethod.initialize.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "protocolVersion": 1
+                      }
+                    }
+                    """)
+
+                case ACPMethod.sessionNew.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "sessionId": "session_123"
+                      }
+                    }
+                    """)
+
+                default:
+                    Issue.record("Unexpected method \(method)")
+                }
+            } else if let responseID = object["id"] as? String {
+                outboundResponses[responseID] = object
+            }
+        }
+
+        try await client.connect(cwd: workspaceURL.path)
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "terminal_create_2",
+          "method": "terminal/create",
+          "params": {
+            "sessionId": "session_123",
+            "command": "/bin/sh",
+            "args": ["-lc", "printf 'start'; sleep 5; printf ' end'"],
+            "cwd": "."
+          }
+        }
+        """)
+
+        let createSucceeded = await waitUntil {
+            outboundResponses["terminal_create_2"] != nil
+        }
+        #expect(createSucceeded)
+
+        let createResponse = try #require(outboundResponses["terminal_create_2"])
+        let createResult = try #require(createResponse["result"] as? [String: Any])
+        let terminalID = try #require(createResult["terminalId"] as? String)
+
+        let sawInitialOutput = await waitUntil {
+            terminalStates[terminalID]?.output.contains("start") == true
+        }
+        #expect(sawInitialOutput)
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "terminal_kill_1",
+          "method": "terminal/kill",
+          "params": {
+            "sessionId": "session_123",
+            "terminalId": "\(terminalID)"
+          }
+        }
+        """)
+
+        let killResponded = await waitUntil {
+            outboundResponses["terminal_kill_1"] != nil
+        }
+        #expect(killResponded)
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "terminal_wait_2",
+          "method": "terminal/wait_for_exit",
+          "params": {
+            "sessionId": "session_123",
+            "terminalId": "\(terminalID)"
+          }
+        }
+        """)
+
+        let waitResponded = await waitUntil {
+            outboundResponses["terminal_wait_2"] != nil
+        }
+        #expect(waitResponded)
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "terminal_output_2",
+          "method": "terminal/output",
+          "params": {
+            "sessionId": "session_123",
+            "terminalId": "\(terminalID)"
+          }
+        }
+        """)
+
+        let outputResponded = await waitUntil {
+            outboundResponses["terminal_output_2"] != nil
+        }
+        #expect(outputResponded)
+
+        let waitResponse = try #require(outboundResponses["terminal_wait_2"])
+        let waitResult = try #require(waitResponse["result"] as? [String: Any])
+        let outputResponse = try #require(outboundResponses["terminal_output_2"])
+        let outputResult = try #require(outputResponse["result"] as? [String: Any])
+        let output = try #require(outputResult["output"] as? String)
+
+        #expect(waitResult["exitCode"] as? Int != 0 || waitResult["signal"] as? String != nil)
+        #expect(output.contains("start"))
+        #expect(output.contains(" end") == false)
+    }
+
+    @Test func sessionClientWaitForExitReturnsImmediatelyAfterTerminalAlreadyExited() async throws {
+        let fileManager = FileManager.default
+        let workspaceURL = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: workspaceURL)
+        }
+
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+        var outboundResponses: [String: [String: Any]] = [:]
+        var terminalStates: [String: ACPTerminalState] = [:]
+
+        client.onTerminalStateChange = { terminalStates[$0.id] = $0 }
+
+        transport.onSend = { data in
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+            if let method = object["method"] as? String {
+                let requestID = try #require(object["id"] as? Int)
+
+                switch method {
+                case ACPMethod.initialize.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "protocolVersion": 1
+                      }
+                    }
+                    """)
+
+                case ACPMethod.sessionNew.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "sessionId": "session_123"
+                      }
+                    }
+                    """)
+
+                default:
+                    Issue.record("Unexpected method \(method)")
+                }
+            } else if let responseID = object["id"] as? String {
+                outboundResponses[responseID] = object
+            }
+        }
+
+        try await client.connect(cwd: workspaceURL.path)
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "terminal_create_3",
+          "method": "terminal/create",
+          "params": {
+            "sessionId": "session_123",
+            "command": "/bin/sh",
+            "args": ["-lc", "printf 'done'"],
+            "cwd": "."
+          }
+        }
+        """)
+
+        let createSucceeded = await waitUntil {
+            outboundResponses["terminal_create_3"] != nil
+        }
+        #expect(createSucceeded)
+
+        let createResponse = try #require(outboundResponses["terminal_create_3"])
+        let createResult = try #require(createResponse["result"] as? [String: Any])
+        let terminalID = try #require(createResult["terminalId"] as? String)
+
+        let exited = await waitUntil {
+            terminalStates[terminalID]?.exitStatus?.exitCode == 0
+        }
+        #expect(exited)
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "terminal_wait_3",
+          "method": "terminal/wait_for_exit",
+          "params": {
+            "sessionId": "session_123",
+            "terminalId": "\(terminalID)"
+          }
+        }
+        """)
+
+        let waitResponded = await waitUntil {
+            outboundResponses["terminal_wait_3"] != nil
+        }
+        #expect(waitResponded)
+
+        let waitResponse = try #require(outboundResponses["terminal_wait_3"])
+        let waitResult = try #require(waitResponse["result"] as? [String: Any])
+        #expect(waitResult["exitCode"] as? Int == 0)
+        #expect(waitResult["signal"] == nil)
+    }
+
+    @Test func sessionClientCanDenyTerminalCreationThroughPermissionPolicy() async throws {
+        let fileManager = FileManager.default
+        let workspaceURL = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: workspaceURL)
+        }
+
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(
+            transport: transport,
+            permissionPolicy: ACPPermissionPolicy(
+                resolveOutcome: { _, _ in .cancelled },
+                authorizeLocalAction: { action, context in
+                    switch action {
+                    case .terminalCreate:
+                        #expect(context.category == .terminal)
+                        return .deny(message: "Terminal creation needs approval.")
+                    default:
+                        return .allow
+                    }
+                }
+            )
+        )
+        var outboundResponses: [String: [String: Any]] = [:]
+
+        transport.onSend = { data in
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+            if let method = object["method"] as? String {
+                let requestID = try #require(object["id"] as? Int)
+
+                switch method {
+                case ACPMethod.initialize.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "protocolVersion": 1
+                      }
+                    }
+                    """)
+
+                case ACPMethod.sessionNew.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "sessionId": "session_123"
+                      }
+                    }
+                    """)
+
+                default:
+                    Issue.record("Unexpected method \(method)")
+                }
+            } else if let responseID = object["id"] as? String {
+                outboundResponses[responseID] = object
+            }
+        }
+
+        try await client.connect(cwd: workspaceURL.path)
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "terminal_create_denied",
+          "method": "terminal/create",
+          "params": {
+            "sessionId": "session_123",
+            "command": "/bin/sh",
+            "args": ["-lc", "printf 'hello'"],
+            "cwd": "."
+          }
+        }
+        """)
+
+        let denied = await waitUntil {
+            outboundResponses["terminal_create_denied"] != nil
+        }
+        #expect(denied)
+
+        let response = try #require(outboundResponses["terminal_create_denied"])
+        let error = try #require(response["error"] as? [String: Any])
+        #expect(error["code"] as? Int == ACPClientErrorCode.permissionDenied)
+        #expect(error["message"] as? String == "Terminal creation needs approval.")
+        _ = client
+    }
+
+    @Test func sessionClientResetCleansUpTerminalManagerState() async throws {
+        let fileManager = FileManager.default
+        let workspaceURL = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: workspaceURL)
+        }
+
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+        var outboundResponses: [String: [String: Any]] = [:]
+        var resetCallCount = 0
+
+        client.onTerminalStatesReset = {
+            resetCallCount += 1
+        }
+
+        transport.onSend = { data in
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+            if let method = object["method"] as? String {
+                let requestID = try #require(object["id"] as? Int)
+
+                switch method {
+                case ACPMethod.initialize.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "protocolVersion": 1
+                      }
+                    }
+                    """)
+
+                case ACPMethod.sessionNew.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "sessionId": "session_123"
+                      }
+                    }
+                    """)
+
+                default:
+                    Issue.record("Unexpected method \(method)")
+                }
+            } else if let responseID = object["id"] as? String {
+                outboundResponses[responseID] = object
+            }
+        }
+
+        try await client.connect(cwd: workspaceURL.path)
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "terminal_create_reset",
+          "method": "terminal/create",
+          "params": {
+            "sessionId": "session_123",
+            "command": "/bin/sh",
+            "args": ["-lc", "sleep 5"],
+            "cwd": "."
+          }
+        }
+        """)
+
+        let created = await waitUntil {
+            outboundResponses["terminal_create_reset"] != nil
+        }
+        #expect(created)
+
+        client.reset()
+
+        #expect(resetCallCount == 1)
+        #expect(transport.stopCallCount == 1)
     }
 
     @Test func sessionClientKeepsGenericErrorForOtherUnsupportedClientMethods() throws {
@@ -1036,7 +1575,7 @@ struct ACPSessionClientTests {
 
                         #expect(params["protocolVersion"] as? Int == ACPProtocolVersion.current)
                         #expect(clientInfo["name"] as? String == "AtelierCode")
-                        #expect(clientCapabilities["terminal"] as? Bool == false)
+                        #expect(clientCapabilities["terminal"] as? Bool == true)
                         #expect(fileSystem["readTextFile"] as? Bool == true)
                         #expect(fileSystem["writeTextFile"] as? Bool == false)
                     },
@@ -1722,4 +2261,31 @@ private extension ACPSessionClientTimeouts {
         sessionNew: 0.05,
         sessionPrompt: 0.05
     )
+}
+
+@MainActor
+private func waitUntil(
+    timeout: TimeInterval = 2,
+    pollInterval: TimeInterval = 0.02,
+    condition: @escaping @MainActor () -> Bool
+) async -> Bool {
+    let timeoutNanoseconds = UInt64(timeout * 1_000_000_000)
+    let pollNanoseconds = UInt64(pollInterval * 1_000_000_000)
+    var elapsed: UInt64 = 0
+
+    while elapsed <= timeoutNanoseconds {
+        if condition() {
+            return true
+        }
+
+        do {
+            try await Task.sleep(nanoseconds: pollNanoseconds)
+        } catch {
+            return false
+        }
+
+        elapsed += pollNanoseconds
+    }
+
+    return condition()
 }
