@@ -1,5 +1,11 @@
 # Gemini ACP Hanging Prompt — Resolution Report
 
+Historical note:
+- This document records the March 2026 hanging-prompt fix.
+- It is preserved as a historical resolution report, not the primary source of truth for the current implementation.
+- For the live ACP contract, use `gemini-acp-implementation-guide.md`.
+- Since this report was written, AtelierCode has also added the strict protocol-version guard, request timeouts, transcript-style coverage, and the docs alignment pass from the foundation readiness plan.
+
 ## Date
 March 14, 2026
 
@@ -203,4 +209,4 @@ These were fixed before the root cause was identified and remain necessary:
 - **Surface `agent_thought_chunk` updates**: Gemini sends model reasoning as thought chunks. These could be displayed in the UI as a thinking indicator.
 
 ### Long-term
-- **Monitor Gemini CLI releases**: The `--experimental-acp` flag indicates this is an evolving interface. Track Gemini CLI releases for changes to ACP behavior, auth methods, and capability requirements.
+- **Monitor Gemini CLI releases**: Gemini ACP remains an evolving interface. Track Gemini CLI releases for changes to ACP behavior, auth methods, and capability requirements.

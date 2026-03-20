@@ -1,5 +1,10 @@
 # Convert AtelierCode to ACP in Phases
 
+Historical note:
+- This document is the original ACP migration plan.
+- It is preserved for project history and commit sequencing context.
+- The current implementation contract lives in `gemini-acp-implementation-guide.md`.
+
 ## Summary
 Convert the existing app in place rather than starting from scratch, but execute it as a phased refactor with small, reviewable commits. Keep the current SwiftUI shell and observable-store pattern, and replace the Codex-specific core in stages so transport, protocol, and UI cutover can each be validated independently.
 
@@ -20,7 +25,7 @@ Default delivery strategy:
 - Introduce `AgentTransport` with `start() throws`, `send(message: Data)`, and `onReceive`.
 - Add `LocalACPTransport` using `Process`, `Pipe`, and JSONL framing over stdio.
 - Add an executable locator that checks known install paths first, then falls back to `/usr/bin/which gemini`.
-- Launch Gemini with `--experimental-acp`.
+- Launch Gemini with ACP mode. The live implementation now uses `--acp` with an explicit model argument.
 - Handle stdout streaming, stderr diagnostics, and process termination, but do not wire the app UI to ACP yet.
 
 Commit boundary:
@@ -102,7 +107,7 @@ Commit boundary:
   - transport/process failure resets sendability and surfaces a user-visible error
 - Phase 4/5 manual checks:
   - app launches and connects automatically
-  - Gemini starts with `--experimental-acp`
+  - Gemini starts with ACP mode
   - one session is created and reused
   - prompt submission streams live text in one assistant bubble
   - missing executable shows an actionable error
@@ -114,6 +119,6 @@ Commit boundary:
 - Each phase should land as its own commit before moving to the next so regressions are isolated quickly.
 
 ## Deferred Sandbox Follow-up
-- v1 intentionally launches a local `gemini --experimental-acp` subprocess with `Process`.
+- v1 intentionally launches a local Gemini ACP subprocess with `Process`.
 - No helper tool, XPC service, or sandbox-safe packaging path is partially implemented in this migration.
 - Future hardening should package process launch separately instead of mixing it into the ACP store or protocol layers.

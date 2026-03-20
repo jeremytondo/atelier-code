@@ -1,18 +1,24 @@
 # Gemini ACP Troubleshooting Log
 
+Historical note:
+- This document preserves the unresolved investigation state from March 14, 2026.
+- It is not the current source of truth for AtelierCode's live ACP behavior.
+- For the current implementation, use `gemini-acp-implementation-guide.md`.
+- In particular, this log predates the final settled flow of `initialize -> session/new -> session/prompt`, the removal of eager `authenticate`, the explicit `--model gemini-2.5-pro` launch argument, and the later timeout hardening.
+
 ## Scope
 This document records the Gemini ACP troubleshooting work completed on March 14, 2026 for the hanging prompt issue in AtelierCode.
 
 Primary symptom:
 - The app launches Gemini successfully, accepts a prompt, and enters `Streaming reply`, but no assistant response ever arrives for a normal text prompt.
 
-Current best-known state:
+Best-known state at the time of the log:
 - Startup issues have been fixed.
 - The app now uses the correct Gemini install path and can launch Gemini ACP successfully.
 - Gemini can create chat state under `~/.gemini/.../chats`.
 - The remaining issue is that normal ACP text prompts still hang after session setup, even though direct CLI prompts and ACP slash commands work.
 
-## Current Repro
+## Repro At The Time
 - App path: `/Users/jeremytondo/Library/Developer/Xcode/DerivedData/AtelierCode-dcuirsfgbtfsxhbyxjtjzsmhakaj/Build/Products/Debug/AtelierCode.app`
 - Gemini binary under test: `/Users/jeremytondo/.local/share/mise/installs/gemini/0.33.1/bin/gemini`
 - Repro behavior:

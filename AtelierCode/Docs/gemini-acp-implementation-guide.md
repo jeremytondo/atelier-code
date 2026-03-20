@@ -1,324 +1,271 @@
-# Gemini ACP Integration — Implementation Guide
+# Gemini ACP Integration Guide
 
-This document is the primary reference for AtelierCode's ACP (Agent Client Protocol) integration with Gemini CLI. It covers the correct configuration, the protocol flow, past issues and their fixes, and a diagnostic playbook for future problems.
+This document is the current source of truth for AtelierCode's Gemini ACP integration.
 
-## Architecture Overview
+Use this guide for the live implementation:
+- transport and launch behavior
+- handshake and prompt flow
+- current capability and authentication decisions
+- timeout and error behavior
+- current limitations and next-step work
 
-AtelierCode launches Gemini CLI as a local subprocess and communicates over stdin/stdout using JSON-RPC 2.0 with JSONL framing (newline-delimited). The protocol is ACP — an open standard for IDE-to-agent communication.
+Do not use the troubleshooting log or migration plan as the primary reference for current behavior. Those documents are preserved as historical records.
+
+## Docs Map
+
+| Document | Purpose | Status |
+|---|---|---|
+| `gemini-acp-implementation-guide.md` | Current architecture and behavioral contract | Current |
+| `gemini-acp-resolution-report.md` | Historical record of the March 2026 hanging-prompt fix | Historical |
+| `gemini-acp-troubleshooting-log.md` | Chronological debugging notes from the unresolved hang investigation | Historical |
+| `acp-migration-plan.md` | Original migration plan for the ACP cutover | Historical |
+| `acp-foundation-readiness-plan.md` | Foundation hardening checklist | Active planning doc |
+
+## Current Architecture
+
+AtelierCode launches Gemini CLI as a local subprocess and speaks ACP over stdin/stdout using JSON-RPC 2.0 messages framed as JSONL.
 
 ```
-┌──────────────┐    stdin (JSONL)     ┌─────────────┐    HTTPS     ┌──────────────────────────┐
-│  AtelierCode │ ──────────────────→  │ Gemini CLI  │ ──────────→  │ Code Assist API          │
-│  (ACP Client)│ ←────────────────── │ (ACP Agent) │ ←────────── │ cloudcode-pa.googleapis.com│
-└──────────────┘   stdout (JSONL)     └─────────────┘             └──────────────────────────┘
+┌──────────────┐    stdin/stdout     ┌─────────────┐
+│ AtelierCode  │ ←───────────────→   │ Gemini CLI  │
+│ ACP client   │     JSONL ACP       │ ACP agent   │
+└──────────────┘                     └─────────────┘
 ```
 
-### Key files
+### Key Files
 
 | File | Role |
 |---|---|
-| `ACPProtocol.swift` | JSON-RPC message types, client/agent capabilities, content blocks |
-| `ACPSessionClient.swift` | Handshake sequence, request/response routing, notification dispatch |
-| `ACPStore.swift` | Observable UI state, connection lifecycle, message streaming |
-| `LocalACPTransport.swift` | Process management, pipes, JSONL framing, environment setup |
-| `GeminiExecutableLocator.swift` | Discovery of the Gemini binary across mise, homebrew, etc. |
-| `AgentTransport.swift` | Protocol definition for transport abstraction |
+| `ACPProtocol.swift` | ACP wire types, capability policy, update decoding |
+| `ACPSessionClient.swift` | Transport lifecycle, request routing, protocol guard, timeouts, inbound request handling |
+| `ACPStore.swift` | App-facing connection and chat state |
+| `LocalACPTransport.swift` | Gemini process launch, environment construction, JSONL framing |
+| `GeminiExecutableLocator.swift` | Gemini binary discovery |
+| `AgentTransport.swift` | Transport abstraction for tests and local subprocess transport |
 
-## Launching Gemini CLI
+## Current Launch Behavior
 
-### Process arguments
+`LocalACPTransport` launches Gemini with:
 
 ```swift
-// LocalACPTransport.swift
-arguments: [String] = ["--acp", "--model", "gemini-2.5-pro"]
+["--acp", "--model", "gemini-2.5-pro"]
 ```
 
-- **`--acp`** — Starts Gemini in ACP mode (JSON-RPC over stdin/stdout). This replaced the earlier `--experimental-acp` flag, which is now deprecated.
-- **`--model gemini-2.5-pro`** — Explicitly sets the model. **This is required.** See [Default Model Deprecation](#default-model-deprecation-march-2026) for why.
+Current launch assumptions:
+- AtelierCode uses `--acp`, not `--experimental-acp`.
+- AtelierCode pins an explicit Gemini model because relying on Gemini's default model previously caused silent hangs when the backend default changed.
+- Gemini runs as a local subprocess via `Process`.
 
-### Process environment
+### Process Environment
 
-The environment is constructed by `GeminiProcessEnvironment.make()`:
+The transport builds a merged environment with:
+- `PATH` starting with the Gemini executable directory, then the inherited path, then fallback directories
+- `NO_BROWSER=1`
+- `HOME` populated if the app environment does not already provide it
 
-| Variable | Value | Why |
-|---|---|---|
-| `NO_BROWSER` | `1` | Prevents Gemini from attempting browser-based auth in headless mode. Zed sets this too. |
-| `PATH` | Gemini bin dir + inherited + fallbacks | GUI apps launch with a minimal PATH. The merged PATH ensures Gemini can find `node` and other dependencies. |
-| `HOME` | User home directory | Set if missing from the inherited environment. Gemini needs this to find `~/.gemini/`. |
-
-**Fallback PATH directories** (appended in order):
+Fallback PATH directories:
 1. `~/.local/share/mise/shims`
 2. `~/.local/bin`
 3. `~/bin`
 4. `/opt/homebrew/bin`
 5. `/usr/local/bin`
-6. `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`
+6. `/usr/bin`
+7. `/bin`
+8. `/usr/sbin`
+9. `/sbin`
 
-### Binary discovery
+## Current ACP Handshake
 
-`GeminiExecutableLocator` searches in priority order:
+The live connection flow is:
 
-1. Mise installs (newest version first): `~/.local/share/mise/installs/gemini/<version>/bin/gemini`
-2. Mise shim: `~/.local/share/mise/shims/gemini`
-3. User local: `~/.local/bin/gemini`, `~/bin/gemini`
-4. Homebrew: `/opt/homebrew/bin/gemini`, `/usr/local/bin/gemini`
-5. System `which` lookup (fallback)
+1. Start the transport once.
+2. Send `initialize`.
+3. Validate that the returned `protocolVersion` is supported.
+4. Record `agentCapabilities` and `authMethods` from the initialize response.
+5. Send `session/new`.
+6. Cache the returned `sessionId`.
+7. Reuse that session for later `session/prompt` requests.
 
-## Protocol Flow
+The live prompt flow is:
 
-### Connection handshake
+1. Send `session/prompt` with a single text content block.
+2. Append streamed `agent_message_chunk` text from `session/update` notifications.
+3. Finish the turn when the final `session/prompt` response arrives.
 
-```
-Client                              Gemini CLI
-  │
-  ├─ initialize ───────────────────────→
-  │  { protocolVersion: 1,
-  │    clientCapabilities: {
-  │      fs: { readTextFile: true,
-  │            writeTextFile: true },
-  │      terminal: true,
-  │      _meta: { terminal_output: true,
-  │               terminal-auth: true }
-  │    },
-  │    clientInfo: {
-  │      name: "AtelierCode",
-  │      title: "AtelierCode",
-  │      version: "0.1.0"
-  │    }
-  │  }
-  │
-  │  ← initialize response ────────────┤
-  │     { protocolVersion: 1,          │
-  │       authMethods: [...],          │
-  │       agentCapabilities: {...} }   │
-  │                                    │
-  ├─ session/new ──────────────────────→
-  │  { cwd: "...", mcpServers: [] }
-  │                                    │
-  │  ← session/new response ───────────┤
-  │     { sessionId: "..." }           │
-```
+Important handshake rules:
+- The handshake is `initialize` -> `session/new`.
+- AtelierCode does not proactively call `authenticate` during connection setup.
+- Unsupported protocol versions fail before `session/new`.
+- `connect()` is idempotent once a session already exists.
 
-**Critical rules:**
-- The flow is `initialize` → `session/new`. **Do not call `authenticate` between them.** Gemini handles auth internally. See [Eager Auth Bug](#2-eager-authenticate-call).
-- Client capabilities must match what the client actually supports. See [Capabilities](#client-capabilities).
-- There is no heartbeat or keepalive in the protocol.
+### Initialize Request
 
-### Prompt flow
+AtelierCode currently sends:
 
-```
-  ├─ session/prompt ───────────────────→
-  │  { sessionId, prompt: [{type: "text", text: "..."}] }
-  │                                    │
-  │  ← session/update (notification) ──┤  available_commands_update
-  │  ← session/update (notification) ──┤  agent_thought_chunk
-  │  ← session/update (notification) ──┤  agent_message_chunk (repeated)
-  │                                    │
-  │  ← session/prompt response ────────┤
-  │     { stopReason: "end_turn" }     │
+```json
+{
+  "method": "initialize",
+  "params": {
+    "protocolVersion": 1,
+    "clientCapabilities": {
+      "fs": {
+        "readTextFile": true,
+        "writeTextFile": true
+      },
+      "terminal": true,
+      "_meta": {
+        "terminal_output": true,
+        "terminal-auth": true
+      }
+    },
+    "clientInfo": {
+      "name": "AtelierCode",
+      "title": "AtelierCode",
+      "version": "0.1.0"
+    }
+  }
+}
 ```
 
-- **Notifications** have no `id` field. They stream during a prompt.
-- **Responses** have an `id` matching the request. The `session/prompt` response arrives after all streaming is complete.
-- `agent_message_chunk` contains the model's text output, streamed incrementally.
-- `agent_thought_chunk` contains model reasoning (not currently surfaced in UI).
-- `available_commands_update` lists slash commands (e.g., `/memory`).
+### Protocol Version Policy
 
-### Client-side request handling
+AtelierCode currently supports only ACP protocol version `1`.
 
-Gemini may send requests *to* the client (requests with an `id` and `method`). Currently handled:
+If Gemini negotiates any other protocol version, `ACPSessionClient` throws `unsupportedProtocolVersion` and does not create a session.
 
-| Method | Handler | Behavior |
-|---|---|---|
-| `session/request_permission` | `handlePermissionRequest` | Auto-approves with `allow_once` preference |
-| `fs/read_text_file`, `fs/write_text_file` | Explicit fallback | Returns JSON-RPC error `-32601` with a compatibility-only message |
-| `terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, `terminal/release` | Explicit fallback | Returns JSON-RPC error `-32601` with a compatibility-only message |
-| All others | Default | Returns JSON-RPC error `-32601` (method not found) |
+## Current Capability Strategy
 
-This is an intentional interim strategy. AtelierCode keeps the broader capability advertisement because Gemini's currently working ACP path depends on the Zed-style `initialize` payload, but the delegated file-system and terminal client methods are still unimplemented. When Gemini reaches for one of those methods today, the client now fails clearly instead of returning a generic unsupported-method error.
+AtelierCode intentionally uses the `geminiCompatibility` interim capability strategy.
 
-**Future work:** Zed implements `fs/read_text_file`, `fs/write_text_file`, and a full terminal suite (`terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, `terminal/release`). AtelierCode should implement those handlers so the advertised capability surface and actual method support converge.
+That means the client advertises:
+- file-system read support
+- file-system write support
+- terminal support
+- Gemini-specific `_meta` hints for terminal output and terminal auth
 
-## Client Capabilities
+This is an explicit compatibility choice, not evidence that every advertised client-side ACP method is implemented.
 
-```swift
-// ACPProtocol.swift
-static let atelierCodeDefaults = ACPClientCapabilities(
-    fs: ACPFileSystemCapabilities(readTextFile: true, writeTextFile: true),
-    terminal: true,
-    _meta: ["terminal_output": true, "terminal-auth": true]
-)
-```
+### What Is Actually Implemented
 
-These values are intentionally part of AtelierCode's current interim capability strategy: keep Gemini-compatible advertisement now, then backfill the delegated client methods in later ACP work. Gemini CLI uses these values to determine internal code paths, including how it routes API calls through the Code Assist backend. Incorrect capabilities cause silent hangs. See [Capabilities Bug](#1-incorrect-client-capabilities).
+Implemented today:
+- `session/request_permission` inbound requests
+- `session/update` notifications for `agent_message_chunk`
+- tolerant decoding for Gemini's initialize and update payload variants
 
-| Field | Value | Purpose |
-|---|---|---|
-| `fs.readTextFile` | `true` | Tells Gemini the client can read files on its behalf |
-| `fs.writeTextFile` | `true` | Tells Gemini the client can write files on its behalf |
-| `terminal` | `true` | Tells Gemini the client can run terminal commands |
-| `_meta.terminal_output` | `true` | Gemini-specific: client can render terminal output |
-| `_meta.terminal-auth` | `true` | Gemini-specific: client can handle terminal-based auth flows |
+Not implemented today:
+- `fs/read_text_file`
+- `fs/write_text_file`
+- `terminal/create`
+- `terminal/output`
+- `terminal/wait_for_exit`
+- `terminal/kill`
+- `terminal/release`
+- richer `session/update` rendering beyond assistant message chunks
 
-## Authentication
+### Behavior For Unimplemented Client Methods
 
-AtelierCode uses `oauth-personal` authentication, which routes through Google's Code Assist API at `cloudcode-pa.googleapis.com` (not the standard `generativelanguage.googleapis.com`).
+If Gemini sends one of the compatibility-only file-system or terminal client methods, AtelierCode returns JSON-RPC error `-32601` with an explicit message explaining that the capability is advertised temporarily for Gemini compatibility but the client method is not implemented yet.
 
-**How it works:**
-1. User authenticates once by running `gemini` interactively in a terminal.
-2. Credentials are stored in `~/.gemini/oauth_creds.json`.
-3. Gemini CLI reads these credentials during `session/new` — no explicit `authenticate` call needed.
-4. If credentials expire, the user must re-authenticate in a terminal.
+This keeps the current compatibility stance visible instead of failing silently.
 
-**What not to do:**
-- Do not call `authenticate` during connection setup. This interferes with Gemini's internal auth flow.
-- Do not set `GEMINI_API_KEY` or `GOOGLE_AI_API_KEY` when using `oauth-personal`. These switch Gemini to the standard Generative Language API, which is a different backend with different behavior.
+## Authentication Model
 
-## Resolved Issues
+AtelierCode records Gemini's advertised `authMethods`, but it does not drive authentication as part of the handshake.
 
-### 1. Incorrect client capabilities
+Current auth model:
+1. The user authenticates Gemini outside the app, typically by running `gemini` in a terminal.
+2. Gemini stores credentials in the local Gemini configuration directory.
+3. AtelierCode launches Gemini and lets Gemini use those credentials during `session/new` and prompt execution.
+4. If Gemini surfaces an auth-related ACP error, AtelierCode classifies it and shows guidance to re-authenticate in a terminal.
 
-**When:** March 14, 2026
-**Symptom:** Prompts hung indefinitely. `available_commands_update` arrived but `agent_message_chunk` never did.
-**Root cause:** Advertising `fs: false, terminal: false` caused Gemini to enter a Code Assist code path where the streaming API call accepted the TCP connection but never returned data (no timeout on their end).
-**Fix:** Updated capabilities to match Zed: `fs: true/true, terminal: true, _meta: { terminal_output: true, terminal-auth: true }`.
+Important auth rule:
+- Do not insert `authenticate` between `initialize` and `session/new`.
 
-### 2. Eager `authenticate` call
+## Request Timeouts And Error Handling
 
-**When:** March 14, 2026
-**Symptom:** Compounded the capabilities issue. The hanging was intermittent — it worked right after re-authentication, then stopped.
-**Root cause:** Calling `authenticate` before `session/new` caused two competing `refreshAuth` flows (global and session-specific) that could interfere with each other.
-**Fix:** Removed the `authenticate` call entirely. Flow is now `initialize` → `session/new`.
+`ACPSessionClient` applies request-specific timeouts to the core flow:
 
-### 3. Missing `NO_BROWSER=1`
-
-**When:** March 14, 2026
-**Symptom:** Potential browser-based operations in a headless subprocess.
-**Fix:** Added `NO_BROWSER=1` to the process environment.
-
-### 4. Default model deprecation (March 2026)
-
-**When:** March 16, 2026
-**Symptom:** Identical to issue #1 — prompts hung after `available_commands_update` with no message chunks. All ACP fixes were in place and correct. The hang occurred on a fresh build with a trivial prompt ("what directory are you in") that had worked two days prior.
-**Root cause:** Google deprecated the default model that Gemini CLI v0.33.1 requests via the Code Assist API. The API returned `404 ModelNotFoundError: Requested entity was not found`. In ACP mode, this error was swallowed by the streaming retry logic (which has no timeout), causing a silent hang. In non-interactive mode (`gemini -p "test"`), the same hang occurred — but when `--model` was specified explicitly, the actual 404 error was surfaced.
-**How identified:**
-1. Ran `gemini -p "test"` directly — hung (same as ACP).
-2. Ran `gemini -p "test" --model gemini-2.0-flash` — got `ModelNotFoundError: 404`.
-3. Ran `gemini -p "test" --model gemini-2.5-pro` — worked instantly.
-4. Ran ACP probe with `--model gemini-2.5-pro` — worked. Without `--model` — hung.
-**Fix:** Added `"--model", "gemini-2.5-pro"` to the launch arguments. Also switched from `--experimental-acp` (deprecated) to `--acp`.
-**Key lesson:** The Code Assist API (`cloudcode-pa.googleapis.com`) can deprecate models server-side at any time, with no CLI update or warning. When the default model is removed, Gemini CLI hangs silently in streaming mode because the retry path has no timeout. Always specify an explicit model.
-
-### 5. Earlier infrastructure fixes
-
-These were resolved before the ACP protocol issues and remain necessary:
-
-| Fix | Why |
+| Method | Timeout |
 |---|---|
-| App Sandbox disabled | Gemini needs filesystem access to `~/.gemini` |
-| Process PATH construction | GUI apps launch with minimal PATH; Gemini couldn't find `node` (exit 127) |
-| Mise binary discovery | Dynamic discovery of mise-managed Gemini installs |
-| `session/request_permission` handling | Gemini sends permission requests the client must respond to |
-| Working directory fallback | App no longer defaults to `/` for cwd |
-| Protocol tolerance | Support for string JSON-RPC IDs, field aliases, richer update types |
+| `initialize` | 10 seconds |
+| `session/new` | 15 seconds |
+| `session/prompt` | 60 seconds |
 
-## Diagnostic Playbook
+Current error behavior:
+- unsupported protocol versions fail fast during `connect()`
+- request timeouts surface as `requestTimedOut`
+- structured ACP server errors retain code, message, and JSON context
+- authentication-related errors are classified separately and include re-auth guidance
+- model-related errors are classified separately and include model-check guidance
+- transport failure resets the session client and clears the active session
 
-When prompts hang, follow this sequence to isolate the problem:
+## Inbound ACP Handling
 
-### Step 1: Test the CLI directly
+AtelierCode currently handles these inbound message classes:
 
-```bash
-gemini -p "say hello" --model gemini-2.5-pro
-```
+| Inbound message | Current behavior |
+|---|---|
+| `session/update` with `agent_message_chunk` | Appends assistant text to the active streamed message |
+| `session/update` with other update types | Ignored by the UI-facing stream path |
+| `session/request_permission` | Responds automatically, preferring `allow_once`, then `allow_always`, then the first option |
+| Other inbound client requests | Returns JSON-RPC `-32601` with a clear unsupported-method message |
 
-If this hangs or errors, the problem is in Gemini CLI or Google's backend, not AtelierCode.
+## Store-Level Behavior
 
-### Step 2: Test without `--model`
+`ACPStore` wraps the session client with the app's current UX rules:
+- auto-connect when needed
+- keep one active ACP session in memory
+- reuse the session across prompts
+- append the user's prompt immediately
+- create a single streaming assistant bubble per prompt
+- reset connection state on failure
 
-```bash
-gemini -p "say hello"
-```
+The store remains intentionally simple:
+- single session
+- single in-flight prompt
+- text-only prompt input
+- text-only assistant streaming in the UI
 
-If this hangs but step 1 worked, the default model has been deprecated. Update the `--model` argument.
+## Current Test Contract
 
-### Step 3: Check OAuth credentials
+The current ACP-focused tests cover:
+- explicit protocol-version support policy
+- initialize request shape
+- capability-strategy expectations
+- initialize response decoding, including Gemini field aliases
+- timeout behavior for `initialize`, `session/new`, and `session/prompt`
+- structured auth and model error classification
+- transcript-style happy path coverage for `initialize` -> `session/new` -> `session/prompt`
+- transcript-style prompt failure coverage
+- deferred authentication behavior
+- permission-request handling during a prompt
 
-```bash
-python3 -c "
-import json, datetime
-creds = json.load(open('$HOME/.gemini/oauth_creds.json'))
-expiry = datetime.datetime.fromtimestamp(creds['expiry_date'] / 1000)
-print(f'Expires: {expiry}')
-print(f'Expired: {expiry < datetime.datetime.now()}')
-print(f'Has refresh token: {\"refresh_token\" in creds}')
-"
-```
+These tests are the practical contract for the current ACP foundation.
 
-If expired, re-authenticate: run `gemini` interactively in a terminal.
+## Known Limits
 
-### Step 4: Test ACP mode with a probe
+The current implementation is intentionally partial ACP.
 
-```bash
-node tools/acp_probe.mjs
-```
+Known limits:
+- compatibility-only file-system and terminal methods still return unsupported-method errors
+- only `agent_message_chunk` is surfaced into the conversation UI
+- assistant thought chunks and other richer update types are ignored
+- there is no session persistence across app launches
+- model selection is fixed by transport launch arguments rather than negotiated dynamically
 
-Or manually:
+## Future Work
 
-```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":true,"writeTextFile":true},"terminal":true,"_meta":{"terminal_output":true,"terminal-auth":true}},"clientInfo":{"name":"AtelierCode","version":"0.1.0"}}}' | gemini --acp --model gemini-2.5-pro
-```
+Likely next ACP follow-up work:
+- implement real file-system client handlers
+- implement the advertised terminal client methods
+- decide whether to keep or narrow the interim capability advertisement once those handlers exist
+- surface additional `session/update` types in the UI
+- add richer prompt content support beyond plain text
+- revisit model configuration so it is intentional and configurable instead of transport-hardcoded
 
-If `initialize` responds but `session/prompt` hangs, there may be a new capability or protocol requirement.
+## Historical References
 
-### Step 5: Compare with Zed
-
-Zed is the reference ACP client for Gemini. If Zed works but AtelierCode doesn't, diff the initialization payloads and environment. Key Zed source files:
-- `crates/agent_servers/src/acp.rs` — Process spawning, JSON-RPC routing
-- `crates/acp_thread/src/acp_thread.rs` — Session updates, streaming, tool calls
-- `crates/agent_servers/src/custom.rs` — Environment variables (NO_BROWSER, SURFACE, API keys)
-
-Notable Zed behaviors we don't yet replicate:
-- Sets `SURFACE=zed` environment variable
-- Implements `fs/read_text_file` and `fs/write_text_file` request handlers
-- Implements full terminal suite (`terminal/create`, `terminal/output`, etc.)
-- Has a 30-second initialization timeout
-- Handles all 10 `session/update` notification types
-
-### Step 6: Inspect the Gemini process
-
-```bash
-# Find the Gemini process
-ps aux | grep gemini
-
-# Check its network connections
-lsof -i -p <PID>
-
-# Check if it wrote an error report
-ls -lt /tmp/gemini-client-error-* | head -5
-cat /tmp/gemini-client-error-<latest>.json | python3 -m json.tool
-```
-
-## Zed Reference Comparison
-
-This table summarizes the known differences between AtelierCode and Zed's ACP implementation, for tracking what to implement next.
-
-| Feature | Zed | AtelierCode | Priority |
-|---|---|---|---|
-| `fs/read_text_file` handler | Implemented | Returns error | High |
-| `fs/write_text_file` handler | Implemented | Returns error | High |
-| Terminal handlers (5 methods) | Implemented | Returns error | Medium |
-| `SURFACE` env var | `SURFACE=zed` | Not set | Low |
-| Init timeout | 30 seconds | None | Medium |
-| Prompt timeout | None | None | Medium |
-| `agent_thought_chunk` display | Shown in UI | Ignored | Low |
-| `AuthRequired` reactive handling | Terminal auth flow | Not implemented | Medium |
-| All 10 session update types | Handled | Only `agent_message_chunk` | Low |
-| Explicit `--model` | Not needed (different flow?) | Required | N/A |
-
-## Version History
-
-| Date | Gemini CLI | Change |
-|---|---|---|
-| March 14, 2026 | v0.33.1 | Fixed capabilities, removed eager auth, added NO_BROWSER |
-| March 16, 2026 | v0.33.1 | Added explicit `--model gemini-2.5-pro`, switched to `--acp` flag |
+For historical context only:
+- `gemini-acp-resolution-report.md` records how the March 2026 hanging-prompt issue was diagnosed and fixed.
+- `gemini-acp-troubleshooting-log.md` preserves the unresolved investigation timeline before the final fix was locked in.
+- `acp-migration-plan.md` captures the original phased migration plan and should not be read as the live implementation contract.
