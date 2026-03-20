@@ -104,6 +104,263 @@ nonisolated enum ACPSessionClientError: LocalizedError {
     }
 }
 
+nonisolated enum ACPPermissionCategory: String, Sendable {
+    case agentTool
+    case fileRead
+    case fileWrite
+    case terminal
+}
+
+nonisolated struct ACPPermissionContext: Sendable {
+    let category: ACPPermissionCategory
+    let sessionId: String
+    let toolCallId: String?
+}
+
+nonisolated struct ACPPermissionPolicy: Sendable {
+    private let resolveOutcome: @Sendable (ACPRequestPermissionRequest, ACPPermissionContext) -> ACPRequestPermissionOutcome
+
+    init(
+        resolveOutcome: @escaping @Sendable (ACPRequestPermissionRequest, ACPPermissionContext) -> ACPRequestPermissionOutcome
+    ) {
+        self.resolveOutcome = resolveOutcome
+    }
+
+    func outcome(
+        for request: ACPRequestPermissionRequest,
+        context: ACPPermissionContext
+    ) -> ACPRequestPermissionOutcome {
+        resolveOutcome(request, context)
+    }
+
+    static let autoApproveCompatible = ACPPermissionPolicy { request, _ in
+        let preferredOption =
+            request.options.first(where: { $0.kind == "allow_once" }) ??
+            request.options.first(where: { $0.kind == "allow_always" }) ??
+            request.options.first
+
+        return preferredOption.map { ACPRequestPermissionOutcome.selected(optionId: $0.optionId) }
+            ?? .cancelled
+    }
+}
+
+nonisolated struct ACPWorkspaceAccessPolicy: Sendable {
+    let workspaceRoot: String
+
+    init(workspaceRoot: String) {
+        self.workspaceRoot = Self.canonicalPath(for: workspaceRoot)
+    }
+
+    func readTextFile(request: ACPReadTextFileRequest) throws -> ACPReadTextFileResponse {
+        let authorizedRead = try authorizeRead(request: request)
+        let content = try Self.readTextContent(
+            at: authorizedRead.resolvedPath,
+            startLine: authorizedRead.startLine,
+            lineLimit: authorizedRead.lineLimit
+        )
+        return ACPReadTextFileResponse(content: content)
+    }
+
+    private func authorizeRead(request: ACPReadTextFileRequest) throws -> AuthorizedWorkspaceRead {
+        guard request.limit == nil || request.limit.map({ $0 >= 0 }) == true else {
+            throw ACPWorkspaceAccessError.invalidReadRange(
+                line: request.line,
+                limit: request.limit
+            )
+        }
+
+        guard request.line == nil || request.line.map({ $0 >= 0 }) == true else {
+            throw ACPWorkspaceAccessError.invalidReadRange(
+                line: request.line,
+                limit: request.limit
+            )
+        }
+
+        let trimmedPath = request.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPath.isEmpty else {
+            throw ACPWorkspaceAccessError.invalidPath(request.path)
+        }
+
+        let baseURL = URL(fileURLWithPath: workspaceRoot, isDirectory: true)
+        let candidateURL: URL
+        if trimmedPath.hasPrefix("/") {
+            candidateURL = URL(fileURLWithPath: trimmedPath)
+        } else {
+            candidateURL = baseURL.appendingPathComponent(trimmedPath)
+        }
+
+        let standardizedPath = Self.canonicalPath(for: candidateURL.path)
+        guard Self.isWithinWorkspace(standardizedPath, workspaceRoot: workspaceRoot) else {
+            throw ACPWorkspaceAccessError.pathOutsideWorkspace(
+                requestedPath: request.path,
+                resolvedPath: standardizedPath,
+                workspaceRoot: workspaceRoot
+            )
+        }
+
+        var isDirectory = ObjCBool(false)
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: standardizedPath, isDirectory: &isDirectory) else {
+            throw ACPWorkspaceAccessError.fileMissing(path: standardizedPath)
+        }
+
+        guard !isDirectory.boolValue else {
+            throw ACPWorkspaceAccessError.notAFile(path: standardizedPath)
+        }
+
+        return AuthorizedWorkspaceRead(
+            resolvedPath: standardizedPath,
+            startLine: max(request.line ?? 1, 1),
+            lineLimit: request.limit
+        )
+    }
+
+    private static func readTextContent(
+        at path: String,
+        startLine: Int,
+        lineLimit: Int?
+    ) throws -> String {
+        do {
+            let data = try Data(contentsOf: URL(fileURLWithPath: path))
+            let rawText = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+            return slice(text: rawText, startLine: startLine, lineLimit: lineLimit)
+        } catch {
+            throw ACPWorkspaceAccessError.readFailed(path: path)
+        }
+    }
+
+    private static func slice(text: String, startLine: Int, lineLimit: Int?) -> String {
+        guard !text.isEmpty else { return "" }
+        guard lineLimit != .some(0) else { return "" }
+
+        let normalizedText = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let lines = normalizedText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let startIndex = max(startLine - 1, 0)
+
+        guard startIndex < lines.count else { return "" }
+
+        let endIndex = lineLimit.map { min(startIndex + $0, lines.count) } ?? lines.count
+        return Array(lines[startIndex..<endIndex]).joined(separator: "\n")
+    }
+
+    private static func isWithinWorkspace(_ path: String, workspaceRoot: String) -> Bool {
+        path == workspaceRoot || path.hasPrefix(workspaceRoot + "/")
+    }
+
+    private static func canonicalPath(for path: String) -> String {
+        let fileManager = FileManager.default
+        var existingURL = URL(fileURLWithPath: path).standardizedFileURL
+        var missingPathComponents: [String] = []
+
+        while existingURL.path != "/", !fileManager.fileExists(atPath: existingURL.path) {
+            missingPathComponents.insert(existingURL.lastPathComponent, at: 0)
+            existingURL.deleteLastPathComponent()
+        }
+
+        return missingPathComponents
+            .reduce(existingURL.resolvingSymlinksInPath()) { partialURL, component in
+                partialURL.appendingPathComponent(component)
+            }
+            .path
+    }
+
+    private struct AuthorizedWorkspaceRead: Sendable {
+        let resolvedPath: String
+        let startLine: Int
+        let lineLimit: Int?
+    }
+}
+
+nonisolated enum ACPWorkspaceAccessError: LocalizedError, Sendable {
+    case invalidPath(String)
+    case invalidReadRange(line: Int?, limit: Int?)
+    case pathOutsideWorkspace(requestedPath: String, resolvedPath: String, workspaceRoot: String)
+    case fileMissing(path: String)
+    case notAFile(path: String)
+    case readFailed(path: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidPath(let path):
+            return "AtelierCode could not resolve the requested file path \(path)."
+        case .invalidReadRange(let line, let limit):
+            return "AtelierCode received an invalid file read range (line: \(line.map(String.init) ?? "nil"), limit: \(limit.map(String.init) ?? "nil"))."
+        case .pathOutsideWorkspace(_, let resolvedPath, let workspaceRoot):
+            return "AtelierCode denied file access to \(resolvedPath) because it is outside the active workspace root \(workspaceRoot)."
+        case .fileMissing(let path):
+            return "AtelierCode could not read \(path) because the file does not exist."
+        case .notAFile(let path):
+            return "AtelierCode can only read text files, but \(path) is not a regular file."
+        case .readFailed(let path):
+            return "AtelierCode could not read the requested file at \(path)."
+        }
+    }
+
+    var clientError: ACPClientError {
+        switch self {
+        case .invalidPath(let path):
+            return ACPClientError(
+                code: ACPClientErrorCode.invalidParams,
+                message: errorDescription ?? "Invalid file path.",
+                data: .object([
+                    "reason": .string("invalid_path"),
+                    "path": .string(path),
+                ])
+            )
+        case .invalidReadRange(let line, let limit):
+            return ACPClientError(
+                code: ACPClientErrorCode.invalidParams,
+                message: errorDescription ?? "Invalid file read range.",
+                data: .object([
+                    "reason": .string("invalid_read_range"),
+                    "line": line.map(ACPJSONValue.int) ?? .null,
+                    "limit": limit.map(ACPJSONValue.int) ?? .null,
+                ])
+            )
+        case .pathOutsideWorkspace(let requestedPath, let resolvedPath, let workspaceRoot):
+            return ACPClientError(
+                code: ACPClientErrorCode.permissionDenied,
+                message: errorDescription ?? "Path is outside the active workspace.",
+                data: .object([
+                    "reason": .string("path_outside_workspace"),
+                    "requestedPath": .string(requestedPath),
+                    "resolvedPath": .string(resolvedPath),
+                    "workspaceRoot": .string(workspaceRoot),
+                ])
+            )
+        case .fileMissing(let path):
+            return ACPClientError(
+                code: ACPClientErrorCode.resourceNotFound,
+                message: errorDescription ?? "File not found.",
+                data: .object([
+                    "reason": .string("not_found"),
+                    "path": .string(path),
+                ])
+            )
+        case .notAFile(let path):
+            return ACPClientError(
+                code: ACPClientErrorCode.invalidParams,
+                message: errorDescription ?? "Requested path is not a regular file.",
+                data: .object([
+                    "reason": .string("not_a_file"),
+                    "path": .string(path),
+                ])
+            )
+        case .readFailed(let path):
+            return ACPClientError(
+                code: ACPClientErrorCode.internalError,
+                message: errorDescription ?? "The requested file could not be read.",
+                data: .object([
+                    "reason": .string("read_failed"),
+                    "path": .string(path),
+                ])
+            )
+        }
+    }
+}
+
 @MainActor
 final class ACPSessionClient {
     var onAgentMessageChunk: ((String) -> Void)?
@@ -111,6 +368,7 @@ final class ACPSessionClient {
 
     private let transport: AgentTransport
     private let requestTimeouts: ACPSessionClientTimeouts
+    private let permissionPolicy: ACPPermissionPolicy
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -122,6 +380,7 @@ final class ACPSessionClient {
     private var nextRequestID = 1
     private var isTransportStarted = false
     private var pendingResponses: [Int: PendingResponse] = [:]
+    private var workspaceAccessPolicy: ACPWorkspaceAccessPolicy?
 
     private(set) var negotiatedProtocolVersion: Int?
     private(set) var sessionID: String?
@@ -130,10 +389,12 @@ final class ACPSessionClient {
 
     init(
         transport: AgentTransport,
-        requestTimeouts: ACPSessionClientTimeouts = .atelierCodeDefault
+        requestTimeouts: ACPSessionClientTimeouts = .atelierCodeDefault,
+        permissionPolicy: ACPPermissionPolicy = .autoApproveCompatible
     ) {
         self.transport = transport
         self.requestTimeouts = requestTimeouts
+        self.permissionPolicy = permissionPolicy
         transport.onReceive = { [weak self] result in
             self?.handleTransportMessage(result)
         }
@@ -177,6 +438,7 @@ final class ACPSessionClient {
             )
         )
         sessionID = newSessionResponse.sessionId
+        workspaceAccessPolicy = ACPWorkspaceAccessPolicy(workspaceRoot: cwd)
     }
 
     func sendPrompt(_ text: String) async throws -> ACPPromptResponse {
@@ -202,6 +464,7 @@ final class ACPSessionClient {
         sessionID = nil
         agentCapabilities = nil
         authMethods = []
+        workspaceAccessPolicy = nil
     }
 
     private func startTransportIfNeeded() throws {
@@ -299,13 +562,15 @@ final class ACPSessionClient {
         switch method {
         case ACPMethod.sessionRequestPermission.rawValue:
             handlePermissionRequest(id: id, data: data)
+        case ACPMethod.fsReadTextFile.rawValue:
+            handleReadTextFileRequest(id: id, data: data)
         default:
             let errorMessage =
                 ACPInterimCapabilityStrategy.atelierCodeCurrent.fallbackErrorMessage(for: method)
                 ?? "AtelierCode does not support client ACP method \(method)."
             sendClientErrorResponse(
                 id: id,
-                code: -32601,
+                code: ACPClientErrorCode.methodNotFound,
                 message: errorMessage
             )
         }
@@ -338,19 +603,20 @@ final class ACPSessionClient {
         else {
             sendClientErrorResponse(
                 id: id,
-                code: -32602,
+                code: ACPClientErrorCode.invalidParams,
                 message: "AtelierCode could not decode the permission request."
             )
             return
         }
 
-        let preferredOption =
-            request.params.options.first(where: { $0.kind == "allow_once" }) ??
-            request.params.options.first(where: { $0.kind == "allow_always" }) ??
-            request.params.options.first
-
-        let outcome = preferredOption.map { ACPRequestPermissionOutcome.selected(optionId: $0.optionId) }
-            ?? .cancelled
+        let outcome = permissionPolicy.outcome(
+            for: request.params,
+            context: ACPPermissionContext(
+                category: .agentTool,
+                sessionId: request.params.sessionId,
+                toolCallId: request.params.toolCall?.toolCallId
+            )
+        )
 
         sendClientResponse(
             ACPClientResponse(
@@ -358,6 +624,80 @@ final class ACPSessionClient {
                 result: ACPRequestPermissionResponse(outcome: outcome)
             )
         )
+    }
+
+    private func handleReadTextFileRequest(id: ACPRequestID?, data: Data) {
+        guard
+            let request = try? decoder.decode(
+                ACPInboundRequest<ACPReadTextFileRequest>.self,
+                from: data
+            )
+        else {
+            sendClientErrorResponse(
+                id: id,
+                code: ACPClientErrorCode.invalidParams,
+                message: "AtelierCode could not decode the file read request."
+            )
+            return
+        }
+
+        guard let sessionID else {
+            sendClientErrorResponse(
+                id: request.id,
+                code: ACPClientErrorCode.invalidParams,
+                message: "AtelierCode cannot read files before a session is created."
+            )
+            return
+        }
+
+        guard request.params.sessionId == sessionID else {
+            sendClientErrorResponse(
+                id: request.id,
+                error: ACPClientError(
+                    code: ACPClientErrorCode.invalidParams,
+                    message: "AtelierCode received a file read request for an unknown ACP session.",
+                    data: .object([
+                        "reason": .string("unknown_session"),
+                        "sessionId": .string(request.params.sessionId),
+                        "expectedSessionId": .string(sessionID),
+                    ])
+                )
+            )
+            return
+        }
+
+        guard let workspaceAccessPolicy else {
+            sendClientErrorResponse(
+                id: request.id,
+                code: ACPClientErrorCode.internalError,
+                message: "AtelierCode does not have an active workspace policy for this session."
+            )
+            return
+        }
+
+        do {
+            let response = try workspaceAccessPolicy.readTextFile(request: request.params)
+            sendClientResponse(
+                ACPClientResponse(
+                    id: request.id,
+                    result: response
+                )
+            )
+        } catch let error as ACPWorkspaceAccessError {
+            sendClientErrorResponse(id: request.id, error: error.clientError)
+        } catch {
+            sendClientErrorResponse(
+                id: request.id,
+                error: ACPClientError(
+                    code: ACPClientErrorCode.internalError,
+                    message: "AtelierCode hit an unexpected error while reading a workspace file.",
+                    data: .object([
+                        "reason": .string("unexpected_read_failure"),
+                        "path": .string(request.params.path),
+                    ])
+                )
+            )
+        }
     }
 
     private func sendClientResponse<Result: Encodable & Sendable>(_ response: ACPClientResponse<Result>) {
@@ -371,12 +711,19 @@ final class ACPSessionClient {
     }
 
     private func sendClientErrorResponse(id: ACPRequestID?, code: Int, message: String) {
+        sendClientErrorResponse(
+            id: id,
+            error: ACPClientError(code: code, message: message)
+        )
+    }
+
+    private func sendClientErrorResponse(id: ACPRequestID?, error: ACPClientError) {
         do {
             try transport.send(
                 message: encoder.encode(
                     ACPClientErrorResponse(
                         id: id,
-                        error: ACPClientError(code: code, message: message)
+                        error: error
                     )
                 )
             )

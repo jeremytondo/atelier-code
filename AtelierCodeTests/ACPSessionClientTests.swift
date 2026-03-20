@@ -18,16 +18,15 @@ struct ACPSessionClientTests {
         #expect(ACPProtocolVersion.isSupported(99) == false)
     }
 
-    @Test func interimCapabilityStrategyIsExplicitlyGeminiCompatibility() {
-        #expect(ACPInterimCapabilityStrategy.atelierCodeCurrent == .geminiCompatibility)
+    @Test func capabilityStrategyIsReadOnlyWorkspace() {
+        #expect(ACPInterimCapabilityStrategy.atelierCodeCurrent == .readOnlyWorkspace)
         #expect(
             ACPClientCapabilities.atelierCodeDefaults ==
             ACPInterimCapabilityStrategy.atelierCodeCurrent.clientCapabilities
         )
         #expect(
-            ACPInterimCapabilityStrategy.atelierCodeCurrent.compatibilityOnlyClientMethods ==
+            ACPInterimCapabilityStrategy.atelierCodeCurrent.unimplementedClientMethods ==
             [
-                "fs/read_text_file",
                 "fs/write_text_file",
                 "terminal/create",
                 "terminal/output",
@@ -60,13 +59,10 @@ struct ACPSessionClientTests {
         #expect(params["protocolVersion"] as? Int == 1)
         #expect(clientInfo["name"] as? String == "AtelierCode")
         #expect(clientInfo["version"] as? String == "0.1.0")
-        #expect(capabilities["terminal"] as? Bool == true)
+        #expect(capabilities["terminal"] as? Bool == false)
         #expect(fileSystem["readTextFile"] as? Bool == true)
-        #expect(fileSystem["writeTextFile"] as? Bool == true)
-
-        let meta = try #require(capabilities["_meta"] as? [String: Any])
-        #expect(meta["terminal_output"] as? Bool == true)
-        #expect(meta["terminal-auth"] as? Bool == true)
+        #expect(fileSystem["writeTextFile"] as? Bool == false)
+        #expect(capabilities["_meta"] == nil)
     }
 
     @Test func sessionNewResponseDecodesSessionID() throws {
@@ -362,36 +358,312 @@ struct ACPSessionClientTests {
         #expect(outcome["optionId"] as? String == "allow_once")
     }
 
-    @Test func sessionClientReturnsExplicitCompatibilityErrorForUnimplementedFileSystemMethod() throws {
+    @Test func sessionClientReadsWorkspaceRelativeTextFile() async throws {
+        let fileManager = FileManager.default
+        let workspaceURL = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fileURL = workspaceURL.appendingPathComponent("notes.txt")
+        try fileManager.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        try Data("hello\nworkspace".utf8).write(to: fileURL)
+        defer {
+            try? fileManager.removeItem(at: workspaceURL)
+        }
+
         let transport = FakeAgentTransport()
         let client = ACPSessionClient(transport: transport)
-        var errorResponse: [String: Any]?
+        var fileReadResponse: [String: Any]?
 
         transport.onSend = { data in
-            errorResponse = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+            if let method = object["method"] as? String {
+                let requestID = try #require(object["id"] as? Int)
+
+                switch method {
+                case ACPMethod.initialize.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "protocolVersion": 1
+                      }
+                    }
+                    """)
+
+                case ACPMethod.sessionNew.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "sessionId": "session_123"
+                      }
+                    }
+                    """)
+
+                default:
+                    Issue.record("Unexpected method \(method)")
+                }
+            } else {
+                fileReadResponse = object
+            }
         }
+
+        try await client.connect(cwd: workspaceURL.path)
 
         transport.deliver("""
         {
           "jsonrpc": "2.0",
           "id": "fs_1",
           "method": "fs/read_text_file",
-          "params": {}
+          "params": {
+            "sessionId": "session_123",
+            "path": "notes.txt"
+          }
         }
         """)
 
-        let response = try #require(errorResponse)
-        let error = try #require(response["error"] as? [String: Any])
-        let message = try #require(error["message"] as? String)
-        _ = client
+        let response = try #require(fileReadResponse)
+        let result = try #require(response["result"] as? [String: Any])
 
         #expect(response["id"] as? String == "fs_1")
-        #expect(error["code"] as? Int == -32601)
-        #expect(message.contains("Gemini compatibility"))
-        #expect(message.contains("fs/read_text_file"))
+        #expect(result["content"] as? String == "hello\nworkspace")
     }
 
-    @Test func sessionClientReturnsExplicitCompatibilityErrorForUnimplementedTerminalMethod() throws {
+    @Test func sessionClientReadsAbsoluteWorkspaceTextFile() async throws {
+        let fileManager = FileManager.default
+        let workspaceURL = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fileURL = workspaceURL.appendingPathComponent("notes.txt")
+        try fileManager.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        try Data("line 1\nline 2\nline 3".utf8).write(to: fileURL)
+        defer {
+            try? fileManager.removeItem(at: workspaceURL)
+        }
+
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+        var fileReadResponse: [String: Any]?
+
+        transport.onSend = { data in
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+            if let method = object["method"] as? String {
+                let requestID = try #require(object["id"] as? Int)
+
+                switch method {
+                case ACPMethod.initialize.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "protocolVersion": 1
+                      }
+                    }
+                    """)
+
+                case ACPMethod.sessionNew.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "sessionId": "session_123"
+                      }
+                    }
+                    """)
+
+                default:
+                    Issue.record("Unexpected method \(method)")
+                }
+            } else {
+                fileReadResponse = object
+            }
+        }
+
+        try await client.connect(cwd: workspaceURL.path)
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "fs_2",
+          "method": "fs/read_text_file",
+          "params": {
+            "sessionId": "session_123",
+            "path": "\(fileURL.path)",
+            "line": 2,
+            "limit": 1
+          }
+        }
+        """)
+
+        let response = try #require(fileReadResponse)
+        let result = try #require(response["result"] as? [String: Any])
+
+        #expect(response["id"] as? String == "fs_2")
+        #expect(result["content"] as? String == "line 2")
+    }
+
+    @Test func sessionClientRejectsOutOfWorkspaceReadRequest() async throws {
+        let fileManager = FileManager.default
+        let workspaceURL = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: workspaceURL)
+        }
+
+        let outsideURL = fileManager.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).txt")
+        try Data("not allowed".utf8).write(to: outsideURL)
+        defer {
+            try? fileManager.removeItem(at: outsideURL)
+        }
+
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+        var fileReadResponse: [String: Any]?
+
+        transport.onSend = { data in
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+            if let method = object["method"] as? String {
+                let requestID = try #require(object["id"] as? Int)
+
+                switch method {
+                case ACPMethod.initialize.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "protocolVersion": 1
+                      }
+                    }
+                    """)
+
+                case ACPMethod.sessionNew.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "sessionId": "session_123"
+                      }
+                    }
+                    """)
+
+                default:
+                    Issue.record("Unexpected method \(method)")
+                }
+            } else {
+                fileReadResponse = object
+            }
+        }
+
+        try await client.connect(cwd: workspaceURL.path)
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "fs_3",
+          "method": "fs/read_text_file",
+          "params": {
+            "sessionId": "session_123",
+            "path": "\(outsideURL.path)"
+          }
+        }
+        """)
+
+        let response = try #require(fileReadResponse)
+        let error = try #require(response["error"] as? [String: Any])
+        let data = try #require(error["data"] as? [String: Any])
+        let message = try #require(error["message"] as? String)
+
+        #expect(response["id"] as? String == "fs_3")
+        #expect(error["code"] as? Int == ACPClientErrorCode.permissionDenied)
+        #expect(message.contains("outside the active workspace root"))
+        #expect(data["reason"] as? String == "path_outside_workspace")
+        #expect(data["workspaceRoot"] as? String == workspaceURL.path)
+    }
+
+    @Test func sessionClientReturnsStructuredErrorForMissingWorkspaceFile() async throws {
+        let fileManager = FileManager.default
+        let workspaceURL = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: workspaceURL)
+        }
+
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+        var fileReadResponse: [String: Any]?
+
+        transport.onSend = { data in
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+            if let method = object["method"] as? String {
+                let requestID = try #require(object["id"] as? Int)
+
+                switch method {
+                case ACPMethod.initialize.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "protocolVersion": 1
+                      }
+                    }
+                    """)
+
+                case ACPMethod.sessionNew.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "sessionId": "session_123"
+                      }
+                    }
+                    """)
+
+                default:
+                    Issue.record("Unexpected method \(method)")
+                }
+            } else {
+                fileReadResponse = object
+            }
+        }
+
+        try await client.connect(cwd: workspaceURL.path)
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "fs_4",
+          "method": "fs/read_text_file",
+          "params": {
+            "sessionId": "session_123",
+            "path": "missing.txt"
+          }
+        }
+        """)
+
+        let response = try #require(fileReadResponse)
+        let error = try #require(response["error"] as? [String: Any])
+        let data = try #require(error["data"] as? [String: Any])
+        let message = try #require(error["message"] as? String)
+
+        #expect(response["id"] as? String == "fs_4")
+        #expect(error["code"] as? Int == ACPClientErrorCode.resourceNotFound)
+        #expect(message.contains("does not exist"))
+        #expect(data["reason"] as? String == "not_found")
+    }
+
+    @Test func sessionClientReturnsExplicitUnsupportedErrorForUnimplementedTerminalMethod() throws {
         let transport = FakeAgentTransport()
         let client = ACPSessionClient(transport: transport)
         var errorResponse: [String: Any]?
@@ -415,8 +687,8 @@ struct ACPSessionClientTests {
         _ = client
 
         #expect(response["id"] as? String == "terminal_1")
-        #expect(error["code"] as? Int == -32601)
-        #expect(message.contains("Gemini compatibility"))
+        #expect(error["code"] as? Int == ACPClientErrorCode.methodNotFound)
+        #expect(message.contains("does not support terminal client ACP method"))
         #expect(message.contains("terminal/create"))
     }
 
@@ -444,7 +716,7 @@ struct ACPSessionClientTests {
         _ = client
 
         #expect(response["id"] as? String == "custom_1")
-        #expect(error["code"] as? Int == -32601)
+        #expect(error["code"] as? Int == ACPClientErrorCode.methodNotFound)
         #expect(message == "AtelierCode does not support client ACP method custom/unknown.")
     }
 
@@ -760,10 +1032,13 @@ struct ACPSessionClientTests {
                         let params = try TranscriptAgentTransport.dictionaryValue(forKey: "params", in: request)
                         let clientInfo = try TranscriptAgentTransport.dictionaryValue(forKey: "clientInfo", in: params)
                         let clientCapabilities = try TranscriptAgentTransport.dictionaryValue(forKey: "clientCapabilities", in: params)
+                        let fileSystem = try TranscriptAgentTransport.dictionaryValue(forKey: "fs", in: clientCapabilities)
 
                         #expect(params["protocolVersion"] as? Int == ACPProtocolVersion.current)
                         #expect(clientInfo["name"] as? String == "AtelierCode")
-                        #expect(clientCapabilities["terminal"] as? Bool == true)
+                        #expect(clientCapabilities["terminal"] as? Bool == false)
+                        #expect(fileSystem["readTextFile"] as? Bool == true)
+                        #expect(fileSystem["writeTextFile"] as? Bool == false)
                     },
                     responses: { requestID in
                         ["""
@@ -1137,6 +1412,54 @@ struct ACPSessionClientTests {
         #expect(permissionOutcomeOptionID == "proceed_once")
         #expect(streamedChunks == ["The current directory is /tmp/atelier."])
         #expect(promptResponse.stopReason == "end_turn")
+    }
+
+    @Test func sessionClientUsesInjectedPermissionPolicy() throws {
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(
+            transport: transport,
+            permissionPolicy: ACPPermissionPolicy { _, context in
+                #expect(context.category == .agentTool)
+                #expect(context.sessionId == "session_123")
+                #expect(context.toolCallId == "tool_123")
+                return .cancelled
+            }
+        )
+        var permissionResponse: [String: Any]?
+
+        transport.onSend = { data in
+            permissionResponse = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "permission_2",
+          "method": "session/request_permission",
+          "params": {
+            "sessionId": "session_123",
+            "options": [
+              {
+                "kind": "allow_once",
+                "name": "Allow once",
+                "optionId": "allow"
+              }
+            ],
+            "toolCall": {
+              "toolCallId": "tool_123"
+            }
+          }
+        }
+        """)
+
+        let response = try #require(permissionResponse)
+        let result = try #require(response["result"] as? [String: Any])
+        let outcome = try #require(result["outcome"] as? [String: Any])
+        _ = client
+
+        #expect(response["id"] as? String == "permission_2")
+        #expect(outcome["outcome"] as? String == "cancelled")
+        #expect(outcome["optionId"] == nil)
     }
 
     @Test func connectReusesExistingSessionWithoutRestartingTransport() async throws {

@@ -4,6 +4,8 @@
 
 Implement the remaining ACP work in four phases rather than one large push. Each phase should end in a shippable, testable checkpoint and should reduce one primary class of risk at a time.
 
+This plan assumes AtelierCode is an ACP agent host, not a full source editor. That means the highest-value ACP work is the work that helps host, constrain, observe, and control agent execution. It does not assume the app must own every file mutation itself.
+
 Recommended order:
 1. Read-only workspace tools and approval flow
 2. Terminal lifecycle support
@@ -15,6 +17,12 @@ This sequence matches the current codebase:
 - advertised file-system and terminal capabilities are still mostly stubs
 - the UI/store currently only understands streamed assistant text
 - `session/cancel` and `session/load` exist in protocol surface but are not wired
+
+Guiding product assumptions for the remaining work:
+- direct agent writes inside the workspace are acceptable when Gemini can perform them safely on its own
+- client-mediated reads are still useful for explicit, workspace-scoped inspection
+- terminal/process lifecycle and prompt/session control are more central than editor-style document ownership
+- ACP completeness is not the goal by itself; hosted agent usefulness is
 
 ## Phase 1: Read-Only Workspace Tools
 
@@ -33,6 +41,10 @@ Make ACP immediately useful for real agent tasks while keeping the first expansi
 - Keep `fs/write_text_file` unimplemented in this phase, but stop advertising write support if write handling is still absent.
 - Replace the current auto-approve-only permission behavior with explicit policy plumbing for file access, even if the first UI is still minimal.
 - Preserve the existing Gemini auth strategy and single-session model.
+
+Why this phase still matters for a non-editor app:
+- it gives Gemini a safe, explicit ACP path for reading workspace files when needed
+- it improves compatibility without requiring AtelierCode to take ownership of all edits
 
 ### Public / Interface Changes
 
@@ -65,13 +77,17 @@ Enable real agent execution workflows that depend on shell interaction.
 - Track terminal instances by ACP terminal ID, including process, buffered output, exit status, and release state.
 - Scope terminal launch to the workspace and inherit a controlled environment.
 - Route terminal creation and destructive actions through the same permission policy introduced in Phase 1.
-- Keep `fs/write_text_file` deferred unless the team explicitly wants it in this same phase.
+- Keep `fs/write_text_file` deferred unless a concrete hosting need emerges.
 
 ### Public / Interface Changes
 
 - Add ACP models for terminal method params/results.
 - Add terminal state ownership in the session/store layer.
 - Define terminal permission categories distinctly from file-read permissions.
+
+Why this phase is a stronger fit for the product than ACP file writes:
+- shell execution is central to real agent work
+- AtelierCode gains more as a host by managing terminals well than by acting like an editor buffer manager
 
 ### Acceptance Criteria
 
@@ -100,6 +116,10 @@ Make tool-driven ACP work understandable in the UI, not just functional in the p
   - terminal output/progress
 - Keep the current assistant message bubble behavior for text, but add adjacent progress/activity presentation rather than overloading assistant text with tool logs.
 - Ignore unsupported future update types safely, but preserve enough shape to log or inspect them later.
+
+Why this phase matters:
+- when the app is hosting an agent, explaining what the agent is doing is core product value
+- this closes the current trust and observability gap better than adding more client-side file APIs
 
 ### Public / Interface Changes
 
@@ -133,6 +153,10 @@ Make long-running ACP work manageable and resilient across interruptions.
   - cancelled prompt
   - expired/unloadable session
 
+Why this phase matters:
+- cancellation and resume are core host responsibilities for long-running agent work
+- this improves reliability regardless of whether AtelierCode ever supports ACP client-side writes
+
 ### Public / Interface Changes
 
 - Add cancel and resume methods to the session/store layer.
@@ -145,6 +169,18 @@ Make long-running ACP work manageable and resilient across interruptions.
 - Relaunching into the same workspace attempts resume before creating a new session.
 - Failed resume does not leave the app stuck; it cleanly falls back to `session/new`.
 - Existing single in-flight prompt invariant is preserved.
+
+## Deferred / Optional: Client-Mediated File Writes
+
+`fs/write_text_file` is intentionally outside the core phase sequence for now.
+
+It should only be added if AtelierCode later needs one of these:
+- explicit app-controlled approval around edits that Gemini cannot enforce itself
+- writes to content the agent cannot modify directly
+- stronger client ownership of mutations for auditability or UX reasons
+- compatibility problems that specifically require ACP client-side writes
+
+Until one of those needs is concrete, direct agent writes within the workspace are an acceptable model for this app.
 
 ## Test Plan
 
@@ -182,7 +218,8 @@ Make long-running ACP work manageable and resilient across interruptions.
 ## Assumptions And Defaults
 
 - Gemini remains the only ACP target for these phases.
-- The first milestone should optimize for safe, real usefulness, so read access comes before write access.
-- `fs/write_text_file` is intentionally deferred until permission UX and workspace-safety rules are proven; if added later, it should slot between Phases 2 and 3 or be folded into Phase 2.5.
+- AtelierCode is being built as an agent host, not a source editor.
+- The first milestone should optimize for safe, real usefulness, so read access comes before any client-mediated write access.
+- `fs/write_text_file` is intentionally deferred and may never be necessary; if added later, it should be driven by a concrete hosting requirement rather than ACP completeness alone.
 - Capability advertisement should become truthful at each phase boundary rather than staying permanently over-broad.
 - The current auth stance remains unchanged: do not proactively call `authenticate`; react only to auth-related ACP errors.

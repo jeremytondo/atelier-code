@@ -16,6 +16,8 @@ nonisolated enum ACPMethod: String, Sendable {
     case sessionCancel = "session/cancel"
     case sessionRequestPermission = "session/request_permission"
     case sessionUpdate = "session/update"
+    case fsReadTextFile = "fs/read_text_file"
+    case fsWriteTextFile = "fs/write_text_file"
 }
 
 nonisolated enum ACPProtocolVersion {
@@ -105,6 +107,21 @@ nonisolated struct ACPClientErrorResponse: Encodable, Sendable {
 nonisolated struct ACPClientError: Encodable, Sendable {
     let code: Int
     let message: String
+    let data: ACPJSONValue?
+
+    init(code: Int, message: String, data: ACPJSONValue? = nil) {
+        self.code = code
+        self.message = message
+        self.data = data
+    }
+}
+
+nonisolated enum ACPClientErrorCode {
+    static let methodNotFound = -32601
+    static let invalidParams = -32602
+    static let internalError = -32603
+    static let resourceNotFound = -32002
+    static let permissionDenied = -32003
 }
 
 nonisolated enum ACPJSONValue: Codable, Equatable, Sendable {
@@ -289,6 +306,11 @@ nonisolated struct ACPFileSystemCapabilities: Codable, Equatable, Sendable {
         writeTextFile: false
     )
 
+    static let readOnly = ACPFileSystemCapabilities(
+        readTextFile: true,
+        writeTextFile: false
+    )
+
     static let supported = ACPFileSystemCapabilities(
         readTextFile: true,
         writeTextFile: true
@@ -331,28 +353,26 @@ nonisolated struct ACPAgentCapabilities: Decodable, Equatable, Sendable {
     }
 }
 
-// AtelierCode intentionally keeps Gemini-compatible capability advertisement
-// until the corresponding file-system and terminal client handlers exist.
+// AtelierCode keeps capability advertisement truthful to the behavior it implements.
 nonisolated enum ACPInterimCapabilityStrategy: String, CaseIterable, Sendable {
-    case geminiCompatibility
+    case readOnlyWorkspace
 
     var clientCapabilities: ACPClientCapabilities {
         switch self {
-        case .geminiCompatibility:
+        case .readOnlyWorkspace:
             return ACPClientCapabilities(
-                fs: .supported,
-                terminal: true,
-                _meta: ["terminal_output": true, "terminal-auth": true]
+                fs: .readOnly,
+                terminal: false,
+                _meta: nil
             )
         }
     }
 
-    var compatibilityOnlyClientMethods: Set<String> {
+    var unimplementedClientMethods: Set<String> {
         switch self {
-        case .geminiCompatibility:
+        case .readOnlyWorkspace:
             return [
-                "fs/read_text_file",
-                "fs/write_text_file",
+                ACPMethod.fsWriteTextFile.rawValue,
                 "terminal/create",
                 "terminal/output",
                 "terminal/wait_for_exit",
@@ -363,16 +383,16 @@ nonisolated enum ACPInterimCapabilityStrategy: String, CaseIterable, Sendable {
     }
 
     func fallbackErrorMessage(for method: String) -> String? {
-        guard compatibilityOnlyClientMethods.contains(method) else {
+        guard unimplementedClientMethods.contains(method) else {
             return nil
         }
 
         let capabilityArea = method.hasPrefix("fs/") ? "file-system" : "terminal"
         return
-            "AtelierCode advertises \(capabilityArea) ACP capabilities temporarily for current Gemini compatibility, but the client method \(method) is not implemented yet."
+            "AtelierCode does not support \(capabilityArea) client ACP method \(method) yet."
     }
 
-    static let atelierCodeCurrent = ACPInterimCapabilityStrategy.geminiCompatibility
+    static let atelierCodeCurrent = ACPInterimCapabilityStrategy.readOnlyWorkspace
 }
 
 nonisolated struct ACPClientCapabilities: Codable, Equatable, Sendable {
@@ -463,6 +483,17 @@ nonisolated struct ACPPromptRequestParams: Codable, Equatable, Sendable {
 
 nonisolated struct ACPPromptResponse: Decodable, Equatable, Sendable {
     let stopReason: String
+}
+
+nonisolated struct ACPReadTextFileRequest: Codable, Equatable, Sendable {
+    let sessionId: String
+    let path: String
+    let line: Int?
+    let limit: Int?
+}
+
+nonisolated struct ACPReadTextFileResponse: Codable, Equatable, Sendable {
+    let content: String
 }
 
 nonisolated struct ACPPermissionOption: Decodable, Equatable, Sendable {
