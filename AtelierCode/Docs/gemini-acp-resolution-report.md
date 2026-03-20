@@ -197,11 +197,12 @@ These were fixed before the root cause was identified and remain necessary:
 5. **Working directory fallback** — App no longer defaults to `/` for cwd
 6. **Protocol tolerance** — Support for string JSON-RPC IDs, field aliases, richer update types
 
-## Recommendations
+## Follow-up Recommendations
 
-### Short-term
-- **Add a prompt timeout**: The Gemini CLI Code Assist streaming path has no timeout. If a future issue causes a similar hang, the app should cancel the request after a configurable duration rather than waiting indefinitely.
-- **Handle `AuthRequired` errors reactively**: If `session/new` or `session/prompt` returns error code `-32000` (auth required), surface a clear message suggesting the user run `gemini` in a terminal to re-authenticate.
+Historical note:
+- The short-term recommendations from this report have since been completed in the live implementation.
+- AtelierCode now applies request timeouts and classifies auth-related ACP failures with terminal re-auth guidance.
+- For the current behavior contract, use `gemini-acp-implementation-guide.md`.
 
 ### Medium-term
 - **Adopt a community Swift ACP SDK**: Three Swift SDKs exist ([wiedymi/swift-acp](https://github.com/wiedymi/swift-acp), [aptove/swift-sdk](https://github.com/aptove/swift-sdk), [rebornix/acp-swift-sdk](https://github.com/rebornix/acp-swift-sdk)). These handle protocol edge cases, timeout management, and cancellation that the hand-rolled implementation does not.
