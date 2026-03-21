@@ -9,6 +9,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Bindable var store: ACPStore
+    let workspacePath: String?
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -50,10 +51,6 @@ struct ContentView: View {
             }
             .frame(minWidth: 640, minHeight: 520)
             .background(Color(nsColor: .controlBackgroundColor))
-            .task {
-                guard !isRunningInPreview else { return }
-                await store.connectIfNeeded()
-            }
             .onChange(of: store.scrollTargetMessageID) { _, newValue in
                 guard let newValue else { return }
 
@@ -67,12 +64,17 @@ struct ContentView: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Gemini ACP Chat")
+                Text("AtelierCode")
                     .font(.system(size: 24, weight: .semibold, design: .rounded))
 
-                Text("Local Gemini CLI session over ACP stdio")
+                Text("Ready-state ACP chat surface")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+
+                Text("Workspace: \(workspacePath ?? "No workspace selected")")
+                    .font(.footnote.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
             }
 
             Spacer()
@@ -86,6 +88,7 @@ struct ContentView: View {
                     Capsule()
                         .fill(store.isErrorVisible ? Color.red.opacity(0.12) : Color.black.opacity(0.05))
                 )
+                .accessibilityIdentifier("shell.status")
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
@@ -97,7 +100,7 @@ struct ContentView: View {
             Text("Waiting for your first prompt")
                 .font(.title3.weight(.semibold))
 
-            Text("The app connects on launch, creates one ACP session, and streams Gemini output into a single live response bubble.")
+            Text("The app shell now decides whether a live ACP store is mounted, so previews and UI tests can render this surface without starting Gemini.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -168,14 +171,6 @@ struct ContentView: View {
 
         return "Send"
     }
-
-    private var isRunningInPreview: Bool {
-        ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1"
-    }
-}
-
-#Preview {
-    ContentView(store: ACPStore())
 }
 
 private struct MessageRow: View {

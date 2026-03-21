@@ -20,6 +20,8 @@ final class AtelierCodeUITestsLaunchTests: XCTestCase {
     @MainActor
     func testLaunch() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["ATELIERCODE_LAUNCH_MODE"] = "ui_test"
+        app.launchEnvironment["ATELIERCODE_MOCK_SCENARIO"] = "ready"
         app.launch()
 
         // Insert steps here to perform after app launch but before taking a screenshot,

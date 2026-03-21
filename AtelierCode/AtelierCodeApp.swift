@@ -9,11 +9,11 @@ import SwiftUI
 
 @main
 struct AtelierCodeApp: App {
-    @State private var store = ACPStore()
+    @State private var shellModel = AppShellModel()
 
     var body: some Scene {
         WindowGroup {
-            ContentView(store: store)
+            AppShellView(model: shellModel)
         }
     }
 }
