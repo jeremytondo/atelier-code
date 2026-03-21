@@ -10,8 +10,12 @@ import SwiftUI
 struct ContentView: View {
     @Bindable var store: ACPStore
     let workspacePath: String?
+    let geminiModel: String
     let onOpenWorkspace: () -> Void
     let onCloseWorkspace: () -> Void
+    let onShowSettings: () -> Void
+    let onReconnect: () -> Void
+    let onResetSession: () -> Void
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -77,11 +81,22 @@ struct ContentView: View {
                     .font(.footnote.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+
+                Text("Model: \(geminiModel)")
+                    .font(.footnote.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
             }
 
             Spacer()
 
             HStack(spacing: 10) {
+                Button("Settings") {
+                    onShowSettings()
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("settings.open")
+
                 Button("Switch Workspace") {
                     onOpenWorkspace()
                 }
@@ -93,6 +108,18 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
                 .accessibilityIdentifier("workspace.close")
+
+                Button("Reconnect") {
+                    onReconnect()
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("workspace.reconnect")
+
+                Button("Reset Session") {
+                    onResetSession()
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("workspace.reset")
 
                 Text(store.statusText)
                     .font(.footnote.weight(.medium))

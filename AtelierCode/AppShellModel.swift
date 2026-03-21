@@ -8,6 +8,105 @@
 import Foundation
 import Observation
 
+nonisolated struct GeminiAppSettings: Equatable, Sendable {
+    static let defaultModel = "gemini-2.5-pro"
+    static let `default` = GeminiAppSettings()
+
+    var executableOverridePath: String?
+    var defaultModel: String
+    var autoConnectOnLaunch: Bool
+
+    init(
+        executableOverridePath: String? = nil,
+        defaultModel: String = Self.defaultModel,
+        autoConnectOnLaunch: Bool = true
+    ) {
+        self.executableOverridePath = Self.sanitizedPath(executableOverridePath)
+        self.defaultModel = Self.sanitizedModel(defaultModel)
+        self.autoConnectOnLaunch = autoConnectOnLaunch
+    }
+
+    private static func sanitizedPath(_ path: String?) -> String? {
+        guard let trimmedPath = path?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmedPath.isEmpty else {
+            return nil
+        }
+
+        return URL(fileURLWithPath: trimmedPath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+    }
+
+    private static func sanitizedModel(_ model: String) -> String {
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedModel.isEmpty ? Self.defaultModel : trimmedModel
+    }
+}
+
+@MainActor
+protocol GeminiAppSettingsPersisting: AnyObject {
+    func loadSettings() -> GeminiAppSettings
+    func saveSettings(_ settings: GeminiAppSettings)
+}
+
+@MainActor
+final class GeminiAppSettingsStore: GeminiAppSettingsPersisting {
+    static let standard = GeminiAppSettingsStore()
+
+    private let userDefaults: UserDefaults
+    private let executablePathKey: String
+    private let defaultModelKey: String
+    private let autoConnectKey: String
+
+    init(
+        userDefaults: UserDefaults = .standard,
+        executablePathKey: String = "AtelierCode.GeminiExecutableOverridePath",
+        defaultModelKey: String = "AtelierCode.GeminiDefaultModel",
+        autoConnectKey: String = "AtelierCode.GeminiAutoConnectOnLaunch"
+    ) {
+        self.userDefaults = userDefaults
+        self.executablePathKey = executablePathKey
+        self.defaultModelKey = defaultModelKey
+        self.autoConnectKey = autoConnectKey
+    }
+
+    func loadSettings() -> GeminiAppSettings {
+        GeminiAppSettings(
+            executableOverridePath: userDefaults.string(forKey: executablePathKey),
+            defaultModel: userDefaults.string(forKey: defaultModelKey) ?? GeminiAppSettings.defaultModel,
+            autoConnectOnLaunch: userDefaults.object(forKey: autoConnectKey) as? Bool ?? true
+        )
+    }
+
+    func saveSettings(_ settings: GeminiAppSettings) {
+        if let executableOverridePath = settings.executableOverridePath {
+            userDefaults.set(executableOverridePath, forKey: executablePathKey)
+        } else {
+            userDefaults.removeObject(forKey: executablePathKey)
+        }
+
+        userDefaults.set(settings.defaultModel, forKey: defaultModelKey)
+        userDefaults.set(settings.autoConnectOnLaunch, forKey: autoConnectKey)
+    }
+}
+
+@MainActor
+final class TransientGeminiAppSettingsPersistence: GeminiAppSettingsPersisting {
+    private var settings: GeminiAppSettings
+
+    init(settings: GeminiAppSettings = .default) {
+        self.settings = settings
+    }
+
+    func loadSettings() -> GeminiAppSettings {
+        settings
+    }
+
+    func saveSettings(_ settings: GeminiAppSettings) {
+        self.settings = settings
+    }
+}
+
 @MainActor
 protocol AppWorkspaceSelectionPersisting: AnyObject {
     func selectedWorkspacePath() -> String?
@@ -233,37 +332,43 @@ final class TransientWorkspaceSessionPersistence: ACPWorkspaceSessionPersisting 
 final class AppShellModel {
     let launchMode: AppLaunchMode
 
+    var geminiSettings: GeminiAppSettings
     var selectedWorkspacePath: String?
     var blockingSetupState: AppBlockingSetupState = .none
     var mountedStore: ACPStore?
 
     @ObservationIgnored private let sessionPersistence: ACPWorkspaceSessionPersisting
+    @ObservationIgnored private let settingsPersistence: GeminiAppSettingsPersisting
     @ObservationIgnored private let workspaceSelectionPersistence: AppWorkspaceSelectionPersisting
-    @ObservationIgnored private let storeFactory: (String, ACPWorkspaceSessionPersisting) -> ACPStore
-    @ObservationIgnored private let shouldAutostart: Bool
+    @ObservationIgnored private let storeFactory: (String, ACPWorkspaceSessionPersisting, GeminiAppSettings) -> ACPStore
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
 
     init(
         configuration: AppLaunchConfiguration = .fromCurrentEnvironment(),
         autostart: Bool = true,
         sessionPersistence: ACPWorkspaceSessionPersisting? = nil,
+        settingsPersistence: GeminiAppSettingsPersisting? = nil,
         workspaceSelectionPersistence: AppWorkspaceSelectionPersisting? = nil,
-        storeFactory: @escaping (String, ACPWorkspaceSessionPersisting) -> ACPStore = { workspacePath, sessionPersistence in
+        storeFactory: @escaping (String, ACPWorkspaceSessionPersisting, GeminiAppSettings) -> ACPStore = { workspacePath, sessionPersistence, settings in
             ACPStore(
                 cwd: workspacePath,
+                geminiSettings: settings,
                 sessionPersistence: sessionPersistence
             )
         }
     ) {
         launchMode = configuration.launchMode
-        shouldAutostart = autostart
         self.storeFactory = storeFactory
         self.sessionPersistence = sessionPersistence ?? (configuration.launchMode == .live
             ? ACPWorkspaceSessionStore.standard
             : TransientWorkspaceSessionPersistence())
+        self.settingsPersistence = settingsPersistence ?? (configuration.launchMode == .live
+            ? GeminiAppSettingsStore.standard
+            : TransientGeminiAppSettingsPersistence())
         self.workspaceSelectionPersistence = workspaceSelectionPersistence ?? (configuration.launchMode == .live
             ? AppWorkspaceSelectionStore.standard
             : TransientWorkspaceSelectionPersistence())
+        geminiSettings = self.settingsPersistence.loadSettings()
         selectedWorkspacePath = Self.resolveInitialWorkspacePath(
             configuration: configuration,
             workspaceSelectionPersistence: self.workspaceSelectionPersistence
@@ -299,7 +404,7 @@ final class AppShellModel {
     private func configureInitialState(using configuration: AppLaunchConfiguration, autostart: Bool) {
         switch configuration.launchMode {
         case .live:
-            configureLiveState(autostart: autostart)
+            configureLiveState(autostart: autostart && geminiSettings.autoConnectOnLaunch)
         case .preview, .uiTest:
             configureMockState(scenario: configuration.mockScenario, autostart: autostart)
         }
@@ -355,7 +460,7 @@ final class AppShellModel {
 
     func openWorkspace(at workspacePath: String) {
         guard launchMode == .live else { return }
-        mountLiveWorkspace(path: workspacePath, autostart: shouldAutostart)
+        mountLiveWorkspace(path: workspacePath, autostart: true)
     }
 
     func closeWorkspace() {
@@ -370,14 +475,63 @@ final class AppShellModel {
         )
     }
 
+    func saveGeminiSettings(
+        executableOverridePath: String?,
+        defaultModel: String,
+        autoConnectOnLaunch: Bool
+    ) {
+        let settings = GeminiAppSettings(
+            executableOverridePath: executableOverridePath,
+            defaultModel: defaultModel,
+            autoConnectOnLaunch: autoConnectOnLaunch
+        )
+        geminiSettings = settings
+        settingsPersistence.saveSettings(settings)
+    }
+
+    func reconnectWorkspace() {
+        guard launchMode == .live else { return }
+        guard selectedWorkspacePath != nil else { return }
+        mountLiveWorkspace(path: selectedWorkspacePath, autostart: true, forceRemount: true)
+    }
+
+    func resetWorkspaceSession() {
+        guard launchMode == .live else { return }
+        guard let selectedWorkspacePath else { return }
+        sessionPersistence.removeSession(for: selectedWorkspacePath)
+        mountLiveWorkspace(path: selectedWorkspacePath, autostart: true, forceRemount: true)
+    }
+
+    var presentedSetupState: AppBlockingSetupState {
+        if let recoverySetupState = mountedStore?.recoverySetupState {
+            return recoverySetupState
+        }
+
+        return blockingSetupState
+    }
+
+    var showsSetupSurface: Bool {
+        mountedStore == nil || presentedSetupState != .none
+    }
+
+    var connectionStatusText: String {
+        mountedStore?.statusText ?? presentedSetupState.title ?? "Gemini offline"
+    }
+
+    var isConnectionErrorVisible: Bool {
+        mountedStore?.isErrorVisible ?? (presentedSetupState != .none)
+    }
+
     private func mountLiveWorkspace(
         path: String?,
         autostart: Bool,
-        unavailableWorkspacePath: String? = nil
+        unavailableWorkspacePath: String? = nil,
+        forceRemount: Bool = false
     ) {
         let canonicalWorkspacePath = canonicalExistingWorkspacePath(path)
 
         if
+            !forceRemount,
             let canonicalWorkspacePath,
             selectedWorkspacePath == canonicalWorkspacePath,
             mountedStore != nil
@@ -404,7 +558,7 @@ final class AppShellModel {
         workspaceSelectionPersistence.saveSelectedWorkspacePath(canonicalWorkspacePath)
         blockingSetupState = .none
 
-        let store = storeFactory(canonicalWorkspacePath, sessionPersistence)
+        let store = storeFactory(canonicalWorkspacePath, sessionPersistence, geminiSettings)
         mountedStore = store
 
         guard autostart else { return }

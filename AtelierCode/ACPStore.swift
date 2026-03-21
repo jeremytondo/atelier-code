@@ -103,6 +103,31 @@ final class ACPWorkspaceSessionStore: ACPWorkspaceSessionPersisting {
     }
 }
 
+nonisolated enum ACPRecoveryIssueKind: Equatable, Sendable {
+    case missingExecutable
+    case authenticationRequired
+    case modelUnavailable
+    case subprocessFailure
+    case transportFailure
+}
+
+nonisolated struct ACPRecoveryIssue: Equatable, Sendable {
+    let kind: ACPRecoveryIssueKind
+    let title: String
+    let detail: String
+    let recoverySuggestion: String?
+    let suggestedCommand: String?
+
+    var setupState: AppBlockingSetupState {
+        .message(
+            title: title,
+            detail: [detail, recoverySuggestion]
+                .compactMap { $0 }
+                .joined(separator: "\n\n")
+        )
+    }
+}
+
 @MainActor
 @Observable
 final class ACPStore {
@@ -114,11 +139,13 @@ final class ACPStore {
     var isConnecting = false
     var isSending = false
     var lastErrorDescription: String?
+    var recoveryIssue: ACPRecoveryIssue?
     var currentAssistantMessageIndex: Int?
     var scrollTargetMessageID: UUID?
 
     @ObservationIgnored private let sessionClient: ACPSessionClient
     @ObservationIgnored private let cwd: String
+    @ObservationIgnored private let geminiSettings: GeminiAppSettings
     @ObservationIgnored private let clientInfo: ACPImplementationInfo
     @ObservationIgnored private let clientCapabilities: ACPClientCapabilities
     @ObservationIgnored private let mcpServers: [ACPMCPServer]
@@ -127,21 +154,29 @@ final class ACPStore {
     @ObservationIgnored private var terminalMessageIDs: [String: UUID] = [:]
     @ObservationIgnored private var toolCallMessageIDs: [String: UUID] = [:]
     @ObservationIgnored private var terminalOutputSnapshots: [String: String] = [:]
+    @ObservationIgnored private var latestTransportDiagnostic: String?
 
     init(
-        transport: AgentTransport = LocalACPTransport(),
+        transport: AgentTransport? = nil,
         cwd: String = AppWorkingDirectory.resolve(),
+        geminiSettings: GeminiAppSettings = .default,
         clientInfo: ACPImplementationInfo = .atelierCode,
         clientCapabilities: ACPClientCapabilities = .atelierCodeDefaults,
         mcpServers: [ACPMCPServer] = [],
         sessionPersistence: ACPWorkspaceSessionPersisting = ACPWorkspaceSessionStore.standard
     ) {
+        let resolvedTransport = transport ?? LocalACPTransport(
+            executableOverridePath: geminiSettings.executableOverridePath,
+            model: geminiSettings.defaultModel
+        )
+
         self.cwd = cwd
+        self.geminiSettings = geminiSettings
         self.clientInfo = clientInfo
         self.clientCapabilities = clientCapabilities
         self.mcpServers = mcpServers
         self.sessionPersistence = sessionPersistence
-        sessionClient = ACPSessionClient(transport: transport)
+        sessionClient = ACPSessionClient(transport: resolvedTransport)
         sessionClient.onSessionUpdate = { [weak self] params in
             self?.handleSessionUpdate(params)
         }
@@ -159,6 +194,12 @@ final class ACPStore {
         sessionClient.onTransportError = { [weak self] error in
             self?.handleFailure(error)
         }
+
+        if let localTransport = resolvedTransport as? LocalACPTransport {
+            localTransport.onDiagnostic = { [weak self] diagnostic in
+                self?.latestTransportDiagnostic = diagnostic
+            }
+        }
     }
 
     var canSendPrompt: Bool {
@@ -175,7 +216,15 @@ final class ACPStore {
         isSending && connectionState != .cancelling
     }
 
+    var recoverySetupState: AppBlockingSetupState? {
+        recoveryIssue?.setupState
+    }
+
     var statusText: String {
+        if let recoveryIssue {
+            return recoveryIssue.title
+        }
+
         if let lastErrorDescription, !lastErrorDescription.isEmpty {
             return lastErrorDescription
         }
@@ -197,7 +246,7 @@ final class ACPStore {
     }
 
     var isErrorVisible: Bool {
-        lastErrorDescription != nil
+        recoveryIssue != nil || lastErrorDescription != nil
     }
 
     private var trimmedDraftPrompt: String {
@@ -218,6 +267,7 @@ final class ACPStore {
             return
         }
 
+        recoveryIssue = nil
         lastErrorDescription = nil
         isConnecting = true
         let persistedSessionID = sessionPersistence.sessionID(for: cwd)
@@ -302,12 +352,14 @@ final class ACPStore {
         isConnecting = false
         isSending = false
         lastErrorDescription = nil
+        recoveryIssue = nil
         currentAssistantMessageIndex = nil
         scrollTargetMessageID = nil
         nextActivitySequence = 1
         terminalMessageIDs = [:]
         toolCallMessageIDs = [:]
         terminalOutputSnapshots = [:]
+        latestTransportDiagnostic = nil
     }
 
     private func prepareForPrompt(_ prompt: String) {
@@ -533,10 +585,65 @@ final class ACPStore {
         terminalMessageIDs.removeAll()
         toolCallMessageIDs.removeAll()
         lastErrorDescription = error.localizedDescription
+        recoveryIssue = classifyRecoveryIssue(for: error)
         isConnecting = false
         isSending = false
         currentAssistantMessageIndex = nil
         connectionState = .disconnected
+    }
+
+    private func classifyRecoveryIssue(for error: any Error) -> ACPRecoveryIssue {
+        if let error = error as? GeminiExecutableLocatorError {
+            return ACPRecoveryIssue(
+                kind: .missingExecutable,
+                title: "Gemini executable not found",
+                detail: error.localizedDescription,
+                recoverySuggestion: "Set a valid Gemini executable override in Settings or install `gemini`, then reconnect.",
+                suggestedCommand: nil
+            )
+        }
+
+        if let error = error as? ACPSessionClientError {
+            switch error {
+            case .authenticationRequired:
+                return ACPRecoveryIssue(
+                    kind: .authenticationRequired,
+                    title: "Gemini authentication required",
+                    detail: error.localizedDescription,
+                    recoverySuggestion: "Re-authenticate Gemini in Terminal, then reconnect from AtelierCode.",
+                    suggestedCommand: "gemini"
+                )
+            case .modelUnavailable:
+                return ACPRecoveryIssue(
+                    kind: .modelUnavailable,
+                    title: "Configured Gemini model unavailable",
+                    detail: "Model: \(geminiSettings.defaultModel)\n\(error.localizedDescription)",
+                    recoverySuggestion: "Choose an available model in Settings, then reconnect or reset the session.",
+                    suggestedCommand: nil
+                )
+            default:
+                break
+            }
+        }
+
+        if let error = error as? LocalACPTransportError {
+            let suggestion = latestTransportDiagnostic.map { "Last Gemini diagnostic: \($0)" }
+            return ACPRecoveryIssue(
+                kind: .subprocessFailure,
+                title: "Gemini subprocess failed",
+                detail: error.localizedDescription,
+                recoverySuggestion: suggestion ?? "Reconnect to launch a fresh Gemini ACP subprocess.",
+                suggestedCommand: nil
+            )
+        }
+
+        return ACPRecoveryIssue(
+            kind: .transportFailure,
+            title: "Gemini connection failed",
+            detail: error.localizedDescription,
+            recoverySuggestion: "Reconnect to retry the ACP session, or reset the session if resume state may be stale.",
+            suggestedCommand: nil
+        )
     }
 
     func activities(for messageID: UUID) -> [ACPMessageActivity] {

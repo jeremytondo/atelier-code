@@ -66,6 +66,124 @@ struct ACPStoreTests {
         #expect(store.isErrorVisible == false)
     }
 
+    @Test func missingExecutableFailureProducesRecoveryIssue() async throws {
+        let transport = FakeACPStoreTransport()
+        transport.onStart = {
+            throw GeminiExecutableLocatorError.executableNotFound(
+                executableName: "gemini",
+                searchedPaths: ["/tmp/missing-gemini"]
+            )
+        }
+        let store = ACPStore(
+            transport: transport,
+            cwd: "/tmp/atelier",
+            geminiSettings: GeminiAppSettings(executableOverridePath: "/tmp/missing-gemini")
+        )
+
+        await store.connect()
+
+        let recoveryIssue = try #require(store.recoveryIssue)
+        #expect(recoveryIssue.kind == .missingExecutable)
+        #expect(recoveryIssue.detail.contains("/tmp/missing-gemini"))
+        #expect(store.recoverySetupState?.title == "Gemini executable not found")
+    }
+
+    @Test func authenticationFailureProducesRecoveryIssue() async throws {
+        let transport = FakeACPStoreTransport()
+        let store = ACPStore(transport: transport, cwd: "/tmp/atelier")
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id?.intValue)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "error": {
+                    "code": -32000,
+                    "message": "Authentication required"
+                  }
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        await store.connect()
+
+        let recoveryIssue = try #require(store.recoveryIssue)
+        #expect(recoveryIssue.kind == .authenticationRequired)
+        #expect(recoveryIssue.suggestedCommand == "gemini")
+        #expect(store.statusText == "Gemini authentication required")
+    }
+
+    @Test func modelUnavailableFailureProducesRecoveryIssue() async throws {
+        let transport = FakeACPStoreTransport()
+        let store = ACPStore(
+            transport: transport,
+            cwd: "/tmp/atelier",
+            geminiSettings: GeminiAppSettings(defaultModel: "gemini-bad-model")
+        )
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id?.intValue)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "error": {
+                    "code": -32000,
+                    "message": "Model not found"
+                  }
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        await store.connect()
+
+        let recoveryIssue = try #require(store.recoveryIssue)
+        #expect(recoveryIssue.kind == .modelUnavailable)
+        #expect(recoveryIssue.detail.contains("gemini-bad-model"))
+        #expect(store.statusText == "Configured Gemini model unavailable")
+    }
+
     @Test func appWorkingDirectoryAvoidsFilesystemRootFallback() {
         #expect(
             AppWorkingDirectory.resolve(
@@ -723,7 +841,9 @@ struct ACPStoreTests {
         #expect(store.isConnecting == false)
         #expect(store.isSending == false)
         #expect(store.isErrorVisible == true)
-        #expect(store.statusText == FakeACPStoreTransportError.transportStopped.localizedDescription)
+        #expect(store.statusText == "Gemini connection failed")
+        #expect(store.lastErrorDescription == FakeACPStoreTransportError.transportStopped.localizedDescription)
+        #expect(store.recoveryIssue?.kind == .transportFailure)
     }
 
     @Test func transportFailureResetsSendabilityAndSurfacesError() async {
@@ -773,8 +893,10 @@ struct ACPStoreTests {
         #expect(store.isConnecting == false)
         #expect(store.currentAssistantMessageIndex == nil)
         #expect(store.isErrorVisible == true)
-        #expect(store.statusText == FakeACPStoreTransportError.transportStopped.localizedDescription)
+        #expect(store.statusText == "Gemini connection failed")
+        #expect(store.lastErrorDescription == FakeACPStoreTransportError.transportStopped.localizedDescription)
         #expect(store.canSendPrompt == false)
+        #expect(store.recoveryIssue?.kind == .transportFailure)
     }
 
     @Test func promptFailureStopsTransportAndAllowsReconnect() async {
@@ -834,7 +956,9 @@ struct ACPStoreTests {
         #expect(store.connectionState == .disconnected)
         #expect(store.isSending == false)
         #expect(store.isErrorVisible == true)
-        #expect(store.statusText.contains("Prompt failed"))
+        #expect(store.statusText == "Gemini connection failed")
+        #expect(store.lastErrorDescription?.contains("Prompt failed") == true)
+        #expect(store.recoveryIssue?.detail.contains("Prompt failed") == true)
         #expect(transport.stopCallCount == 1)
 
         await store.connect()
@@ -920,6 +1044,7 @@ struct ACPStoreTests {
 @MainActor
 private final class FakeACPStoreTransport: AgentTransport {
     var onReceive: ((Result<Data, any Error>) -> Void)?
+    var onStart: (() throws -> Void)?
     var onSend: ((Data) throws -> Void)?
 
     private(set) var startCallCount = 0
@@ -927,6 +1052,7 @@ private final class FakeACPStoreTransport: AgentTransport {
 
     func start() throws {
         startCallCount += 1
+        try onStart?()
     }
 
     func stop() {

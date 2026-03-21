@@ -134,13 +134,24 @@ final class LocalACPTransport: AgentTransport {
     private var stderrFramer = JSONLMessageFramer()
 
     init(
-        executableLocator: GeminiExecutableLocator = GeminiExecutableLocator(),
-        arguments: [String] = ["--acp", "--model", "gemini-2.5-pro"],
+        executableOverridePath: String? = nil,
+        model: String = GeminiAppSettings.defaultModel,
+        executableLocator: GeminiExecutableLocator? = nil,
+        arguments: [String]? = nil,
         processFactory: @escaping () -> Process = { Process() },
         pipeFactory: @escaping () -> Pipe = { Pipe() }
     ) {
-        self.executableLocator = executableLocator
-        self.arguments = arguments
+        if let executableLocator {
+            self.executableLocator = executableLocator
+        } else if let executableOverridePath {
+            self.executableLocator = GeminiExecutableLocator(
+                knownPaths: [executableOverridePath] + GeminiExecutableLocator.commonInstallPaths
+            )
+        } else {
+            self.executableLocator = GeminiExecutableLocator()
+        }
+
+        self.arguments = arguments ?? ["--acp", "--model", model]
         self.processFactory = processFactory
         self.pipeFactory = pipeFactory
     }

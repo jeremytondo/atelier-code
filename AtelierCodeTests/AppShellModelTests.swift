@@ -77,6 +77,7 @@ struct AppShellModelTests {
             ),
             autostart: false,
             sessionPersistence: TransientWorkspaceSessionPersistence(),
+            settingsPersistence: TransientGeminiAppSettingsPersistence(),
             workspaceSelectionPersistence: InMemoryWorkspaceSelectionPersistence()
         )
 
@@ -110,6 +111,7 @@ struct AppShellModelTests {
             ),
             autostart: false,
             sessionPersistence: TransientWorkspaceSessionPersistence(),
+            settingsPersistence: TransientGeminiAppSettingsPersistence(),
             workspaceSelectionPersistence: selectionPersistence
         )
 
@@ -139,6 +141,7 @@ struct AppShellModelTests {
             ),
             autostart: false,
             sessionPersistence: TransientWorkspaceSessionPersistence(),
+            settingsPersistence: TransientGeminiAppSettingsPersistence(),
             workspaceSelectionPersistence: selectionPersistence
         )
 
@@ -194,6 +197,7 @@ struct AppShellModelTests {
             ),
             autostart: false,
             sessionPersistence: TransientWorkspaceSessionPersistence(),
+            settingsPersistence: TransientGeminiAppSettingsPersistence(),
             workspaceSelectionPersistence: selectionPersistence
         )
 
@@ -210,6 +214,86 @@ struct AppShellModelTests {
                 detail: "Open a workspace to start a fresh ACP session."
             )
         )
+    }
+
+    @Test func liveModeLoadsPersistedGeminiSettings() throws {
+        let fileManager = FileManager.default
+        let workspaceURL = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: workspaceURL)
+        }
+
+        let settingsPersistence = TransientGeminiAppSettingsPersistence(
+            settings: GeminiAppSettings(
+                executableOverridePath: "/tmp/custom-gemini",
+                defaultModel: "gemini-2.5-flash",
+                autoConnectOnLaunch: false
+            )
+        )
+        let model = AppShellModel(
+            configuration: AppLaunchConfiguration(
+                launchMode: .live,
+                selectedWorkspacePath: workspaceURL.path
+            ),
+            autostart: true,
+            sessionPersistence: TransientWorkspaceSessionPersistence(),
+            settingsPersistence: settingsPersistence,
+            workspaceSelectionPersistence: InMemoryWorkspaceSelectionPersistence()
+        )
+
+        #expect(model.geminiSettings.executableOverridePath == "/tmp/custom-gemini")
+        #expect(model.geminiSettings.defaultModel == "gemini-2.5-flash")
+        #expect(model.geminiSettings.autoConnectOnLaunch == false)
+        #expect(model.mountedStore?.connectionState == .disconnected)
+    }
+
+    @Test func reconnectAndResetRemountWorkspaceUsingLatestGeminiSettings() throws {
+        let fileManager = FileManager.default
+        let workspaceURL = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: workspaceURL)
+        }
+
+        let sessionPersistence = InMemoryWorkspaceSessionPersistence(
+            storedSessions: [workspaceURL.path: "session_resume"]
+        )
+        var capturedSettings: [GeminiAppSettings] = []
+        let model = AppShellModel(
+            configuration: AppLaunchConfiguration(
+                launchMode: .live,
+                selectedWorkspacePath: workspaceURL.path
+            ),
+            autostart: false,
+            sessionPersistence: sessionPersistence,
+            settingsPersistence: TransientGeminiAppSettingsPersistence(),
+            workspaceSelectionPersistence: InMemoryWorkspaceSelectionPersistence(),
+            storeFactory: { workspacePath, sessionPersistence, settings in
+                capturedSettings.append(settings)
+                return ACPStore(
+                    transport: MockACPTransport(scenario: .ready),
+                    cwd: workspacePath,
+                    geminiSettings: settings,
+                    sessionPersistence: sessionPersistence
+                )
+            }
+        )
+
+        model.saveGeminiSettings(
+            executableOverridePath: "/tmp/override-gemini",
+            defaultModel: "gemini-2.5-flash",
+            autoConnectOnLaunch: true
+        )
+        model.reconnectWorkspace()
+        model.resetWorkspaceSession()
+
+        #expect(capturedSettings.count == 3)
+        #expect(capturedSettings.last?.executableOverridePath == "/tmp/override-gemini")
+        #expect(capturedSettings.last?.defaultModel == "gemini-2.5-flash")
+        #expect(sessionPersistence.storedSessions[workspaceURL.path] == nil)
     }
 }
 
@@ -231,5 +315,26 @@ private final class InMemoryWorkspaceSelectionPersistence: AppWorkspaceSelection
 
     func clearSelectedWorkspacePath() {
         storedWorkspacePath = nil
+    }
+}
+
+@MainActor
+private final class InMemoryWorkspaceSessionPersistence: ACPWorkspaceSessionPersisting {
+    var storedSessions: [String: String]
+
+    init(storedSessions: [String: String] = [:]) {
+        self.storedSessions = storedSessions
+    }
+
+    func sessionID(for workspaceRoot: String) -> String? {
+        storedSessions[workspaceRoot]
+    }
+
+    func save(sessionID: String, for workspaceRoot: String) {
+        storedSessions[workspaceRoot] = sessionID
+    }
+
+    func removeSession(for workspaceRoot: String) {
+        storedSessions.removeValue(forKey: workspaceRoot)
     }
 }
