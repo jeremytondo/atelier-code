@@ -6,6 +6,9 @@
 //
 
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#endif
 
 struct AppShellView: View {
     @Bindable var model: AppShellModel
@@ -15,18 +18,45 @@ struct AppShellView: View {
             if let store = model.mountedStore, model.blockingSetupState == .none {
                 ContentView(
                     store: store,
-                    workspacePath: model.selectedWorkspacePath
+                    workspacePath: model.selectedWorkspacePath,
+                    onOpenWorkspace: { openWorkspacePicker() },
+                    onCloseWorkspace: { model.closeWorkspace() }
                 )
             } else {
                 AppShellStateView(
                     launchMode: model.launchMode,
                     setupState: model.blockingSetupState,
-                    workspacePath: model.selectedWorkspacePath
+                    workspacePath: model.selectedWorkspacePath,
+                    onOpenWorkspace: { openWorkspacePicker() },
+                    onCloseWorkspace: { model.closeWorkspace() }
                 )
             }
         }
         .frame(minWidth: 640, minHeight: 520)
         .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private func openWorkspacePicker() {
+        guard model.launchMode == .live else { return }
+
+        #if canImport(AppKit)
+        let panel = NSOpenPanel()
+        panel.title = "Choose a workspace"
+        panel.message = "Open a folder to start or switch the active ACP workspace."
+        panel.prompt = model.selectedWorkspacePath == nil ? "Open Workspace" : "Switch Workspace"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.resolvesAliases = true
+
+        if let selectedWorkspacePath = model.selectedWorkspacePath {
+            panel.directoryURL = URL(fileURLWithPath: selectedWorkspacePath, isDirectory: true)
+        }
+
+        guard panel.runModal() == .OK, let workspaceURL = panel.url else { return }
+        model.openWorkspace(at: workspaceURL.path)
+        #endif
     }
 }
 
@@ -34,6 +64,8 @@ private struct AppShellStateView: View {
     let launchMode: AppLaunchMode
     let setupState: AppBlockingSetupState
     let workspacePath: String?
+    let onOpenWorkspace: () -> Void
+    let onCloseWorkspace: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -76,12 +108,30 @@ private struct AppShellStateView: View {
 
                         Text(cardDetail)
                             .font(.body)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                        Text(modeText)
-                            .font(.footnote.weight(.medium))
-                            .foregroundStyle(.secondary)
+                    if launchMode == .live {
+                        HStack(spacing: 10) {
+                            Button(workspacePath == nil ? "Open Workspace" : "Switch Workspace") {
+                                onOpenWorkspace()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("workspace.open")
+
+                            if workspacePath != nil {
+                                Button("Close Workspace") {
+                                    onCloseWorkspace()
+                                }
+                                .buttonStyle(.bordered)
+                                .accessibilityIdentifier("workspace.close")
+                            }
+                        }
+                    }
+
+                    Text(modeText)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.secondary)
                     }
                     .padding(24)
                     .frame(maxWidth: .infinity, alignment: .leading)

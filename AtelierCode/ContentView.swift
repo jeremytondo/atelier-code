@@ -10,6 +10,8 @@ import SwiftUI
 struct ContentView: View {
     @Bindable var store: ACPStore
     let workspacePath: String?
+    let onOpenWorkspace: () -> Void
+    let onCloseWorkspace: () -> Void
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -79,16 +81,30 @@ struct ContentView: View {
 
             Spacer()
 
-            Text(store.statusText)
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(store.isErrorVisible ? Color.red : Color.secondary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(
-                    Capsule()
-                        .fill(store.isErrorVisible ? Color.red.opacity(0.12) : Color.black.opacity(0.05))
-                )
-                .accessibilityIdentifier("shell.status")
+            HStack(spacing: 10) {
+                Button("Switch Workspace") {
+                    onOpenWorkspace()
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("workspace.open")
+
+                Button("Close Workspace") {
+                    onCloseWorkspace()
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("workspace.close")
+
+                Text(store.statusText)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(store.isErrorVisible ? Color.red : Color.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule()
+                            .fill(store.isErrorVisible ? Color.red.opacity(0.12) : Color.black.opacity(0.05))
+                    )
+                    .accessibilityIdentifier("shell.status")
+            }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)

@@ -8,6 +8,78 @@
 import Foundation
 import Observation
 
+@MainActor
+protocol AppWorkspaceSelectionPersisting: AnyObject {
+    func selectedWorkspacePath() -> String?
+    func saveSelectedWorkspacePath(_ workspacePath: String)
+    func clearSelectedWorkspacePath()
+}
+
+@MainActor
+final class AppWorkspaceSelectionStore: AppWorkspaceSelectionPersisting {
+    static let standard = AppWorkspaceSelectionStore()
+
+    private let userDefaults: UserDefaults
+    private let storageKey: String
+
+    init(
+        userDefaults: UserDefaults = .standard,
+        storageKey: String = "AtelierCode.SelectedWorkspacePath"
+    ) {
+        self.userDefaults = userDefaults
+        self.storageKey = storageKey
+    }
+
+    func selectedWorkspacePath() -> String? {
+        Self.canonicalWorkspacePath(userDefaults.string(forKey: storageKey))
+    }
+
+    func saveSelectedWorkspacePath(_ workspacePath: String) {
+        guard let workspacePath = Self.canonicalWorkspacePath(workspacePath) else {
+            clearSelectedWorkspacePath()
+            return
+        }
+
+        userDefaults.set(workspacePath, forKey: storageKey)
+    }
+
+    func clearSelectedWorkspacePath() {
+        userDefaults.removeObject(forKey: storageKey)
+    }
+
+    private static func canonicalWorkspacePath(_ workspacePath: String?) -> String? {
+        guard
+            let workspacePath = workspacePath?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !workspacePath.isEmpty
+        else {
+            return nil
+        }
+
+        return URL(fileURLWithPath: workspacePath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+    }
+}
+
+@MainActor
+final class TransientWorkspaceSelectionPersistence: AppWorkspaceSelectionPersisting {
+    private var workspacePath: String?
+
+    func selectedWorkspacePath() -> String? {
+        workspacePath
+    }
+
+    func saveSelectedWorkspacePath(_ workspacePath: String) {
+        self.workspacePath = workspacePath
+    }
+
+    func clearSelectedWorkspacePath() {
+        workspacePath = nil
+    }
+}
+
 nonisolated enum AppLaunchMode: String, Sendable {
     case live
     case preview
@@ -109,6 +181,8 @@ nonisolated struct AppLaunchConfiguration: Sendable {
         currentDirectoryPath: String = FileManager.default.currentDirectoryPath,
         userHomeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path
     ) -> AppLaunchConfiguration {
+        _ = currentDirectoryPath
+        _ = userHomeDirectory
         let launchMode = AppLaunchMode.resolve(environment: environment)
         let mockScenario = AppMockScenario.resolve(environment: environment)
         let explicitWorkspacePath = trimmedPath(environment["ATELIERCODE_WORKSPACE_PATH"])
@@ -116,13 +190,7 @@ nonisolated struct AppLaunchConfiguration: Sendable {
         let selectedWorkspacePath: String?
         switch launchMode {
         case .live:
-            selectedWorkspacePath =
-                explicitWorkspacePath
-                ?? AppWorkingDirectory.resolve(
-                    currentEnvironment: environment,
-                    currentDirectoryPath: currentDirectoryPath,
-                    userHomeDirectory: userHomeDirectory
-                )
+            selectedWorkspacePath = explicitWorkspacePath
         case .preview, .uiTest:
             selectedWorkspacePath = explicitWorkspacePath ?? mockScenario.defaultWorkspacePath
         }
@@ -170,16 +238,36 @@ final class AppShellModel {
     var mountedStore: ACPStore?
 
     @ObservationIgnored private let sessionPersistence: ACPWorkspaceSessionPersisting
+    @ObservationIgnored private let workspaceSelectionPersistence: AppWorkspaceSelectionPersisting
+    @ObservationIgnored private let storeFactory: (String, ACPWorkspaceSessionPersisting) -> ACPStore
+    @ObservationIgnored private let shouldAutostart: Bool
+    @ObservationIgnored private var connectionTask: Task<Void, Never>?
 
     init(
         configuration: AppLaunchConfiguration = .fromCurrentEnvironment(),
-        autostart: Bool = true
+        autostart: Bool = true,
+        sessionPersistence: ACPWorkspaceSessionPersisting? = nil,
+        workspaceSelectionPersistence: AppWorkspaceSelectionPersisting? = nil,
+        storeFactory: @escaping (String, ACPWorkspaceSessionPersisting) -> ACPStore = { workspacePath, sessionPersistence in
+            ACPStore(
+                cwd: workspacePath,
+                sessionPersistence: sessionPersistence
+            )
+        }
     ) {
         launchMode = configuration.launchMode
-        selectedWorkspacePath = configuration.selectedWorkspacePath
-        sessionPersistence = configuration.launchMode == .live
+        shouldAutostart = autostart
+        self.storeFactory = storeFactory
+        self.sessionPersistence = sessionPersistence ?? (configuration.launchMode == .live
             ? ACPWorkspaceSessionStore.standard
-            : TransientWorkspaceSessionPersistence()
+            : TransientWorkspaceSessionPersistence())
+        self.workspaceSelectionPersistence = workspaceSelectionPersistence ?? (configuration.launchMode == .live
+            ? AppWorkspaceSelectionStore.standard
+            : TransientWorkspaceSelectionPersistence())
+        selectedWorkspacePath = Self.resolveInitialWorkspacePath(
+            configuration: configuration,
+            workspaceSelectionPersistence: self.workspaceSelectionPersistence
+        )
 
         configureInitialState(using: configuration, autostart: autostart)
     }
@@ -218,27 +306,11 @@ final class AppShellModel {
     }
 
     private func configureLiveState(autostart: Bool) {
-        guard let workspacePath = selectedWorkspacePath else {
-            blockingSetupState = .message(
-                title: "No workspace selected",
-                detail: "Phase 2 will add in-app workspace selection. For now the app uses the launch directory."
-            )
-            mountedStore = nil
-            return
-        }
-
-        blockingSetupState = .none
-        let store = ACPStore(
-            cwd: workspacePath,
-            sessionPersistence: sessionPersistence
+        mountLiveWorkspace(
+            path: selectedWorkspacePath,
+            autostart: autostart,
+            unavailableWorkspacePath: selectedWorkspacePath
         )
-        mountedStore = store
-
-        if autostart {
-            Task { @MainActor in
-                await store.connectIfNeeded()
-            }
-        }
     }
 
     private func configureMockState(scenario: AppMockScenario, autostart: Bool) {
@@ -278,6 +350,117 @@ final class AppShellModel {
                     await store.connectIfNeeded()
                 }
             }
+        }
+    }
+
+    func openWorkspace(at workspacePath: String) {
+        guard launchMode == .live else { return }
+        mountLiveWorkspace(path: workspacePath, autostart: shouldAutostart)
+    }
+
+    func closeWorkspace() {
+        guard launchMode == .live else { return }
+
+        teardownMountedStore()
+        workspaceSelectionPersistence.clearSelectedWorkspacePath()
+        selectedWorkspacePath = nil
+        blockingSetupState = .message(
+            title: "No workspace selected",
+            detail: "Open a workspace to start a fresh ACP session."
+        )
+    }
+
+    private func mountLiveWorkspace(
+        path: String?,
+        autostart: Bool,
+        unavailableWorkspacePath: String? = nil
+    ) {
+        let canonicalWorkspacePath = canonicalExistingWorkspacePath(path)
+
+        if
+            let canonicalWorkspacePath,
+            selectedWorkspacePath == canonicalWorkspacePath,
+            mountedStore != nil
+        {
+            blockingSetupState = .none
+            return
+        }
+
+        teardownMountedStore()
+
+        guard let canonicalWorkspacePath else {
+            workspaceSelectionPersistence.clearSelectedWorkspacePath()
+            selectedWorkspacePath = nil
+            blockingSetupState = .message(
+                title: "No workspace selected",
+                detail: unavailableWorkspacePath == nil
+                    ? "Open a workspace to start a fresh ACP session."
+                    : "The previously selected workspace is no longer available. Open a workspace to keep going."
+            )
+            return
+        }
+
+        selectedWorkspacePath = canonicalWorkspacePath
+        workspaceSelectionPersistence.saveSelectedWorkspacePath(canonicalWorkspacePath)
+        blockingSetupState = .none
+
+        let store = storeFactory(canonicalWorkspacePath, sessionPersistence)
+        mountedStore = store
+
+        guard autostart else { return }
+
+        connectionTask = Task { @MainActor [weak self, weak store] in
+            guard let self, let store else { return }
+            await store.connectIfNeeded()
+            if self.mountedStore === store {
+                self.connectionTask = nil
+            }
+        }
+    }
+
+    private func teardownMountedStore() {
+        connectionTask?.cancel()
+        connectionTask = nil
+        mountedStore?.teardown()
+        mountedStore = nil
+    }
+
+    private func canonicalExistingWorkspacePath(_ workspacePath: String?) -> String? {
+        guard
+            let workspacePath = workspacePath?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !workspacePath.isEmpty
+        else {
+            return nil
+        }
+
+        let canonicalPath = URL(fileURLWithPath: workspacePath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+
+        var isDirectory = ObjCBool(false)
+        guard FileManager.default.fileExists(atPath: canonicalPath, isDirectory: &isDirectory) else {
+            return nil
+        }
+
+        guard isDirectory.boolValue else {
+            return nil
+        }
+
+        return canonicalPath
+    }
+
+    private static func resolveInitialWorkspacePath(
+        configuration: AppLaunchConfiguration,
+        workspaceSelectionPersistence: AppWorkspaceSelectionPersisting
+    ) -> String? {
+        switch configuration.launchMode {
+        case .live:
+            return configuration.selectedWorkspacePath
+                ?? workspaceSelectionPersistence.selectedWorkspacePath()
+        case .preview, .uiTest:
+            return configuration.selectedWorkspacePath
         }
     }
 

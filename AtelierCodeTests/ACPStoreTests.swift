@@ -844,6 +844,77 @@ struct ACPStoreTests {
         #expect(store.isErrorVisible == false)
         #expect(transport.startCallCount == 2)
     }
+
+    @Test func teardownClearsTransientStateAndStopsTransport() async {
+        let transport = FakeACPStoreTransport()
+        let store = ACPStore(transport: transport, cwd: "/tmp/atelier")
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id?.intValue)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "sessionId": "session_123"
+                  }
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        await store.connect()
+        store.messages = [ConversationMessage(role: .assistant, text: "Temporary transcript")]
+        store.activitiesByMessageID = [UUID(): []]
+        store.terminalStates = [
+            "terminal_1": ACPTerminalState(
+                id: "terminal_1",
+                command: "pwd",
+                cwd: "/tmp/atelier",
+                output: "/tmp/atelier",
+                truncated: false,
+                exitStatus: nil,
+                isReleased: false
+            )
+        ]
+        store.draftPrompt = "Temporary draft"
+        store.lastErrorDescription = "Temporary error"
+        store.currentAssistantMessageIndex = 0
+        store.scrollTargetMessageID = UUID()
+
+        store.teardown()
+
+        #expect(store.connectionState == .disconnected)
+        #expect(store.messages.isEmpty)
+        #expect(store.activitiesByMessageID.isEmpty)
+        #expect(store.terminalStates.isEmpty)
+        #expect(store.draftPrompt.isEmpty)
+        #expect(store.isConnecting == false)
+        #expect(store.isSending == false)
+        #expect(store.lastErrorDescription == nil)
+        #expect(store.currentAssistantMessageIndex == nil)
+        #expect(store.scrollTargetMessageID == nil)
+        #expect(transport.stopCallCount == 1)
+    }
 }
 
 @MainActor

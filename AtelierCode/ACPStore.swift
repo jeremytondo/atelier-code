@@ -167,6 +167,10 @@ final class ACPStore {
         return hasActiveSession
     }
 
+    var workspacePath: String {
+        cwd
+    }
+
     var canCancelPrompt: Bool {
         isSending && connectionState != .cancelling
     }
@@ -286,6 +290,24 @@ final class ACPStore {
         } catch {
             handleFailure(error)
         }
+    }
+
+    func teardown() {
+        sessionClient.reset()
+        connectionState = .disconnected
+        messages = []
+        activitiesByMessageID = [:]
+        terminalStates = [:]
+        draftPrompt = ""
+        isConnecting = false
+        isSending = false
+        lastErrorDescription = nil
+        currentAssistantMessageIndex = nil
+        scrollTargetMessageID = nil
+        nextActivitySequence = 1
+        terminalMessageIDs = [:]
+        toolCallMessageIDs = [:]
+        terminalOutputSnapshots = [:]
     }
 
     private func prepareForPrompt(_ prompt: String) {
