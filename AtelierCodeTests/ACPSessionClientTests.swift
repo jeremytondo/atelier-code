@@ -2066,6 +2066,204 @@ struct ACPSessionClientTests {
         #expect(observedUpdates.first?.update.availableCommands?.first?.name == "memory")
     }
 
+    @Test func sessionClientCancelsInFlightPrompt() async throws {
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+        var sentMethods: [String] = []
+        var promptRequestID: Int?
+        var cancelledSessionID: String?
+
+        transport.onSend = { data in
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let method = try #require(object["method"] as? String)
+            sentMethods.append(method)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                let requestID = try #require(object["id"] as? Int)
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                let requestID = try #require(object["id"] as? Int)
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "sessionId": "session_123"
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionPrompt.rawValue:
+                promptRequestID = try #require(object["id"] as? Int)
+
+            case ACPMethod.sessionCancel.rawValue:
+                let params = try #require(object["params"] as? [String: Any])
+                cancelledSessionID = params["sessionId"] as? String
+                let requestID = try #require(promptRequestID)
+
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "stopReason": "cancelled"
+                  }
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        try await client.connect(cwd: "/tmp/atelier")
+
+        let promptTask = Task {
+            try await client.sendPrompt("Cancel this")
+        }
+
+        #expect(await waitUntil { promptRequestID != nil })
+
+        try client.cancelPrompt()
+        let response = try await promptTask.value
+
+        #expect(sentMethods == ["initialize", "session/new", "session/prompt", "session/cancel"])
+        #expect(cancelledSessionID == "session_123")
+        #expect(response.stopReason == "cancelled")
+        #expect(client.sessionID == "session_123")
+
+        do {
+            try client.cancelPrompt()
+            Issue.record("Expected cancelling after completion to fail.")
+        } catch let error as ACPSessionClientError {
+            switch error {
+            case .promptNotInFlight:
+                break
+            default:
+                Issue.record("Unexpected ACP error: \(error.localizedDescription)")
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error.localizedDescription)")
+        }
+    }
+
+    @Test func connectLoadsExistingSessionWhenAgentSupportsResume() async throws {
+        let transport = TranscriptAgentTransport(
+            exchanges: [
+                ACPTranscriptExchange(
+                    expectedMethod: ACPMethod.initialize.rawValue,
+                    responses: { requestID in
+                        ["""
+                        {
+                          "jsonrpc": "2.0",
+                          "id": \(requestID),
+                          "result": {
+                            "protocolVersion": 1,
+                            "agentCapabilities": {
+                              "loadSession": true
+                            }
+                          }
+                        }
+                        """]
+                    }
+                ),
+                ACPTranscriptExchange(
+                    expectedMethod: ACPMethod.sessionLoad.rawValue,
+                    assertRequest: { request in
+                        let params = try TranscriptAgentTransport.dictionaryValue(forKey: "params", in: request)
+
+                        #expect(params["sessionId"] as? String == "session_resume")
+                        #expect(params["cwd"] as? String == "/tmp/atelier")
+                    },
+                    responses: { requestID in
+                        ["""
+                        {
+                          "jsonrpc": "2.0",
+                          "id": \(requestID),
+                          "result": {}
+                        }
+                        """]
+                    }
+                ),
+            ]
+        )
+        let client = ACPSessionClient(transport: transport)
+
+        try await client.connect(cwd: "/tmp/atelier", resumeSessionID: "session_resume")
+
+        #expect(transport.sentMethods == ["initialize", "session/load"])
+        #expect(client.sessionID == "session_resume")
+    }
+
+    @Test func connectFallsBackToNewSessionWhenResumeLoadFails() async throws {
+        let transport = TranscriptAgentTransport(
+            exchanges: [
+                ACPTranscriptExchange(
+                    expectedMethod: ACPMethod.initialize.rawValue,
+                    responses: { requestID in
+                        ["""
+                        {
+                          "jsonrpc": "2.0",
+                          "id": \(requestID),
+                          "result": {
+                            "protocolVersion": 1,
+                            "agentCapabilities": {
+                              "loadSession": true
+                            }
+                          }
+                        }
+                        """]
+                    }
+                ),
+                ACPTranscriptExchange(
+                    expectedMethod: ACPMethod.sessionLoad.rawValue,
+                    responses: { requestID in
+                        ["""
+                        {
+                          "jsonrpc": "2.0",
+                          "id": \(requestID),
+                          "error": {
+                            "code": -32000,
+                            "message": "Session is no longer available"
+                          }
+                        }
+                        """]
+                    }
+                ),
+                ACPTranscriptExchange(
+                    expectedMethod: ACPMethod.sessionNew.rawValue,
+                    responses: { requestID in
+                        ["""
+                        {
+                          "jsonrpc": "2.0",
+                          "id": \(requestID),
+                          "result": {
+                            "sessionId": "session_fresh"
+                          }
+                        }
+                        """]
+                    }
+                ),
+            ]
+        )
+        let client = ACPSessionClient(transport: transport)
+
+        try await client.connect(cwd: "/tmp/atelier", resumeSessionID: "session_stale")
+
+        #expect(transport.sentMethods == ["initialize", "session/load", "session/new"])
+        #expect(client.sessionID == "session_fresh")
+    }
+
     @Test func sessionClientUsesInjectedPermissionPolicy() throws {
         let transport = FakeAgentTransport()
         let client = ACPSessionClient(
@@ -2371,6 +2569,7 @@ private enum TranscriptAgentTransportError: LocalizedError {
 private extension ACPSessionClientTimeouts {
     static let testValue = ACPSessionClientTimeouts(
         initialize: 0.05,
+        sessionLoad: 0.05,
         sessionNew: 0.05,
         sessionPrompt: 0.05
     )

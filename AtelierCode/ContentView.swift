@@ -139,18 +139,34 @@ struct ContentView: View {
 
             Button {
                 Task {
-                    await store.sendPrompt()
+                    if store.isSending {
+                        await store.cancelPrompt()
+                    } else {
+                        await store.sendPrompt()
+                    }
                 }
             } label: {
-                Text(store.isSending ? "Streaming" : "Send")
+                Text(sendButtonTitle)
                     .frame(minWidth: 88)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(!store.canSendPrompt)
+            .disabled(store.isSending ? !store.canCancelPrompt : !store.canSendPrompt)
         }
         .padding(20)
         .background(.ultraThinMaterial)
+    }
+
+    private var sendButtonTitle: String {
+        if store.connectionState == .cancelling {
+            return "Cancelling"
+        }
+
+        if store.isSending {
+            return "Cancel"
+        }
+
+        return "Send"
     }
 
     private var isRunningInPreview: Bool {

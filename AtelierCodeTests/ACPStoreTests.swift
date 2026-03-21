@@ -453,7 +453,7 @@ struct ACPStoreTests {
         }
         """)
 
-        let created = await waitUntil {
+        let created = await waitUntil(timeout: 5) {
             outboundResponses["terminal_create_store"] != nil
         }
         #expect(created)
@@ -462,12 +462,12 @@ struct ACPStoreTests {
         let result = try #require(createResponse["result"] as? [String: Any])
         let terminalID = try #require(result["terminalId"] as? String)
 
-        let updated = await waitUntil {
+        let updated = await waitUntil(timeout: 5) {
             store.terminalStates[terminalID]?.output.contains("store terminal") == true
         }
         #expect(updated)
 
-        let activityAppended = await waitUntil {
+        let activityAppended = await waitUntil(timeout: 5) {
             let assistantMessageID = store.messages.last?.id
             guard let assistantMessageID else { return false }
             return store.activities(for: assistantMessageID).contains(where: {
@@ -475,6 +475,255 @@ struct ACPStoreTests {
             })
         }
         #expect(activityAppended)
+    }
+
+    @Test func cancelPromptSendsCancelAndLeavesSessionUsable() async {
+        let transport = FakeACPStoreTransport()
+        let store = ACPStore(transport: transport, cwd: "/tmp/atelier")
+        var sentMethods: [String] = []
+        var promptRequestID: Int?
+
+        transport.onSend = { data in
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let method = try #require(object["method"] as? String)
+            sentMethods.append(method)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                let requestID = try #require(object["id"] as? Int)
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                let requestID = try #require(object["id"] as? Int)
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "sessionId": "session_123"
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionPrompt.rawValue:
+                promptRequestID = try #require(object["id"] as? Int)
+
+            case ACPMethod.sessionCancel.rawValue:
+                let requestID = try #require(promptRequestID)
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "stopReason": "cancelled"
+                  }
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        let sendTask = Task {
+            await store.sendMessage("Please stop")
+        }
+
+        #expect(await waitUntil { promptRequestID != nil })
+        await store.cancelPrompt()
+
+        #expect(store.connectionState == .cancelling)
+        await sendTask.value
+
+        #expect(sentMethods == ["initialize", "session/new", "session/prompt", "session/cancel"])
+        #expect(store.connectionState == .ready)
+        #expect(store.isSending == false)
+        #expect(store.isErrorVisible == false)
+        #expect(store.messages.last?.text == "Generation cancelled.")
+    }
+
+    @Test func connectResumesPersistedSessionWhenAvailable() async {
+        let transport = FakeACPStoreTransport()
+        let sessionPersistence = InMemoryWorkspaceSessionPersistence(
+            storedSessions: ["/tmp/atelier": "session_resume"]
+        )
+        let store = ACPStore(
+            transport: transport,
+            cwd: "/tmp/atelier",
+            sessionPersistence: sessionPersistence
+        )
+        var sentMethods: [String] = []
+
+        transport.onSend = { data in
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let method = try #require(object["method"] as? String)
+            sentMethods.append(method)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                let requestID = try #require(object["id"] as? Int)
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1,
+                    "agentCapabilities": {
+                      "loadSession": true
+                    }
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionLoad.rawValue:
+                let params = try #require(object["params"] as? [String: Any])
+                #expect(params["sessionId"] as? String == "session_resume")
+                let requestID = try #require(object["id"] as? Int)
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {}
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        await store.connect()
+
+        #expect(sentMethods == ["initialize", "session/load"])
+        #expect(store.connectionState == .ready)
+        #expect(store.isErrorVisible == false)
+        #expect(sessionPersistence.storedSessions["/tmp/atelier"] == "session_resume")
+    }
+
+    @Test func connectFallsBackToNewSessionAfterResumeFailure() async {
+        let transport = FakeACPStoreTransport()
+        let sessionPersistence = InMemoryWorkspaceSessionPersistence(
+            storedSessions: ["/tmp/atelier": "session_stale"]
+        )
+        let store = ACPStore(
+            transport: transport,
+            cwd: "/tmp/atelier",
+            sessionPersistence: sessionPersistence
+        )
+        var sentMethods: [String] = []
+
+        transport.onSend = { data in
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let method = try #require(object["method"] as? String)
+            sentMethods.append(method)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                let requestID = try #require(object["id"] as? Int)
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1,
+                    "agentCapabilities": {
+                      "loadSession": true
+                    }
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionLoad.rawValue:
+                let requestID = try #require(object["id"] as? Int)
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "error": {
+                    "code": -32000,
+                    "message": "Session expired"
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                let requestID = try #require(object["id"] as? Int)
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "sessionId": "session_fresh"
+                  }
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        await store.connect()
+
+        #expect(sentMethods == ["initialize", "session/load", "session/new"])
+        #expect(store.connectionState == .ready)
+        #expect(sessionPersistence.storedSessions["/tmp/atelier"] == "session_fresh")
+    }
+
+    @Test func resumeTransportFailureResetsStoreCleanly() async {
+        let transport = FakeACPStoreTransport()
+        let sessionPersistence = InMemoryWorkspaceSessionPersistence(
+            storedSessions: ["/tmp/atelier": "session_resume"]
+        )
+        let store = ACPStore(
+            transport: transport,
+            cwd: "/tmp/atelier",
+            sessionPersistence: sessionPersistence
+        )
+
+        transport.onSend = { data in
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let method = try #require(object["method"] as? String)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                let requestID = try #require(object["id"] as? Int)
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1,
+                    "agentCapabilities": {
+                      "loadSession": true
+                    }
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionLoad.rawValue:
+                transport.fail(FakeACPStoreTransportError.transportStopped)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        await store.connect()
+
+        #expect(store.connectionState == .disconnected)
+        #expect(store.isConnecting == false)
+        #expect(store.isSending == false)
+        #expect(store.isErrorVisible == true)
+        #expect(store.statusText == FakeACPStoreTransportError.transportStopped.localizedDescription)
     }
 
     @Test func transportFailureResetsSendabilityAndSurfacesError() async {
@@ -634,6 +883,27 @@ private enum FakeACPStoreTransportError: LocalizedError {
         case .transportStopped:
             return "The fake ACP transport stopped."
         }
+    }
+}
+
+@MainActor
+private final class InMemoryWorkspaceSessionPersistence: ACPWorkspaceSessionPersisting {
+    var storedSessions: [String: String]
+
+    init(storedSessions: [String: String] = [:]) {
+        self.storedSessions = storedSessions
+    }
+
+    func sessionID(for workspaceRoot: String) -> String? {
+        storedSessions[workspaceRoot]
+    }
+
+    func save(sessionID: String, for workspaceRoot: String) {
+        storedSessions[workspaceRoot] = sessionID
+    }
+
+    func removeSession(for workspaceRoot: String) {
+        storedSessions.removeValue(forKey: workspaceRoot)
     }
 }
 

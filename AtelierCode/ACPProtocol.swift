@@ -41,6 +41,12 @@ nonisolated struct ACPRequest<Params: Encodable & Sendable>: Encodable, Sendable
     let params: Params
 }
 
+nonisolated struct ACPNotificationRequest<Params: Encodable & Sendable>: Encodable, Sendable {
+    let jsonrpc = "2.0"
+    let method: String
+    let params: Params
+}
+
 nonisolated enum ACPRequestID: Codable, Equatable, Sendable {
     case int(Int)
     case string(String)
@@ -463,6 +469,14 @@ nonisolated struct ACPNewSessionResponse: Decodable, Equatable, Sendable {
     let sessionId: String
 }
 
+nonisolated struct ACPLoadSessionRequestParams: Codable, Equatable, Sendable {
+    let sessionId: String
+    let cwd: String
+    let mcpServers: [ACPMCPServer]
+}
+
+nonisolated struct ACPLoadSessionResponse: Decodable, Equatable, Sendable {}
+
 nonisolated struct ACPCancelPromptRequestParams: Codable, Equatable, Sendable {
     let sessionId: String
 }
@@ -766,11 +780,22 @@ nonisolated struct ACPSessionUpdate: Decodable, Equatable, Sendable {
                 }
             }
 
+            if let type = object["type"]?.stringValue, type != "text" {
+                return extractText(from: object["content"])
+            }
+
             if let contentText = extractText(from: object["content"]) {
                 return contentText
             }
 
-            let nestedText = object.values.compactMap(extractText(from:))
+            let nestedText = object.values.compactMap { nestedValue -> String? in
+                switch nestedValue {
+                case .object, .array:
+                    return extractText(from: nestedValue)
+                default:
+                    return nil
+                }
+            }
             guard !nestedText.isEmpty else { return nil }
             return nestedText.joined(separator: "\n")
         case .array(let array):

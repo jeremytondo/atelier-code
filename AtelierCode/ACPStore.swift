@@ -34,6 +34,75 @@ nonisolated enum AppWorkingDirectory: Sendable {
     }
 }
 
+nonisolated struct ACPPersistedWorkspaceSession: Codable, Equatable, Sendable {
+    let workspaceRoot: String
+    let sessionId: String
+    let updatedAt: Date
+}
+
+@MainActor
+protocol ACPWorkspaceSessionPersisting: AnyObject {
+    func sessionID(for workspaceRoot: String) -> String?
+    func save(sessionID: String, for workspaceRoot: String)
+    func removeSession(for workspaceRoot: String)
+}
+
+@MainActor
+final class ACPWorkspaceSessionStore: ACPWorkspaceSessionPersisting {
+    static let standard = ACPWorkspaceSessionStore()
+
+    private let userDefaults: UserDefaults
+    private let storageKey: String
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+
+    init(
+        userDefaults: UserDefaults = .standard,
+        storageKey: String = "AtelierCode.ACPWorkspaceSessions"
+    ) {
+        self.userDefaults = userDefaults
+        self.storageKey = storageKey
+    }
+
+    func sessionID(for workspaceRoot: String) -> String? {
+        storedSessions[Self.canonicalWorkspaceRoot(workspaceRoot)]?.sessionId
+    }
+
+    func save(sessionID: String, for workspaceRoot: String) {
+        var sessions = storedSessions
+        let canonicalWorkspaceRoot = Self.canonicalWorkspaceRoot(workspaceRoot)
+        sessions[canonicalWorkspaceRoot] = ACPPersistedWorkspaceSession(
+            workspaceRoot: canonicalWorkspaceRoot,
+            sessionId: sessionID,
+            updatedAt: Date()
+        )
+        persist(sessions)
+    }
+
+    func removeSession(for workspaceRoot: String) {
+        var sessions = storedSessions
+        sessions.removeValue(forKey: Self.canonicalWorkspaceRoot(workspaceRoot))
+        persist(sessions)
+    }
+
+    private var storedSessions: [String: ACPPersistedWorkspaceSession] {
+        guard let data = userDefaults.data(forKey: storageKey) else { return [:] }
+        return (try? decoder.decode([String: ACPPersistedWorkspaceSession].self, from: data)) ?? [:]
+    }
+
+    private func persist(_ sessions: [String: ACPPersistedWorkspaceSession]) {
+        guard let data = try? encoder.encode(sessions) else { return }
+        userDefaults.set(data, forKey: storageKey)
+    }
+
+    private static func canonicalWorkspaceRoot(_ workspaceRoot: String) -> String {
+        URL(fileURLWithPath: workspaceRoot)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+    }
+}
+
 @MainActor
 @Observable
 final class ACPStore {
@@ -53,6 +122,7 @@ final class ACPStore {
     @ObservationIgnored private let clientInfo: ACPImplementationInfo
     @ObservationIgnored private let clientCapabilities: ACPClientCapabilities
     @ObservationIgnored private let mcpServers: [ACPMCPServer]
+    @ObservationIgnored private let sessionPersistence: ACPWorkspaceSessionPersisting
     @ObservationIgnored private var nextActivitySequence = 1
     @ObservationIgnored private var terminalMessageIDs: [String: UUID] = [:]
     @ObservationIgnored private var toolCallMessageIDs: [String: UUID] = [:]
@@ -63,12 +133,14 @@ final class ACPStore {
         cwd: String = AppWorkingDirectory.resolve(),
         clientInfo: ACPImplementationInfo = .atelierCode,
         clientCapabilities: ACPClientCapabilities = .atelierCodeDefaults,
-        mcpServers: [ACPMCPServer] = []
+        mcpServers: [ACPMCPServer] = [],
+        sessionPersistence: ACPWorkspaceSessionPersisting = ACPWorkspaceSessionStore.standard
     ) {
         self.cwd = cwd
         self.clientInfo = clientInfo
         self.clientCapabilities = clientCapabilities
         self.mcpServers = mcpServers
+        self.sessionPersistence = sessionPersistence
         sessionClient = ACPSessionClient(transport: transport)
         sessionClient.onSessionUpdate = { [weak self] params in
             self?.handleSessionUpdate(params)
@@ -95,6 +167,10 @@ final class ACPStore {
         return hasActiveSession
     }
 
+    var canCancelPrompt: Bool {
+        isSending && connectionState != .cancelling
+    }
+
     var statusText: String {
         if let lastErrorDescription, !lastErrorDescription.isEmpty {
             return lastErrorDescription
@@ -105,10 +181,14 @@ final class ACPStore {
             return "Gemini offline"
         case .connecting:
             return "Starting Gemini ACP"
+        case .resuming:
+            return "Resuming ACP session"
         case .ready:
             return "ACP session ready"
         case .streaming:
             return "Streaming reply"
+        case .cancelling:
+            return "Cancelling reply"
         }
     }
 
@@ -136,9 +216,10 @@ final class ACPStore {
 
         lastErrorDescription = nil
         isConnecting = true
+        let persistedSessionID = sessionPersistence.sessionID(for: cwd)
 
         if !isSending {
-            connectionState = .connecting
+            connectionState = persistedSessionID == nil ? .connecting : .resuming
         }
 
         do {
@@ -146,8 +227,12 @@ final class ACPStore {
                 cwd: cwd,
                 clientInfo: clientInfo,
                 clientCapabilities: clientCapabilities,
+                resumeSessionID: persistedSessionID,
                 mcpServers: mcpServers
             )
+            if let sessionID = sessionClient.sessionID {
+                sessionPersistence.save(sessionID: sessionID, for: cwd)
+            }
             isConnecting = false
             connectionState = isSending ? .streaming : .ready
         } catch {
@@ -175,8 +260,8 @@ final class ACPStore {
         prepareForPrompt(prompt)
 
         do {
-            _ = try await sessionClient.sendPrompt(prompt)
-            finishStreaming()
+            let response = try await sessionClient.sendPrompt(prompt)
+            finishStreaming(stopReason: response.stopReason)
         } catch {
             handleFailure(error)
         }
@@ -188,6 +273,19 @@ final class ACPStore {
 
         draftPrompt = ""
         await sendMessage(prompt)
+    }
+
+    func cancelPrompt() async {
+        guard canCancelPrompt else { return }
+
+        lastErrorDescription = nil
+        connectionState = .cancelling
+
+        do {
+            try sessionClient.cancelPrompt()
+        } catch {
+            handleFailure(error)
+        }
     }
 
     private func prepareForPrompt(_ prompt: String) {
@@ -218,7 +316,9 @@ final class ACPStore {
 
         messages[currentAssistantMessageIndex].text += text
         scrollTargetMessageID = messages[currentAssistantMessageIndex].id
-        connectionState = .streaming
+        if connectionState != .cancelling {
+            connectionState = .streaming
+        }
         isSending = true
     }
 
@@ -297,7 +397,7 @@ final class ACPStore {
         let previousState = terminalStates[state.id]
         terminalStates[state.id] = state
 
-        let messageID = messageID(forTerminalID: state.id)
+        let messageID = messageID(forTerminalID: state.id) ?? makeStandaloneActivityMessage()
         terminalMessageIDs[state.id] = messageID
 
         let previousOutput = terminalOutputSnapshots[state.id] ?? previousState?.output ?? ""
@@ -393,7 +493,11 @@ final class ACPStore {
         }
     }
 
-    private func finishStreaming() {
+    private func finishStreaming(stopReason: String) {
+        if stopReason.caseInsensitiveCompare("cancelled") == .orderedSame {
+            fillEmptyAssistantMessageIfNeeded(with: "Generation cancelled.")
+        }
+
         currentAssistantMessageIndex = nil
         isSending = false
         isConnecting = false
@@ -510,5 +614,25 @@ final class ACPStore {
         }
 
         return "Finished"
+    }
+
+    private func makeStandaloneActivityMessage() -> UUID {
+        let message = ConversationMessage(role: .assistant, text: "Gemini activity")
+        messages.append(message)
+        activitiesByMessageID[message.id] = activitiesByMessageID[message.id, default: []]
+        scrollTargetMessageID = message.id
+        return message.id
+    }
+
+    private func fillEmptyAssistantMessageIfNeeded(with text: String) {
+        guard let currentAssistantMessageIndex else { return }
+        guard messages.indices.contains(currentAssistantMessageIndex) else { return }
+
+        let existingText = messages[currentAssistantMessageIndex].text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard existingText.isEmpty else { return }
+
+        messages[currentAssistantMessageIndex].text = text
+        scrollTargetMessageID = messages[currentAssistantMessageIndex].id
     }
 }

@@ -9,11 +9,13 @@ import Foundation
 
 nonisolated struct ACPSessionClientTimeouts: Sendable {
     let initialize: TimeInterval
+    let sessionLoad: TimeInterval
     let sessionNew: TimeInterval
     let sessionPrompt: TimeInterval
 
     static let atelierCodeDefault = ACPSessionClientTimeouts(
         initialize: 10,
+        sessionLoad: 15,
         sessionNew: 15,
         sessionPrompt: 60
     )
@@ -22,6 +24,8 @@ nonisolated struct ACPSessionClientTimeouts: Sendable {
         switch method {
         case .initialize:
             return initialize
+        case .sessionLoad:
+            return sessionLoad
         case .sessionNew:
             return sessionNew
         case .sessionPrompt:
@@ -34,6 +38,7 @@ nonisolated struct ACPSessionClientTimeouts: Sendable {
 
 nonisolated enum ACPSessionClientError: LocalizedError {
     case sessionNotCreated
+    case promptNotInFlight
     case requestTimedOut(method: String, timeout: TimeInterval)
     case invalidResponse(method: String)
     case missingResult(method: String)
@@ -46,6 +51,8 @@ nonisolated enum ACPSessionClientError: LocalizedError {
         switch self {
         case .sessionNotCreated:
             return "The ACP session has not been created yet."
+        case .promptNotInFlight:
+            return "There is no in-flight ACP prompt to cancel."
         case .requestTimedOut(let method, let timeout):
             return "The ACP request \(method) timed out after \(Self.formattedTimeout(timeout))."
         case .invalidResponse(let method):
@@ -943,6 +950,7 @@ final class ACPSessionClient {
     private var isTransportStarted = false
     private var pendingResponses: [Int: PendingResponse] = [:]
     private var workspaceAccessPolicy: ACPWorkspaceAccessPolicy?
+    private var promptSessionIDInFlight: String?
 
     private(set) var negotiatedProtocolVersion: Int?
     private(set) var sessionID: String?
@@ -974,6 +982,7 @@ final class ACPSessionClient {
         cwd: String = FileManager.default.currentDirectoryPath,
         clientInfo: ACPImplementationInfo = .atelierCode,
         clientCapabilities: ACPClientCapabilities = .atelierCodeDefaults,
+        resumeSessionID: String? = nil,
         mcpServers: [ACPMCPServer] = []
     ) async throws {
         guard sessionID == nil else { return }
@@ -1000,14 +1009,11 @@ final class ACPSessionClient {
         agentCapabilities = initializeResponse.agentCapabilities
         authMethods = initializeResponse.authMethods ?? []
 
-        let newSessionResponse: ACPNewSessionResponse = try await sendRequest(
-            method: .sessionNew,
-            params: ACPNewSessionRequestParams(
-                cwd: cwd,
-                mcpServers: mcpServers
-            )
+        sessionID = try await establishSession(
+            cwd: cwd,
+            resumeSessionID: resumeSessionID,
+            mcpServers: mcpServers
         )
-        sessionID = newSessionResponse.sessionId
         workspaceAccessPolicy = ACPWorkspaceAccessPolicy(workspaceRoot: cwd)
     }
 
@@ -1015,6 +1021,9 @@ final class ACPSessionClient {
         guard let sessionID else {
             throw ACPSessionClientError.sessionNotCreated
         }
+
+        promptSessionIDInFlight = sessionID
+        defer { promptSessionIDInFlight = nil }
 
         return try await sendRequest(
             method: .sessionPrompt,
@@ -1025,9 +1034,21 @@ final class ACPSessionClient {
         )
     }
 
+    func cancelPrompt() throws {
+        guard let sessionID = promptSessionIDInFlight else {
+            throw ACPSessionClientError.promptNotInFlight
+        }
+
+        try sendNotification(
+            method: .sessionCancel,
+            params: ACPCancelPromptRequestParams(sessionId: sessionID)
+        )
+    }
+
     func reset() {
         sessionID = nil
         workspaceAccessPolicy = nil
+        promptSessionIDInFlight = nil
         terminalSessionManager.reset()
         transport.stop()
         cancelPendingResponses()
@@ -1047,6 +1068,48 @@ final class ACPSessionClient {
     private func makeRequestID() -> Int {
         defer { nextRequestID += 1 }
         return nextRequestID
+    }
+
+    private func establishSession(
+        cwd: String,
+        resumeSessionID: String?,
+        mcpServers: [ACPMCPServer]
+    ) async throws -> String {
+        if let resumeSessionID, agentCapabilities?.loadSession == true {
+            do {
+                _ = try await sendRequest(
+                    method: .sessionLoad,
+                    params: ACPLoadSessionRequestParams(
+                        sessionId: resumeSessionID,
+                        cwd: cwd,
+                        mcpServers: mcpServers
+                    )
+                ) as ACPLoadSessionResponse
+                return resumeSessionID
+            } catch let error as ACPSessionClientError {
+                guard shouldFallbackToNewSession(afterLoadFailure: error) else {
+                    throw error
+                }
+            }
+        }
+
+        let newSessionResponse: ACPNewSessionResponse = try await sendRequest(
+            method: .sessionNew,
+            params: ACPNewSessionRequestParams(
+                cwd: cwd,
+                mcpServers: mcpServers
+            )
+        )
+        return newSessionResponse.sessionId
+    }
+
+    private func shouldFallbackToNewSession(afterLoadFailure error: ACPSessionClientError) -> Bool {
+        switch error {
+        case .serverError(let method, _):
+            return method == ACPMethod.sessionLoad.rawValue
+        default:
+            return false
+        }
     }
 
     private func sendRequest<Params: Encodable & Sendable, Result: Decodable & Sendable>(
@@ -1097,6 +1160,14 @@ final class ACPSessionClient {
                 resolvePendingResponse(requestID: requestID, with: .failure(error))
             }
         }
+    }
+
+    private func sendNotification<Params: Encodable & Sendable>(
+        method: ACPMethod,
+        params: Params
+    ) throws {
+        let notification = ACPNotificationRequest(method: method.rawValue, params: params)
+        try transport.send(message: encoder.encode(notification))
     }
 
     private func handleTransportMessage(_ result: Result<Data, any Error>) {

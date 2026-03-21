@@ -10,8 +10,10 @@ import Foundation
 nonisolated enum ConnectionState: String, Sendable {
     case disconnected
     case connecting
+    case resuming
     case ready
     case streaming
+    case cancelling
 }
 
 nonisolated enum ConversationRole: String, Codable, Sendable {
