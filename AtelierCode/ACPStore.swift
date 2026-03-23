@@ -270,6 +270,7 @@ final class ACPStore {
     @ObservationIgnored private let clientInfo: ACPImplementationInfo
     @ObservationIgnored private let clientCapabilities: ACPClientCapabilities
     @ObservationIgnored private let mcpServers: [ACPMCPServer]
+    @ObservationIgnored private let environmentResolver: WorkspaceShellEnvironmentResolving
     @ObservationIgnored private let sessionPersistence: ACPWorkspaceSessionPersisting
     @ObservationIgnored private let permissionPersistence: ACPWorkspacePermissionPersisting
     @ObservationIgnored private let failurePersistence: ACPWorkspaceFailurePersisting
@@ -286,13 +287,17 @@ final class ACPStore {
         clientInfo: ACPImplementationInfo = .atelierCode,
         clientCapabilities: ACPClientCapabilities = .atelierCodeDefaults,
         mcpServers: [ACPMCPServer] = [],
+        environmentResolver: WorkspaceShellEnvironmentResolving = WorkspaceShellEnvironmentResolver.standard,
         sessionPersistence: ACPWorkspaceSessionPersisting = ACPWorkspaceSessionStore.standard,
         permissionPersistence: ACPWorkspacePermissionPersisting = ACPWorkspacePermissionStore.standard,
         failurePersistence: ACPWorkspaceFailurePersisting = ACPWorkspaceFailureStore.standard
     ) {
         let resolvedTransport = transport ?? LocalACPTransport(
             executableOverridePath: geminiSettings.executableOverridePath,
-            model: geminiSettings.defaultModel
+            workspaceRoot: cwd,
+            model: geminiSettings.defaultModel,
+            settingsOverrides: geminiSettings.environmentOverrides,
+            environmentResolver: environmentResolver
         )
 
         self.cwd = cwd
@@ -300,10 +305,17 @@ final class ACPStore {
         self.clientInfo = clientInfo
         self.clientCapabilities = clientCapabilities
         self.mcpServers = mcpServers
+        self.environmentResolver = environmentResolver
         self.sessionPersistence = sessionPersistence
         self.permissionPersistence = permissionPersistence
         self.failurePersistence = failurePersistence
-        sessionClient = ACPSessionClient(transport: resolvedTransport)
+        sessionClient = ACPSessionClient(
+            transport: resolvedTransport,
+            terminalSessionManager: ACPTerminalSessionManager(
+                settingsOverrides: geminiSettings.environmentOverrides,
+                environmentResolver: environmentResolver
+            )
+        )
         sessionClient.permissionPolicy = ACPPermissionPolicy(
             resolveOutcome: { [weak self] request, context in
                 await self?.resolveAgentPermissionRequest(request, context: context) ?? .cancelled
@@ -491,6 +503,7 @@ final class ACPStore {
     func reconnect() async {
         resolveAllPendingPermissionRequests(with: .deny)
         pendingPermissionRequests.removeAll()
+        environmentResolver.invalidateCachedSnapshot(for: cwd)
         sessionClient.reset()
         isConnecting = false
         isSending = false

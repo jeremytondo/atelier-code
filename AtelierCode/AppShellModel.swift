@@ -15,15 +15,18 @@ nonisolated struct GeminiAppSettings: Equatable, Sendable {
     var executableOverridePath: String?
     var defaultModel: String
     var autoConnectOnLaunch: Bool
+    var environmentOverrides: [String: String]
 
     init(
         executableOverridePath: String? = nil,
         defaultModel: String = Self.defaultModel,
-        autoConnectOnLaunch: Bool = true
+        autoConnectOnLaunch: Bool = true,
+        environmentOverrides: [String: String] = [:]
     ) {
         self.executableOverridePath = Self.sanitizedPath(executableOverridePath)
         self.defaultModel = Self.sanitizedModel(defaultModel)
         self.autoConnectOnLaunch = autoConnectOnLaunch
+        self.environmentOverrides = Self.sanitizedEnvironmentOverrides(environmentOverrides)
     }
 
     private static func sanitizedPath(_ path: String?) -> String? {
@@ -41,6 +44,87 @@ nonisolated struct GeminiAppSettings: Equatable, Sendable {
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmedModel.isEmpty ? Self.defaultModel : trimmedModel
     }
+
+    private static func sanitizedEnvironmentOverrides(
+        _ overrides: [String: String]
+    ) -> [String: String] {
+        Dictionary(
+            uniqueKeysWithValues: overrides.compactMap { key, value in
+                let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmedKey.isEmpty else { return nil }
+                return (trimmedKey, value)
+            }
+        )
+    }
+}
+
+nonisolated enum GeminiEnvironmentOverridesParser {
+    nonisolated struct ParseError: Equatable, Error, Sendable {
+        let lineNumber: Int
+        let line: String
+
+        var description: String {
+            "Line \(lineNumber) must use KEY=VALUE."
+        }
+    }
+
+    static func parse(_ text: String) -> Result<[String: String], ParseError> {
+        var overrides: [String: String] = [:]
+
+        for (index, rawLine) in text.components(separatedBy: .newlines).enumerated() {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            guard let separatorIndex = line.firstIndex(of: "="), separatorIndex != line.startIndex else {
+                return .failure(ParseError(lineNumber: index + 1, line: rawLine))
+            }
+
+            let key = String(line[..<separatorIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = String(line[line.index(after: separatorIndex)...])
+
+            guard isValidKey(key) else {
+                return .failure(ParseError(lineNumber: index + 1, line: rawLine))
+            }
+
+            overrides[key] = value
+        }
+
+        return .success(overrides)
+    }
+
+    static func serialize(_ overrides: [String: String]) -> String {
+        overrides.keys.sorted().map { "\($0)=\(overrides[$0] ?? "")" }.joined(separator: "\n")
+    }
+
+    private static func isValidKey(_ key: String) -> Bool {
+        guard
+            let firstScalar = key.unicodeScalars.first,
+            isAlphaUnderscore(firstScalar)
+        else {
+            return false
+        }
+
+        return key.unicodeScalars.dropFirst().allSatisfy { scalar in
+            isAlphaUnderscore(scalar) || isDigit(scalar)
+        }
+    }
+
+    private static func isAlphaUnderscore(_ scalar: UnicodeScalar) -> Bool {
+        switch scalar.value {
+        case 65...90, 97...122, 95:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isDigit(_ scalar: UnicodeScalar) -> Bool {
+        switch scalar.value {
+        case 48...57:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 @MainActor
@@ -57,24 +141,28 @@ final class GeminiAppSettingsStore: GeminiAppSettingsPersisting {
     private let executablePathKey: String
     private let defaultModelKey: String
     private let autoConnectKey: String
+    private let environmentOverridesKey: String
 
     init(
         userDefaults: UserDefaults = .standard,
         executablePathKey: String = "AtelierCode.GeminiExecutableOverridePath",
         defaultModelKey: String = "AtelierCode.GeminiDefaultModel",
-        autoConnectKey: String = "AtelierCode.GeminiAutoConnectOnLaunch"
+        autoConnectKey: String = "AtelierCode.GeminiAutoConnectOnLaunch",
+        environmentOverridesKey: String = "AtelierCode.GeminiEnvironmentOverrides"
     ) {
         self.userDefaults = userDefaults
         self.executablePathKey = executablePathKey
         self.defaultModelKey = defaultModelKey
         self.autoConnectKey = autoConnectKey
+        self.environmentOverridesKey = environmentOverridesKey
     }
 
     func loadSettings() -> GeminiAppSettings {
         GeminiAppSettings(
             executableOverridePath: userDefaults.string(forKey: executablePathKey),
             defaultModel: userDefaults.string(forKey: defaultModelKey) ?? GeminiAppSettings.defaultModel,
-            autoConnectOnLaunch: userDefaults.object(forKey: autoConnectKey) as? Bool ?? true
+            autoConnectOnLaunch: userDefaults.object(forKey: autoConnectKey) as? Bool ?? true,
+            environmentOverrides: loadEnvironmentOverrides()
         )
     }
 
@@ -87,6 +175,25 @@ final class GeminiAppSettingsStore: GeminiAppSettingsPersisting {
 
         userDefaults.set(settings.defaultModel, forKey: defaultModelKey)
         userDefaults.set(settings.autoConnectOnLaunch, forKey: autoConnectKey)
+
+        if settings.environmentOverrides.isEmpty {
+            userDefaults.removeObject(forKey: environmentOverridesKey)
+        } else {
+            userDefaults.set(settings.environmentOverrides, forKey: environmentOverridesKey)
+        }
+    }
+
+    private func loadEnvironmentOverrides() -> [String: String] {
+        guard let rawOverrides = userDefaults.dictionary(forKey: environmentOverridesKey) else {
+            return [:]
+        }
+
+        return Dictionary(
+            uniqueKeysWithValues: rawOverrides.compactMap { key, value in
+                guard let stringValue = value as? String else { return nil }
+                return (key, stringValue)
+            }
+        )
     }
 }
 
@@ -376,6 +483,7 @@ final class AppShellModel {
     @ObservationIgnored private let workspaceSelectionPersistence: AppWorkspaceSelectionPersisting
     @ObservationIgnored private let storeFactory: (String, ACPWorkspaceSessionPersisting, ACPWorkspacePermissionPersisting, GeminiAppSettings) -> ACPStore
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
+    @ObservationIgnored private var requiresStoreRemountForSettings = false
 
     init(
         configuration: AppLaunchConfiguration = .fromCurrentEnvironment(),
@@ -518,20 +626,32 @@ final class AppShellModel {
     func saveGeminiSettings(
         executableOverridePath: String?,
         defaultModel: String,
-        autoConnectOnLaunch: Bool
+        autoConnectOnLaunch: Bool,
+        environmentOverrides: [String: String]
     ) {
         let settings = GeminiAppSettings(
             executableOverridePath: executableOverridePath,
             defaultModel: defaultModel,
-            autoConnectOnLaunch: autoConnectOnLaunch
+            autoConnectOnLaunch: autoConnectOnLaunch,
+            environmentOverrides: environmentOverrides
         )
         geminiSettings = settings
         settingsPersistence.saveSettings(settings)
+
+        if mountedStore != nil {
+            requiresStoreRemountForSettings = true
+        }
     }
 
     func reconnectWorkspace() {
         guard launchMode == .live else { return }
-        guard selectedWorkspacePath != nil else { return }
+        guard let selectedWorkspacePath else { return }
+
+        if requiresStoreRemountForSettings {
+            mountLiveWorkspace(path: selectedWorkspacePath, autostart: true, forceRemount: true)
+            requiresStoreRemountForSettings = false
+            return
+        }
 
         guard let store = mountedStore else {
             mountLiveWorkspace(path: selectedWorkspacePath, autostart: true, forceRemount: true)
@@ -552,6 +672,12 @@ final class AppShellModel {
         guard launchMode == .live else { return }
         guard let selectedWorkspacePath else { return }
         sessionPersistence.removeSession(for: selectedWorkspacePath)
+
+        if requiresStoreRemountForSettings {
+            mountLiveWorkspace(path: selectedWorkspacePath, autostart: true, forceRemount: true)
+            requiresStoreRemountForSettings = false
+            return
+        }
 
         guard let store = mountedStore else {
             mountLiveWorkspace(path: selectedWorkspacePath, autostart: true, forceRemount: true)
@@ -631,6 +757,7 @@ final class AppShellModel {
             geminiSettings
         )
         mountedStore = store
+        requiresStoreRemountForSettings = false
 
         guard autostart else { return }
 

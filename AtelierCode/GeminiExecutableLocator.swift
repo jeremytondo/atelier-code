@@ -61,8 +61,22 @@ nonisolated struct GeminiExecutableLocator: Sendable {
     }
 
     func locate(executableName: String = "gemini") throws -> URL {
+        try locate(executableName: executableName, searchEnvironment: nil)
+    }
+
+    func locate(
+        executableName: String = "gemini",
+        searchEnvironment: [String: String]?
+    ) throws -> URL {
         if let knownPath = knownPaths.first(where: fileExists) {
             return URL(fileURLWithPath: knownPath)
+        }
+
+        if
+            let searchEnvironment,
+            let resolvedPath = resolvedPathInEnvironment(executableName: executableName, environment: searchEnvironment)
+        {
+            return URL(fileURLWithPath: resolvedPath)
         }
 
         do {
@@ -85,6 +99,15 @@ nonisolated struct GeminiExecutableLocator: Sendable {
             executableName: executableName,
             searchedPaths: knownPaths
         )
+    }
+
+    private func resolvedPathInEnvironment(
+        executableName: String,
+        environment: [String: String]
+    ) -> String? {
+        GeminiProcessEnvironment.pathDirectories(from: environment["PATH"])
+            .map { URL(fileURLWithPath: $0, isDirectory: true).appendingPathComponent(executableName).path }
+            .first(where: fileExists)
     }
 
     private static func systemWhichLookup(executableName: String) throws -> String? {

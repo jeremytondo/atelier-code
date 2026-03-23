@@ -53,7 +53,8 @@ struct AppShellView: View {
                     model.saveGeminiSettings(
                         executableOverridePath: settings.executableOverridePath,
                         defaultModel: settings.defaultModel,
-                        autoConnectOnLaunch: settings.autoConnectOnLaunch
+                        autoConnectOnLaunch: settings.autoConnectOnLaunch,
+                        environmentOverrides: settings.environmentOverrides
                     )
                     isShowingSettings = false
                 },
@@ -290,6 +291,7 @@ private struct GeminiSettingsView: View {
     @State private var executableOverridePath: String
     @State private var defaultModel: String
     @State private var autoConnectOnLaunch: Bool
+    @State private var environmentOverridesText: String
 
     let onSave: (GeminiAppSettings) -> Void
     let onCancel: () -> Void
@@ -302,8 +304,24 @@ private struct GeminiSettingsView: View {
         _executableOverridePath = State(initialValue: initialSettings.executableOverridePath ?? "")
         _defaultModel = State(initialValue: initialSettings.defaultModel)
         _autoConnectOnLaunch = State(initialValue: initialSettings.autoConnectOnLaunch)
+        _environmentOverridesText = State(
+            initialValue: GeminiEnvironmentOverridesParser.serialize(initialSettings.environmentOverrides)
+        )
         self.onSave = onSave
         self.onCancel = onCancel
+    }
+
+    private var parsedEnvironmentOverrides: Result<[String: String], GeminiEnvironmentOverridesParser.ParseError> {
+        GeminiEnvironmentOverridesParser.parse(environmentOverridesText)
+    }
+
+    private var environmentOverrideError: GeminiEnvironmentOverridesParser.ParseError? {
+        guard case .failure(let error) = parsedEnvironmentOverrides else { return nil }
+        return error
+    }
+
+    private var canSave: Bool {
+        environmentOverrideError == nil
     }
 
     var body: some View {
@@ -336,6 +354,36 @@ private struct GeminiSettingsView: View {
                     .textFieldStyle(.roundedBorder)
             }
 
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Environment overrides")
+                    .font(.headline)
+
+                TextEditor(text: $environmentOverridesText)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 120)
+                    .padding(8)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(
+                                environmentOverrideError == nil
+                                    ? Color.secondary.opacity(0.25)
+                                    : Color.red.opacity(0.7),
+                                lineWidth: 1
+                            )
+                    }
+
+                Text("One `KEY=VALUE` pair per line. These global overrides apply the next time AtelierCode builds a live Gemini ACP session.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let environmentOverrideError {
+                    Text(environmentOverrideError.description)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            }
+
             Toggle("Auto-connect on launch", isOn: $autoConnectOnLaunch)
 
             HStack {
@@ -347,15 +395,18 @@ private struct GeminiSettingsView: View {
                 .buttonStyle(.bordered)
 
                 Button("Save") {
+                    guard case .success(let environmentOverrides) = parsedEnvironmentOverrides else { return }
                     onSave(
                         GeminiAppSettings(
                             executableOverridePath: executableOverridePath,
                             defaultModel: defaultModel,
-                            autoConnectOnLaunch: autoConnectOnLaunch
+                            autoConnectOnLaunch: autoConnectOnLaunch,
+                            environmentOverrides: environmentOverrides
                         )
                     )
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(!canSave)
             }
         }
         .padding(24)

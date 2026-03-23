@@ -57,6 +57,20 @@ struct ACPTransportTests {
         #expect(url.path == "/resolved/from/which")
     }
 
+    @Test func executableLocatorSearchesProvidedEnvironmentPath() throws {
+        let locator = GeminiExecutableLocator(
+            knownPaths: [],
+            fileExists: { $0 == "/workspace/bin/gemini" },
+            whichLookup: { _ in nil }
+        )
+
+        let url = try locator.locate(
+            searchEnvironment: ["PATH": "/workspace/bin:/usr/bin:/bin"]
+        )
+
+        #expect(url.path == "/workspace/bin/gemini")
+    }
+
     @Test func executableLocatorDiscoversMiseInstallUnderUserHome() throws {
         let fileManager = FileManager.default
         let tempHomeURL = fileManager.temporaryDirectory
@@ -187,10 +201,10 @@ struct ACPTransportTests {
 
     @Test func processEnvironmentAddsExecutableDirectoryAndFallbackPATHEntries() {
         let environment = GeminiProcessEnvironment.make(
-            currentEnvironment: ["PATH": "/usr/bin:/bin"],
+            baseEnvironment: ["PATH": "/usr/bin:/bin"],
             userHomeDirectory: "/Users/tester",
             executableDirectory: "/opt/homebrew/bin",
-            interactiveShellPATH: ""
+            workingDirectory: "/tmp/workspace"
         )
 
         #expect(
@@ -198,28 +212,29 @@ struct ACPTransportTests {
             "/opt/homebrew/bin:/usr/bin:/bin:/Users/tester/.local/share/mise/shims:/Users/tester/.local/bin:/Users/tester/bin:/usr/local/bin:/usr/sbin:/sbin"
         )
         #expect(environment["HOME"] == "/Users/tester")
+        #expect(environment["PWD"] == "/tmp/workspace")
     }
 
-    @Test func processEnvironmentPrefersInteractiveShellPATHEntries() {
+    @Test func processEnvironmentPreservesMergedPathEntries() {
         let environment = GeminiProcessEnvironment.make(
-            currentEnvironment: ["PATH": "/usr/bin:/bin"],
+            baseEnvironment: ["PATH": "/usr/local/go/bin:/opt/homebrew/sbin:/usr/bin:/Users/tester/.local/share/go"],
             userHomeDirectory: "/Users/tester",
             executableDirectory: "/Users/tester/.local/share/mise/installs/gemini/latest/bin",
-            interactiveShellPATH: "/usr/local/go/bin:/opt/homebrew/sbin:/usr/bin:/Users/tester/.local/share/go"
+            workingDirectory: "/tmp/workspace"
         )
 
         #expect(
             environment["PATH"] ==
-            "/Users/tester/.local/share/mise/installs/gemini/latest/bin:/usr/local/go/bin:/opt/homebrew/sbin:/usr/bin:/Users/tester/.local/share/go:/bin:/Users/tester/.local/share/mise/shims:/Users/tester/.local/bin:/Users/tester/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin"
+            "/Users/tester/.local/share/mise/installs/gemini/latest/bin:/usr/local/go/bin:/opt/homebrew/sbin:/usr/bin:/Users/tester/.local/share/go:/Users/tester/.local/share/mise/shims:/Users/tester/.local/bin:/Users/tester/bin:/opt/homebrew/bin:/usr/local/bin:/bin:/usr/sbin:/sbin"
         )
     }
 
     @Test func processEnvironmentSetsNoBrowser() {
         let environment = GeminiProcessEnvironment.make(
-            currentEnvironment: [:],
+            baseEnvironment: [:],
             userHomeDirectory: "/Users/tester",
             executableDirectory: nil,
-            interactiveShellPATH: ""
+            workingDirectory: "/tmp/workspace"
         )
 
         #expect(environment["NO_BROWSER"] == "1")
@@ -227,12 +242,141 @@ struct ACPTransportTests {
 
     @Test func processEnvironmentPreservesExistingHomeValue() {
         let environment = GeminiProcessEnvironment.make(
-            currentEnvironment: ["HOME": "/custom/home"],
+            baseEnvironment: ["HOME": "/custom/home"],
             userHomeDirectory: "/Users/tester",
             executableDirectory: nil,
-            interactiveShellPATH: ""
+            workingDirectory: "/tmp/workspace"
         )
 
         #expect(environment["HOME"] == "/custom/home")
+    }
+
+    @Test func processEnvironmentParsesNullDelimitedShellOutput() {
+        let parsedEnvironment = GeminiProcessEnvironment.parseEnvironmentOutput(
+            Data("PATH=/usr/bin\0FOO=bar\0INVALID\0EMPTY=\0".utf8)
+        )
+
+        #expect(parsedEnvironment["PATH"] == "/usr/bin")
+        #expect(parsedEnvironment["FOO"] == "bar")
+        #expect(parsedEnvironment["EMPTY"] == "")
+        #expect(parsedEnvironment["INVALID"] == nil)
+    }
+
+    @MainActor
+    @Test func environmentResolverCachesByWorkspaceAndRefreshesStaleEntries() {
+        var probeCalls: [String] = []
+        let resolver = WorkspaceShellEnvironmentResolver(
+            currentEnvironment: ["SHELL": "/bin/zsh", "PATH": "/usr/bin:/bin"],
+            userHomeDirectory: "/Users/tester",
+            probeHandler: { workspaceRoot, _, _, _, _ in
+                probeCalls.append(workspaceRoot)
+                return .success([
+                    "PATH": workspaceRoot == "/tmp/workspace" ? "/workspace/bin" : "/other/bin",
+                    "FOO": "bar"
+                ])
+            }
+        )
+
+        let first = resolver.resolveEnvironment(
+            for: "/tmp/workspace",
+            executableDirectory: nil,
+            settingsOverrides: [:],
+            launchOverrides: [:],
+            preferFreshProbe: false
+        )
+        let second = resolver.resolveEnvironment(
+            for: "/tmp/workspace",
+            executableDirectory: nil,
+            settingsOverrides: [:],
+            launchOverrides: [:],
+            preferFreshProbe: false
+        )
+
+        resolver.invalidateCachedSnapshot(for: "/tmp/workspace")
+
+        let third = resolver.resolveEnvironment(
+            for: "/tmp/workspace",
+            executableDirectory: nil,
+            settingsOverrides: [:],
+            launchOverrides: [:],
+            preferFreshProbe: false
+        )
+        let otherWorkspace = resolver.resolveEnvironment(
+            for: "/tmp/other",
+            executableDirectory: nil,
+            settingsOverrides: [:],
+            launchOverrides: [:],
+            preferFreshProbe: false
+        )
+
+        #expect(first.source == .freshProbe)
+        #expect(second.source == .cachedProbe)
+        #expect(third.source == .freshProbe)
+        #expect(otherWorkspace.source == .freshProbe)
+        #expect(probeCalls == ["/tmp/workspace", "/tmp/workspace", "/tmp/other"])
+    }
+
+    @MainActor
+    @Test func environmentResolverFallsBackToCachedSnapshotAfterProbeFailure() {
+        var shouldFail = false
+        let resolver = WorkspaceShellEnvironmentResolver(
+            currentEnvironment: ["SHELL": "/bin/zsh", "PATH": "/usr/bin:/bin"],
+            userHomeDirectory: "/Users/tester",
+            probeHandler: { _, _, _, _, _ in
+                shouldFail
+                    ? .failure(WorkspaceShellProbeError(reason: "probe_timed_out"))
+                    : .success(["PATH": "/workspace/bin", "FOO": "bar"])
+            }
+        )
+
+        let first = resolver.resolveEnvironment(
+            for: "/tmp/workspace",
+            executableDirectory: nil,
+            settingsOverrides: [:],
+            launchOverrides: [:],
+            preferFreshProbe: false
+        )
+
+        shouldFail = true
+        resolver.invalidateCachedSnapshot(for: "/tmp/workspace")
+
+        let second = resolver.resolveEnvironment(
+            for: "/tmp/workspace",
+            executableDirectory: nil,
+            settingsOverrides: ["NO_COLOR": "1"],
+            launchOverrides: [:],
+            preferFreshProbe: false
+        )
+
+        #expect(first.source == .freshProbe)
+        #expect(second.source == .cachedProbe)
+        #expect(second.probeFailureReason == "probe_timed_out")
+        #expect(second.environment["FOO"] == "bar")
+        #expect(second.environment["NO_COLOR"] == "1")
+    }
+
+    @MainActor
+    @Test func environmentResolverFallsBackToBootstrapWithoutCachedSnapshot() {
+        let resolver = WorkspaceShellEnvironmentResolver(
+            currentEnvironment: ["SHELL": "/bin/zsh", "PATH": "/usr/bin:/bin"],
+            userHomeDirectory: "/Users/tester",
+            probeHandler: { _, _, _, _, _ in
+                .failure(WorkspaceShellProbeError(reason: "probe_exit_1"))
+            }
+        )
+
+        let resolvedEnvironment = resolver.resolveEnvironment(
+            for: "/tmp/workspace",
+            executableDirectory: "/opt/homebrew/bin",
+            settingsOverrides: ["NO_COLOR": "1"],
+            launchOverrides: ["CUSTOM": "value"],
+            preferFreshProbe: false
+        )
+
+        #expect(resolvedEnvironment.source == .fallbackBootstrap)
+        #expect(resolvedEnvironment.probeFailureReason == "probe_exit_1")
+        #expect(resolvedEnvironment.environment["PATH"]?.hasPrefix("/opt/homebrew/bin:/usr/bin:/bin") == true)
+        #expect(resolvedEnvironment.environment["NO_COLOR"] == "1")
+        #expect(resolvedEnvironment.environment["CUSTOM"] == "value")
     }
 }

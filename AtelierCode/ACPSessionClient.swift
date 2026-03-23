@@ -579,10 +579,13 @@ nonisolated enum ACPTerminalManagerError: LocalizedError, Sendable {
 final class ACPTerminalSessionManager {
     var onStateChange: ((ACPTerminalState) -> Void)?
     var onReset: (() -> Void)?
+    var onDiagnostic: ((String) -> Void)?
 
     private let processFactory: () -> Process
     private let pipeFactory: () -> Pipe
-    private let currentEnvironment: [String: String]
+    private let settingsOverrides: [String: String]
+    private let environmentResolver: WorkspaceShellEnvironmentResolving
+    private let userHomeDirectory: String
 
     private struct TerminalRecord {
         var state: ACPTerminalState
@@ -599,11 +602,15 @@ final class ACPTerminalSessionManager {
     init(
         processFactory: @escaping () -> Process = { Process() },
         pipeFactory: @escaping () -> Pipe = { Pipe() },
-        currentEnvironment: [String: String] = ProcessInfo.processInfo.environment
+        settingsOverrides: [String: String] = [:],
+        environmentResolver: WorkspaceShellEnvironmentResolving = WorkspaceShellEnvironmentResolver.standard,
+        userHomeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path
     ) {
         self.processFactory = processFactory
         self.pipeFactory = pipeFactory
-        self.currentEnvironment = currentEnvironment
+        self.settingsOverrides = settingsOverrides
+        self.environmentResolver = environmentResolver
+        self.userHomeDirectory = userHomeDirectory
     }
 
     func createTerminal(
@@ -621,17 +628,28 @@ final class ACPTerminalSessionManager {
 
         let resolvedCwd = try workspaceAccessPolicy.resolveDirectoryPath(request.cwd)
         let environmentOverrides = Dictionary(uniqueKeysWithValues: (request.env ?? []).map { ($0.name, $0.value) })
-        let resolvedExecutable = try resolveExecutable(command: command, cwd: resolvedCwd, environmentOverrides: environmentOverrides)
+        let environmentResolution = environmentResolver.resolveEnvironment(
+            for: workspaceAccessPolicy.workspaceRoot,
+            executableDirectory: nil,
+            settingsOverrides: settingsOverrides,
+            launchOverrides: environmentOverrides,
+            preferFreshProbe: false
+        )
+        onDiagnostic?(environmentResolution.diagnosticMessage)
+
+        let resolvedExecutable = try resolveExecutable(
+            command: command,
+            cwd: resolvedCwd,
+            environment: environmentResolution.environment
+        )
         let executableURL = URL(fileURLWithPath: resolvedExecutable)
 
-        var environment = GeminiProcessEnvironment.make(
-            currentEnvironment: currentEnvironment,
-            executableDirectory: executableURL.deletingLastPathComponent().path
+        let environment = GeminiProcessEnvironment.make(
+            baseEnvironment: environmentResolution.environment,
+            userHomeDirectory: userHomeDirectory,
+            executableDirectory: executableURL.deletingLastPathComponent().path,
+            workingDirectory: resolvedCwd
         )
-        for (name, value) in environmentOverrides {
-            environment[name] = value
-        }
-        environment["PWD"] = resolvedCwd
 
         let process = processFactory()
         let stdinPipe = pipeFactory()
@@ -851,7 +869,7 @@ final class ACPTerminalSessionManager {
     private func resolveExecutable(
         command: String,
         cwd: String,
-        environmentOverrides: [String: String]
+        environment: [String: String]
     ) throws -> String {
         let candidatePath: String?
         if command.hasPrefix("/") {
@@ -861,10 +879,6 @@ final class ACPTerminalSessionManager {
                 .appendingPathComponent(command)
                 .path
         } else {
-            var environment = currentEnvironment
-            for (name, value) in environmentOverrides {
-                environment[name] = value
-            }
             let pathDirectories = (environment["PATH"] ?? "")
                 .split(separator: ":")
                 .map(String.init)
@@ -1007,6 +1021,9 @@ final class ACPSessionClient {
         }
         terminalSessionManager.onReset = { [weak self] in
             self?.onTerminalStatesReset?()
+        }
+        terminalSessionManager.onDiagnostic = { [weak self] diagnostic in
+            self?.appendDiagnostic(diagnostic)
         }
     }
 

@@ -9,20 +9,15 @@ import Foundation
 
 nonisolated struct GeminiProcessEnvironment: Sendable {
     static func make(
-        currentEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        baseEnvironment: [String: String],
         userHomeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path,
         executableDirectory: String? = nil,
-        interactiveShellPATH: String? = nil
+        workingDirectory: String
     ) -> [String: String] {
-        var environment = currentEnvironment
-        let resolvedInteractiveShellPATH = interactiveShellPATH ?? discoveredInteractiveShellPATH(
-            currentEnvironment: currentEnvironment,
-            userHomeDirectory: userHomeDirectory
-        )
+        var environment = baseEnvironment
         let mergedPathDirectories = uniquePaths(
             (executableDirectory.map { [$0] } ?? []) +
-            pathDirectories(from: resolvedInteractiveShellPATH) +
-            pathDirectories(from: currentEnvironment["PATH"]) +
+            pathDirectories(from: environment["PATH"]) +
             fallbackPATHDirectories(userHomeDirectory: userHomeDirectory)
         )
 
@@ -33,46 +28,9 @@ nonisolated struct GeminiProcessEnvironment: Sendable {
             environment["HOME"] = userHomeDirectory
         }
 
+        environment["PWD"] = workingDirectory
+
         return environment
-    }
-
-    static func discoveredInteractiveShellPATH(
-        currentEnvironment: [String: String] = ProcessInfo.processInfo.environment,
-        userHomeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path
-    ) -> String? {
-        let shellPath = resolvedShellPath(currentEnvironment: currentEnvironment)
-        let shellURL = URL(fileURLWithPath: shellPath)
-        guard FileManager.default.isExecutableFile(atPath: shellURL.path) else {
-            return nil
-        }
-
-        let process = Process()
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.executableURL = shellURL
-        process.arguments = shellArguments(for: shellURL.lastPathComponent)
-        process.environment = shellEnvironment(
-            currentEnvironment: currentEnvironment,
-            userHomeDirectory: userHomeDirectory,
-            shellPath: shellURL.path
-        )
-        process.currentDirectoryURL = URL(fileURLWithPath: userHomeDirectory, isDirectory: true)
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return nil
-        }
-
-        guard process.terminationStatus == 0 else { return nil }
-
-        let path = String(decoding: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty else { return nil }
-        return path
     }
 
     static func fallbackPATHDirectories(userHomeDirectory: String) -> [String] {
@@ -91,12 +49,33 @@ nonisolated struct GeminiProcessEnvironment: Sendable {
         )
     }
 
-    private static func pathDirectories(from path: String?) -> [String] {
+    static func parseEnvironmentOutput(_ data: Data) -> [String: String] {
+        let rawEntries = data.split(separator: 0, omittingEmptySubsequences: true)
+
+        return rawEntries.reduce(into: [:]) { partialResult, entry in
+            guard
+                let separatorIndex = entry.firstIndex(of: 61),
+                separatorIndex != entry.startIndex
+            else {
+                return
+            }
+
+            let keyData = entry[..<separatorIndex]
+            let valueData = entry[entry.index(after: separatorIndex)...]
+            let key = String(decoding: keyData, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard !key.isEmpty else { return }
+            partialResult[key] = String(decoding: valueData, as: UTF8.self)
+        }
+    }
+
+    static func pathDirectories(from path: String?) -> [String] {
         guard let path, !path.isEmpty else { return [] }
         return path.split(separator: ":").map(String.init)
     }
 
-    private static func resolvedShellPath(currentEnvironment: [String: String]) -> String {
+    static func resolvedShellPath(currentEnvironment: [String: String]) -> String {
         let shellPath = currentEnvironment["SHELL"]?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let shellPath, !shellPath.isEmpty {
             return shellPath
@@ -105,8 +84,8 @@ nonisolated struct GeminiProcessEnvironment: Sendable {
         return "/bin/zsh"
     }
 
-    private static func shellArguments(for shellName: String) -> [String] {
-        let command = #"printf %s "$PATH""#
+    static func shellArguments(for shellName: String) -> [String] {
+        let command = #"env -0"#
         if shellName == "zsh" || shellName == "bash" {
             return ["-ilc", command]
         }
@@ -114,19 +93,20 @@ nonisolated struct GeminiProcessEnvironment: Sendable {
         return ["-lc", command]
     }
 
-    private static func shellEnvironment(
+    static func shellEnvironment(
         currentEnvironment: [String: String],
         userHomeDirectory: String,
-        shellPath: String
+        shellPath: String,
+        workingDirectory: String
     ) -> [String: String] {
         var environment = currentEnvironment
         environment["HOME"] = environment["HOME"]?.isEmpty == false ? environment["HOME"] : userHomeDirectory
         environment["SHELL"] = shellPath
-        environment["PWD"] = userHomeDirectory
+        environment["PWD"] = workingDirectory
         return environment
     }
 
-    private static func uniquePaths(_ paths: [String]) -> [String] {
+    static func uniquePaths(_ paths: [String]) -> [String] {
         var seenPaths = Set<String>()
         return paths.filter { !($0.isEmpty) && seenPaths.insert($0).inserted }
     }
@@ -221,6 +201,10 @@ final class LocalACPTransport: AgentTransport {
     var onTermination: ((Int32) -> Void)?
 
     private let executableLocator: GeminiExecutableLocator
+    private let workspaceRoot: String
+    private let settingsOverrides: [String: String]
+    private let environmentResolver: WorkspaceShellEnvironmentResolving
+    private let userHomeDirectory: String
     private let arguments: [String]
     private let processFactory: () -> Process
     private let pipeFactory: () -> Pipe
@@ -234,7 +218,11 @@ final class LocalACPTransport: AgentTransport {
 
     init(
         executableOverridePath: String? = nil,
+        workspaceRoot: String = AppWorkingDirectory.resolve(),
         model: String = GeminiAppSettings.defaultModel,
+        settingsOverrides: [String: String] = [:],
+        environmentResolver: WorkspaceShellEnvironmentResolving = WorkspaceShellEnvironmentResolver.standard,
+        userHomeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path,
         executableLocator: GeminiExecutableLocator? = nil,
         arguments: [String]? = nil,
         processFactory: @escaping () -> Process = { Process() },
@@ -250,6 +238,13 @@ final class LocalACPTransport: AgentTransport {
             self.executableLocator = GeminiExecutableLocator()
         }
 
+        self.workspaceRoot = URL(fileURLWithPath: workspaceRoot)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+        self.settingsOverrides = settingsOverrides
+        self.environmentResolver = environmentResolver
+        self.userHomeDirectory = userHomeDirectory
         self.arguments = arguments ?? ["--acp", "--model", model]
         self.processFactory = processFactory
         self.pipeFactory = pipeFactory
@@ -260,7 +255,16 @@ final class LocalACPTransport: AgentTransport {
             throw LocalACPTransportError.processAlreadyRunning
         }
 
-        let executableURL = try executableLocator.locate()
+        let environmentResolution = environmentResolver.resolveEnvironment(
+            for: workspaceRoot,
+            executableDirectory: nil,
+            settingsOverrides: settingsOverrides,
+            launchOverrides: [:],
+            preferFreshProbe: false
+        )
+        onDiagnostic?(environmentResolution.diagnosticMessage)
+
+        let executableURL = try executableLocator.locate(searchEnvironment: environmentResolution.environment)
         let process = processFactory()
         let standardInputPipe = pipeFactory()
         let standardOutputPipe = pipeFactory()
@@ -272,8 +276,12 @@ final class LocalACPTransport: AgentTransport {
         process.executableURL = executableURL
         process.arguments = arguments
         process.environment = GeminiProcessEnvironment.make(
-            executableDirectory: executableURL.deletingLastPathComponent().path
+            baseEnvironment: environmentResolution.environment,
+            userHomeDirectory: userHomeDirectory,
+            executableDirectory: executableURL.deletingLastPathComponent().path,
+            workingDirectory: workspaceRoot
         )
+        process.currentDirectoryURL = URL(fileURLWithPath: workspaceRoot, isDirectory: true)
         process.standardInput = standardInputPipe
         process.standardOutput = standardOutputPipe
         process.standardError = standardErrorPipe

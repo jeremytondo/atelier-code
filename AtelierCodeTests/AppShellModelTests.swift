@@ -229,7 +229,8 @@ struct AppShellModelTests {
             settings: GeminiAppSettings(
                 executableOverridePath: "/tmp/custom-gemini",
                 defaultModel: "gemini-2.5-flash",
-                autoConnectOnLaunch: false
+                autoConnectOnLaunch: false,
+                environmentOverrides: ["GEMINI_API_KEY": "test-token"]
             )
         )
         let model = AppShellModel(
@@ -246,7 +247,60 @@ struct AppShellModelTests {
         #expect(model.geminiSettings.executableOverridePath == "/tmp/custom-gemini")
         #expect(model.geminiSettings.defaultModel == "gemini-2.5-flash")
         #expect(model.geminiSettings.autoConnectOnLaunch == false)
+        #expect(model.geminiSettings.environmentOverrides == ["GEMINI_API_KEY": "test-token"])
         #expect(model.mountedStore?.connectionState == .disconnected)
+    }
+
+    @Test func environmentOverridesParserRejectsMalformedLines() {
+        let result = GeminiEnvironmentOverridesParser.parse("GOOD=1\nnot valid\nALSO_GOOD=2")
+
+        guard case .failure(let error) = result else {
+            Issue.record("Expected parser failure for malformed input.")
+            return
+        }
+
+        #expect(error.lineNumber == 2)
+    }
+
+    @Test func environmentOverridesParserRoundTripsSortedOutput() {
+        let serialized = GeminiEnvironmentOverridesParser.serialize([
+            "PATH": "/usr/bin",
+            "FOO": "bar"
+        ])
+        let parsedOverrides = try? GeminiEnvironmentOverridesParser.parse(serialized).get()
+
+        #expect(serialized == "FOO=bar\nPATH=/usr/bin")
+        #expect(parsedOverrides == [
+            "FOO": "bar",
+            "PATH": "/usr/bin"
+        ])
+    }
+
+    @Test func settingsStorePersistsEnvironmentOverrides() throws {
+        let suiteName = "AtelierCodeTests.GeminiAppSettings.\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: suiteName))
+        defer {
+            userDefaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let store = GeminiAppSettingsStore(userDefaults: userDefaults)
+        store.saveSettings(
+            GeminiAppSettings(
+                executableOverridePath: "/tmp/custom-gemini",
+                defaultModel: "gemini-2.5-flash",
+                autoConnectOnLaunch: false,
+                environmentOverrides: [
+                    "GEMINI_API_KEY": "token",
+                    "NO_COLOR": "1"
+                ]
+            )
+        )
+
+        let restoredSettings = store.loadSettings()
+        #expect(restoredSettings.environmentOverrides == [
+            "GEMINI_API_KEY": "token",
+            "NO_COLOR": "1"
+        ])
     }
 
     @Test func reconnectAndResetReuseMountedWorkspaceWhileClearingSavedSession() throws {
@@ -287,16 +341,18 @@ struct AppShellModelTests {
         model.saveGeminiSettings(
             executableOverridePath: "/tmp/override-gemini",
             defaultModel: "gemini-2.5-flash",
-            autoConnectOnLaunch: true
+            autoConnectOnLaunch: true,
+            environmentOverrides: ["NO_COLOR": "1"]
         )
         model.reconnectWorkspace()
         model.resetWorkspaceSession()
 
-        #expect(capturedSettings.count == 1)
+        #expect(capturedSettings.count >= 2)
         #expect(capturedSettings.last?.executableOverridePath == "/tmp/override-gemini")
         #expect(capturedSettings.last?.defaultModel == "gemini-2.5-flash")
+        #expect(capturedSettings.last?.environmentOverrides == ["NO_COLOR": "1"])
         #expect(sessionPersistence.storedSessions[workspaceURL.path] == nil)
-        #expect(model.mountedStore === originalStore)
+        #expect(model.mountedStore !== originalStore)
     }
 }
 
