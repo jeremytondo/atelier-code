@@ -1444,6 +1444,69 @@ struct ACPSessionClientTests {
 
         #expect(sentMethods == ["initialize", "session/new", "session/prompt"])
         #expect(client.sessionID == "session_123")
+        #expect(client.lastFailureContext?.classificationHint == .requestTimeout)
+        #expect(client.lastFailureContext?.lastRequestMethod == ACPMethod.sessionPrompt.rawValue)
+    }
+
+    @Test func sessionClientCapturesDeadTransportContextWhenSendFails() async throws {
+        let transport = FakeAgentTransport()
+        let client = ACPSessionClient(transport: transport)
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id?.intValue)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "sessionId": "session_123"
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionPrompt.rawValue:
+                throw LocalACPTransportError.processNotRunning
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        try await client.connect(cwd: "/tmp/atelier")
+
+        do {
+            _ = try await client.sendPrompt("Hello")
+            Issue.record("Expected prompt send to fail.")
+        } catch let error as ACPSessionClientError {
+            switch error {
+            case .deadTransport(let method, let requestID):
+                #expect(method == ACPMethod.sessionPrompt.rawValue)
+                #expect(requestID != nil)
+            default:
+                Issue.record("Unexpected ACP error: \(error.localizedDescription)")
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error.localizedDescription)")
+        }
+
+        #expect(client.lastFailureContext?.classificationHint == .deadTransportWhileSending)
+        #expect(client.lastFailureContext?.lastRequestMethod == ACPMethod.sessionPrompt.rawValue)
     }
 
     @Test func sessionClientClassifiesAuthenticationFailures() async throws {
@@ -2264,6 +2327,8 @@ struct ACPSessionClientTests {
 
         #expect(transport.sentMethods == ["initialize", "session/load", "session/new"])
         #expect(client.sessionID == "session_fresh")
+        #expect(client.takeRecoverableLoadFailure() != nil)
+        #expect(client.takeRecoverableFailureContext()?.classificationHint == .sessionResumeFailure)
     }
 
     @Test func sessionClientUsesInjectedPermissionPolicy() async throws {

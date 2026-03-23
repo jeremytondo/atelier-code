@@ -188,6 +188,30 @@ nonisolated enum LocalACPTransportError: LocalizedError, Sendable {
             return "The local Gemini ACP transport terminated with status \(status) (\(reason))."
         }
     }
+
+    var recoveryKind: ACPRecoveryIssueKind {
+        switch self {
+        case .processTerminated(_, let reason) where reason == "uncaught signal":
+            return .subprocessSignalTermination
+        case .processTerminated:
+            return .subprocessExit
+        case .processNotRunning, .processAlreadyRunning:
+            return .transportFailure
+        }
+    }
+
+    var recoveryTitle: String {
+        switch self {
+        case .processTerminated(_, let reason) where reason == "uncaught signal":
+            return "Gemini subprocess terminated by signal"
+        case .processTerminated:
+            return "Gemini subprocess exited"
+        case .processNotRunning:
+            return "Gemini transport was not running"
+        case .processAlreadyRunning:
+            return "Gemini transport startup conflict"
+        }
+    }
 }
 
 @MainActor

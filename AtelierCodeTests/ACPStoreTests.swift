@@ -918,10 +918,12 @@ struct ACPStoreTests {
         let sessionPersistence = InMemoryWorkspaceSessionPersistence(
             storedSessions: ["/tmp/atelier": "session_resume"]
         )
+        let failurePersistence = InMemoryWorkspaceFailurePersistence()
         let store = ACPStore(
             transport: transport,
             cwd: "/tmp/atelier",
-            sessionPersistence: sessionPersistence
+            sessionPersistence: sessionPersistence,
+            failurePersistence: failurePersistence
         )
 
         transport.onSend = { data in
@@ -961,11 +963,18 @@ struct ACPStoreTests {
         #expect(store.statusText == "Gemini connection failed")
         #expect(store.lastErrorDescription == FakeACPStoreTransportError.transportStopped.localizedDescription)
         #expect(store.recoveryIssue?.kind == .transportFailure)
+        #expect(store.latestFailureSnapshot?.workspacePath == "/tmp/atelier")
+        #expect(failurePersistence.storedSnapshots["/tmp/atelier"]?.title == "Gemini connection failed")
     }
 
     @Test func transportFailureResetsSendabilityAndSurfacesError() async {
         let transport = FakeACPStoreTransport()
-        let store = ACPStore(transport: transport, cwd: "/tmp/atelier")
+        let failurePersistence = InMemoryWorkspaceFailurePersistence()
+        let store = ACPStore(
+            transport: transport,
+            cwd: "/tmp/atelier",
+            failurePersistence: failurePersistence
+        )
 
         transport.onSend = { data in
             let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
@@ -1014,6 +1023,203 @@ struct ACPStoreTests {
         #expect(store.lastErrorDescription == FakeACPStoreTransportError.transportStopped.localizedDescription)
         #expect(store.canSendPrompt == false)
         #expect(store.recoveryIssue?.kind == .transportFailure)
+        #expect(store.latestFailureSnapshot?.underlyingError == FakeACPStoreTransportError.transportStopped.localizedDescription)
+        #expect(failurePersistence.storedSnapshots["/tmp/atelier"]?.underlyingError == FakeACPStoreTransportError.transportStopped.localizedDescription)
+    }
+
+    @Test func transportFailurePreservesTerminalEvidenceAndRecentActivity() async throws {
+        let transport = FakeACPStoreTransport()
+        let failurePersistence = InMemoryWorkspaceFailurePersistence()
+        let store = ACPStore(
+            transport: transport,
+            cwd: "/tmp/atelier",
+            failurePersistence: failurePersistence
+        )
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id?.intValue)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "sessionId": "session_123"
+                  }
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        await store.connect()
+        store.hostActivities = [
+            ACPMessageActivity(
+                sequence: 1,
+                kind: .tool,
+                title: "Tool: Search workspace",
+                detail: "Scanning the repo before the transport stopped."
+            )
+        ]
+        store.terminalStates = [
+            "terminal_1": ACPTerminalState(
+                id: "terminal_1",
+                command: "rg ACPStore",
+                cwd: "/tmp/atelier",
+                output: "ACPStore.swift",
+                truncated: false,
+                exitStatus: nil,
+                isReleased: false
+            )
+        ]
+
+        transport.fail(FakeACPStoreTransportError.transportStopped)
+
+        #expect(store.terminalStates["terminal_1"]?.command == "rg ACPStore")
+        #expect(store.hostActivities.count == 1)
+
+        let snapshot = try #require(store.latestFailureSnapshot)
+        #expect(snapshot.lastTerminalCommand == "rg ACPStore")
+        #expect(snapshot.recentActivities.first?.title == "Tool: Search workspace")
+        #expect(snapshot.recentTerminals.first?.command == "rg ACPStore")
+        #expect(failurePersistence.storedSnapshots["/tmp/atelier"] == snapshot)
+    }
+
+    @Test func recoverableResumeFailurePersistsFailureDetailsWhileConnectingFreshSession() async throws {
+        let transport = FakeACPStoreTransport()
+        let sessionPersistence = InMemoryWorkspaceSessionPersistence(
+            storedSessions: ["/tmp/atelier": "session_resume"]
+        )
+        let failurePersistence = InMemoryWorkspaceFailurePersistence()
+        let store = ACPStore(
+            transport: transport,
+            cwd: "/tmp/atelier",
+            sessionPersistence: sessionPersistence,
+            failurePersistence: failurePersistence
+        )
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id?.intValue)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1,
+                    "agentCapabilities": {
+                      "loadSession": true
+                    }
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionLoad.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "error": {
+                    "code": -32000,
+                    "message": "Session is no longer available"
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "sessionId": "session_fresh"
+                  }
+                }
+                """)
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        await store.connect()
+
+        #expect(store.connectionState == .ready)
+        #expect(store.recoveryIssue == nil)
+        #expect(store.latestFailureSnapshot?.recoveryKind == .sessionResumeFailure)
+        #expect(store.latestFailureSnapshot?.lastRequestMethod == ACPMethod.sessionLoad.rawValue)
+        #expect(store.hostActivities.last?.title == "Started a fresh ACP session")
+        #expect(failurePersistence.storedSnapshots["/tmp/atelier"]?.recoveryKind == .sessionResumeFailure)
+    }
+
+    @Test func deadTransportFailureProducesPreciseRecoveryIssue() async {
+        let transport = FakeACPStoreTransport()
+        let store = ACPStore(transport: transport, cwd: "/tmp/atelier")
+
+        transport.onSend = { data in
+            let envelope = try JSONDecoder().decode(ACPIncomingEnvelope.self, from: data)
+            let method = try #require(envelope.method)
+            let requestID = try #require(envelope.id?.intValue)
+
+            switch method {
+            case ACPMethod.initialize.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "protocolVersion": 1
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionNew.rawValue:
+                transport.deliver("""
+                {
+                  "jsonrpc": "2.0",
+                  "id": \(requestID),
+                  "result": {
+                    "sessionId": "session_123"
+                  }
+                }
+                """)
+
+            case ACPMethod.sessionPrompt.rawValue:
+                throw ACPSessionClientError.deadTransport(
+                    method: ACPMethod.sessionPrompt.rawValue,
+                    requestID: requestID
+                )
+
+            default:
+                Issue.record("Unexpected method \(method)")
+            }
+        }
+
+        await store.sendMessage("Trigger dead transport")
+
+        #expect(store.recoveryIssue?.kind == .deadTransportWhileSending)
+        #expect(store.statusText == "Gemini transport was already gone")
     }
 
     @Test func promptFailureStopsTransportAndAllowsReconnect() async {
@@ -1070,6 +1276,8 @@ struct ACPStoreTests {
         await store.connect()
         await store.sendMessage("Trigger failure")
 
+        let capturedSnapshot = store.latestFailureSnapshot
+
         #expect(store.connectionState == .disconnected)
         #expect(store.isSending == false)
         #expect(store.isErrorVisible == true)
@@ -1084,6 +1292,7 @@ struct ACPStoreTests {
         #expect(store.isConnecting == false)
         #expect(store.isErrorVisible == false)
         #expect(transport.startCallCount == 2)
+        #expect(store.latestFailureSnapshot == capturedSnapshot)
     }
 
     @Test func teardownClearsTransientStateAndStopsTransport() async {
@@ -1277,6 +1486,23 @@ private final class InMemoryWorkspacePermissionPersistence: ACPWorkspacePermissi
 
     func removeAllDecisions(for workspaceRoot: String) {
         storedDecisions.removeValue(forKey: workspaceRoot)
+    }
+}
+
+@MainActor
+private final class InMemoryWorkspaceFailurePersistence: ACPWorkspaceFailurePersisting {
+    var storedSnapshots: [String: ACPTransportFailureSnapshot] = [:]
+
+    func snapshot(for workspaceRoot: String) -> ACPTransportFailureSnapshot? {
+        storedSnapshots[workspaceRoot]
+    }
+
+    func save(snapshot: ACPTransportFailureSnapshot, for workspaceRoot: String) {
+        storedSnapshots[workspaceRoot] = snapshot
+    }
+
+    func removeSnapshot(for workspaceRoot: String) {
+        storedSnapshots.removeValue(forKey: workspaceRoot)
     }
 }
 

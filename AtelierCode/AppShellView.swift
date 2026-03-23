@@ -16,7 +16,7 @@ struct AppShellView: View {
 
     var body: some View {
         Group {
-            if let store = model.mountedStore, !model.showsSetupSurface {
+            if let store = model.mountedStore {
                 ContentView(
                     store: store,
                     workspacePath: model.selectedWorkspacePath,

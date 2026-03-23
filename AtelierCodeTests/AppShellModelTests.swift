@@ -249,7 +249,7 @@ struct AppShellModelTests {
         #expect(model.mountedStore?.connectionState == .disconnected)
     }
 
-    @Test func reconnectAndResetRemountWorkspaceUsingLatestGeminiSettings() throws {
+    @Test func reconnectAndResetReuseMountedWorkspaceWhileClearingSavedSession() throws {
         let fileManager = FileManager.default
         let workspaceURL = fileManager.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -282,6 +282,7 @@ struct AppShellModelTests {
                 )
             }
         )
+        let originalStore = try #require(model.mountedStore)
 
         model.saveGeminiSettings(
             executableOverridePath: "/tmp/override-gemini",
@@ -291,10 +292,11 @@ struct AppShellModelTests {
         model.reconnectWorkspace()
         model.resetWorkspaceSession()
 
-        #expect(capturedSettings.count == 3)
+        #expect(capturedSettings.count == 1)
         #expect(capturedSettings.last?.executableOverridePath == "/tmp/override-gemini")
         #expect(capturedSettings.last?.defaultModel == "gemini-2.5-flash")
         #expect(sessionPersistence.storedSessions[workspaceURL.path] == nil)
+        #expect(model.mountedStore === originalStore)
     }
 }
 

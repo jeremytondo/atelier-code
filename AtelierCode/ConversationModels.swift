@@ -22,7 +22,7 @@ nonisolated enum ConversationRole: String, Codable, Sendable {
     case system
 }
 
-nonisolated struct ConversationMessage: Identifiable, Equatable, Sendable {
+nonisolated struct ConversationMessage: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     let role: ConversationRole
     var text: String
@@ -34,7 +34,7 @@ nonisolated struct ConversationMessage: Identifiable, Equatable, Sendable {
     }
 }
 
-nonisolated struct ACPTerminalState: Identifiable, Equatable, Sendable {
+nonisolated struct ACPTerminalState: Identifiable, Codable, Equatable, Sendable {
     let id: String
     var command: String
     var cwd: String
@@ -110,7 +110,7 @@ nonisolated struct ACPPermissionPrompt: Identifiable, Equatable, Sendable {
     }
 }
 
-nonisolated enum ACPMessageActivityKind: String, Equatable, Sendable {
+nonisolated enum ACPMessageActivityKind: String, Codable, Equatable, Sendable {
     case thinking
     case tool
     case availableCommands
@@ -118,7 +118,7 @@ nonisolated enum ACPMessageActivityKind: String, Equatable, Sendable {
     case terminal
 }
 
-nonisolated struct ACPTerminalActivitySnapshot: Equatable, Sendable {
+nonisolated struct ACPTerminalActivitySnapshot: Codable, Equatable, Sendable {
     let terminalId: String
     let command: String
     let cwd: String
@@ -129,7 +129,7 @@ nonisolated struct ACPTerminalActivitySnapshot: Equatable, Sendable {
     let isReleased: Bool
 }
 
-nonisolated struct ACPMessageActivity: Identifiable, Equatable, Sendable {
+nonisolated struct ACPMessageActivity: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     let sequence: Int
     let kind: ACPMessageActivityKind

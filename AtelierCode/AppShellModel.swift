@@ -532,14 +532,40 @@ final class AppShellModel {
     func reconnectWorkspace() {
         guard launchMode == .live else { return }
         guard selectedWorkspacePath != nil else { return }
-        mountLiveWorkspace(path: selectedWorkspacePath, autostart: true, forceRemount: true)
+
+        guard let store = mountedStore else {
+            mountLiveWorkspace(path: selectedWorkspacePath, autostart: true, forceRemount: true)
+            return
+        }
+
+        connectionTask?.cancel()
+        connectionTask = Task { @MainActor [weak self, weak store] in
+            guard let self, let store else { return }
+            await store.reconnect()
+            if self.mountedStore === store {
+                self.connectionTask = nil
+            }
+        }
     }
 
     func resetWorkspaceSession() {
         guard launchMode == .live else { return }
         guard let selectedWorkspacePath else { return }
         sessionPersistence.removeSession(for: selectedWorkspacePath)
-        mountLiveWorkspace(path: selectedWorkspacePath, autostart: true, forceRemount: true)
+
+        guard let store = mountedStore else {
+            mountLiveWorkspace(path: selectedWorkspacePath, autostart: true, forceRemount: true)
+            return
+        }
+
+        connectionTask?.cancel()
+        connectionTask = Task { @MainActor [weak self, weak store] in
+            guard let self, let store else { return }
+            await store.resetSession()
+            if self.mountedStore === store {
+                self.connectionTask = nil
+            }
+        }
     }
 
     var presentedSetupState: AppBlockingSetupState {

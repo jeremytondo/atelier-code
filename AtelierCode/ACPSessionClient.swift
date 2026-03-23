@@ -41,6 +41,7 @@ nonisolated enum ACPSessionClientError: LocalizedError {
     case promptNotInFlight
     case requestTimedOut(method: String, timeout: TimeInterval)
     case invalidResponse(method: String)
+    case deadTransport(method: String, requestID: Int?)
     case missingResult(method: String)
     case serverError(method: String, error: ACPError)
     case authenticationRequired(method: String, error: ACPError)
@@ -57,6 +58,11 @@ nonisolated enum ACPSessionClientError: LocalizedError {
             return "The ACP request \(method) timed out after \(Self.formattedTimeout(timeout))."
         case .invalidResponse(let method):
             return "The ACP response for \(method) could not be decoded."
+        case .deadTransport(let method, let requestID):
+            if let requestID {
+                return "The ACP transport was already gone while sending \(method) (#\(requestID))."
+            }
+            return "The ACP transport was already gone while sending \(method)."
         case .missingResult(let method):
             return "The ACP response for \(method) did not include a result."
         case .serverError(let method, let error):
@@ -948,8 +954,11 @@ final class ACPSessionClient {
     private let terminalSessionManager: ACPTerminalSessionManager
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let maxDiagnosticLines = 20
+    private let maxLifecycleEvents = 20
 
     private struct PendingResponse {
+        let method: ACPMethod
         let timeoutTask: Task<Void, Never>?
         let complete: (Result<Data, any Error>) -> Void
     }
@@ -959,11 +968,21 @@ final class ACPSessionClient {
     private var pendingResponses: [Int: PendingResponse] = [:]
     private var workspaceAccessPolicy: ACPWorkspaceAccessPolicy?
     private var promptSessionIDInFlight: String?
+    private var latestDiagnostics: [String] = []
+    private var lifecycleEvents: [ACPTransportLifecycleEvent] = []
+    private var lastRequestMethod: String?
+    private var lastRequestID: Int?
+    private var lastProcessExitStatus: Int?
+    private var lastTerminationReason: String?
+    private var hasObservedFirstResponse = false
 
     private(set) var negotiatedProtocolVersion: Int?
     private(set) var sessionID: String?
     private(set) var agentCapabilities: ACPAgentCapabilities?
     private(set) var authMethods: [ACPAuthMethod] = []
+    private(set) var lastFailureContext: ACPTransportFailureContext?
+    private(set) var lastRecoverableLoadFailure: ACPSessionClientError?
+    private(set) var lastRecoverableFailureContext: ACPTransportFailureContext?
 
     init(
         transport: AgentTransport,
@@ -977,6 +996,11 @@ final class ACPSessionClient {
         self.terminalSessionManager = terminalSessionManager
         transport.onReceive = { [weak self] result in
             self?.handleTransportMessage(result)
+        }
+        if let localTransport = transport as? LocalACPTransport {
+            localTransport.onDiagnostic = { [weak self] diagnostic in
+                self?.appendDiagnostic(diagnostic)
+            }
         }
         terminalSessionManager.onStateChange = { [weak self] state in
             self?.onTerminalStateChange?(state)
@@ -1065,12 +1089,35 @@ final class ACPSessionClient {
         negotiatedProtocolVersion = nil
         agentCapabilities = nil
         authMethods = []
+        latestDiagnostics.removeAll()
+        lifecycleEvents.removeAll()
+        lastRequestMethod = nil
+        lastRequestID = nil
+        lastProcessExitStatus = nil
+        lastTerminationReason = nil
+        hasObservedFirstResponse = false
     }
 
     private func startTransportIfNeeded() throws {
         guard !isTransportStarted else { return }
+        latestDiagnostics.removeAll()
+        lifecycleEvents.removeAll()
+        lastProcessExitStatus = nil
+        lastTerminationReason = nil
+        hasObservedFirstResponse = false
         try transport.start()
         isTransportStarted = true
+        recordLifecycleEvent(.processStarted)
+    }
+
+    func takeRecoverableFailureContext() -> ACPTransportFailureContext? {
+        defer { lastRecoverableFailureContext = nil }
+        return lastRecoverableFailureContext
+    }
+
+    func takeRecoverableLoadFailure() -> ACPSessionClientError? {
+        defer { lastRecoverableLoadFailure = nil }
+        return lastRecoverableLoadFailure
     }
 
     private func makeRequestID() -> Int {
@@ -1083,6 +1130,9 @@ final class ACPSessionClient {
         resumeSessionID: String?,
         mcpServers: [ACPMCPServer]
     ) async throws -> String {
+        lastRecoverableLoadFailure = nil
+        lastRecoverableFailureContext = nil
+
         if let resumeSessionID, agentCapabilities?.loadSession == true {
             do {
                 _ = try await sendRequest(
@@ -1098,6 +1148,12 @@ final class ACPSessionClient {
                 guard shouldFallbackToNewSession(afterLoadFailure: error) else {
                     throw error
                 }
+
+                lastRecoverableLoadFailure = error
+                recordLifecycleEvent(.recoverableSessionLoadFailure, detail: error.localizedDescription)
+                lastRecoverableFailureContext = captureFailureContext(
+                    classificationHint: .sessionResumeFailure
+                )
             }
         }
 
@@ -1128,22 +1184,32 @@ final class ACPSessionClient {
         let request = ACPRequest(id: requestID, method: method.rawValue, params: params)
         let payload = try encoder.encode(request)
         let timeout = requestTimeouts.timeout(for: method)
+        lastRequestMethod = method.rawValue
+        lastRequestID = requestID
 
         return try await withCheckedThrowingContinuation { continuation in
             pendingResponses[requestID] = PendingResponse(
+                method: method,
                 timeoutTask: timeout.map { makeTimeoutTask(for: requestID, method: method, timeout: $0) }
-            ) { [decoder] result in
+            ) { [weak self, decoder] result in
                 switch result {
                 case .success(let data):
                     do {
                         let response = try decoder.decode(ACPResponse<Result>.self, from: data)
 
                         if let error = response.error {
-                            continuation.resume(throwing: Self.classify(error: error, for: method))
+                            let classifiedError = Self.classify(error: error, for: method)
+                            self?.lastFailureContext = self?.captureFailureContext(
+                                classificationHint: method == .sessionLoad ? .sessionResumeFailure : nil
+                            )
+                            continuation.resume(throwing: classifiedError)
                             return
                         }
 
                         guard let result = response.result else {
+                            self?.lastFailureContext = self?.captureFailureContext(
+                                classificationHint: .invalidResponse
+                            )
                             continuation.resume(
                                 throwing: ACPSessionClientError.missingResult(method: method.rawValue)
                             )
@@ -1152,12 +1218,18 @@ final class ACPSessionClient {
 
                         continuation.resume(returning: result)
                     } catch {
+                        self?.lastFailureContext = self?.captureFailureContext(
+                            classificationHint: .invalidResponse
+                        )
                         continuation.resume(
                             throwing: ACPSessionClientError.invalidResponse(method: method.rawValue)
                         )
                     }
 
                 case .failure(let error):
+                    self?.lastFailureContext = self?.captureFailureContext(
+                        classificationHint: self?.recoveryKind(for: error, method: method)
+                    )
                     continuation.resume(throwing: error)
                 }
             }
@@ -1165,7 +1237,16 @@ final class ACPSessionClient {
             do {
                 try transport.send(message: payload)
             } catch {
-                resolvePendingResponse(requestID: requestID, with: .failure(error))
+                recordLifecycleEvent(.sendFailure, detail: "\(method.rawValue) (#\(requestID))")
+                let resolvedError = classifyTransportSendError(
+                    error,
+                    method: method,
+                    requestID: requestID
+                )
+                lastFailureContext = captureFailureContext(
+                    classificationHint: recoveryKind(for: resolvedError, method: method)
+                )
+                resolvePendingResponse(requestID: requestID, with: .failure(resolvedError))
             }
         }
     }
@@ -1175,7 +1256,16 @@ final class ACPSessionClient {
         params: Params
     ) throws {
         let notification = ACPNotificationRequest(method: method.rawValue, params: params)
-        try transport.send(message: encoder.encode(notification))
+        do {
+            try transport.send(message: encoder.encode(notification))
+        } catch {
+            recordLifecycleEvent(.sendFailure, detail: method.rawValue)
+            let resolvedError = classifyTransportSendError(error, method: method, requestID: nil)
+            lastFailureContext = captureFailureContext(
+                classificationHint: recoveryKind(for: resolvedError, method: method)
+            )
+            throw resolvedError
+        }
     }
 
     private func handleTransportMessage(_ result: Result<Data, any Error>) {
@@ -1183,14 +1273,37 @@ final class ACPSessionClient {
         case .success(let data):
             handleIncomingData(data)
         case .failure(let error):
+            let pendingMethod = pendingResponses.first?.value.method
+            if let transportError = error as? LocalACPTransportError,
+               case .processTerminated(let status, let reason) = transportError {
+                lastProcessExitStatus = Int(status)
+                lastTerminationReason = reason
+            }
+
+            recordLifecycleEvent(.terminationObserved, detail: error.localizedDescription)
             failPendingResponses(with: error)
+            recordLifecycleEvent(.cleanupCompleted)
+            lastFailureContext = captureFailureContext(
+                classificationHint: recoveryKind(for: error, method: pendingMethod)
+            )
             reset()
             onTransportError?(error)
         }
     }
 
     private func handleIncomingData(_ data: Data) {
+        if !hasObservedFirstResponse {
+            hasObservedFirstResponse = true
+            recordLifecycleEvent(.firstResponseReceived)
+        }
+
         guard let envelope = try? decoder.decode(ACPIncomingEnvelope.self, from: data) else {
+            let error = ACPSessionClientError.invalidResponse(method: lastRequestMethod ?? "unknown")
+            failPendingResponses(with: error)
+            recordLifecycleEvent(.cleanupCompleted)
+            lastFailureContext = captureFailureContext(classificationHint: .invalidResponse)
+            reset()
+            onTransportError?(error)
             return
         }
 
@@ -1205,7 +1318,15 @@ final class ACPSessionClient {
 
         if let id = envelope.id?.intValue {
             resolvePendingResponse(requestID: id, with: .success(data))
+            return
         }
+
+        let error = ACPSessionClientError.invalidResponse(method: lastRequestMethod ?? "unknown")
+        failPendingResponses(with: error)
+        recordLifecycleEvent(.cleanupCompleted)
+        lastFailureContext = captureFailureContext(classificationHint: .invalidResponse)
+        reset()
+        onTransportError?(error)
     }
 
     private func handleRequest(method: String, id: ACPRequestID?, data: Data) {
@@ -1783,7 +1904,12 @@ final class ACPSessionClient {
         do {
             try transport.send(message: encoder.encode(response))
         } catch {
+            recordLifecycleEvent(.sendFailure, detail: "client response")
             failPendingResponses(with: error)
+            recordLifecycleEvent(.cleanupCompleted)
+            lastFailureContext = captureFailureContext(
+                classificationHint: recoveryKind(for: error, method: nil)
+            )
             reset()
             onTransportError?(error)
         }
@@ -1807,7 +1933,12 @@ final class ACPSessionClient {
                 )
             )
         } catch {
+            recordLifecycleEvent(.sendFailure, detail: "client error response")
             failPendingResponses(with: error)
+            recordLifecycleEvent(.cleanupCompleted)
+            lastFailureContext = captureFailureContext(
+                classificationHint: recoveryKind(for: error, method: nil)
+            )
             reset()
             onTransportError?(error)
         }
@@ -1841,6 +1972,97 @@ final class ACPSessionClient {
         }
     }
 
+    private func appendDiagnostic(_ diagnostic: String) {
+        let trimmedDiagnostic = diagnostic.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedDiagnostic.isEmpty else { return }
+
+        latestDiagnostics.append(trimmedDiagnostic)
+        if latestDiagnostics.count > maxDiagnosticLines {
+            latestDiagnostics.removeFirst(latestDiagnostics.count - maxDiagnosticLines)
+        }
+    }
+
+    private func recordLifecycleEvent(
+        _ kind: ACPTransportLifecycleEventKind,
+        detail: String? = nil,
+        occurredAt: Date = Date()
+    ) {
+        lifecycleEvents.append(
+            ACPTransportLifecycleEvent(
+                occurredAt: occurredAt,
+                kind: kind,
+                detail: detail
+            )
+        )
+
+        if lifecycleEvents.count > maxLifecycleEvents {
+            lifecycleEvents.removeFirst(lifecycleEvents.count - maxLifecycleEvents)
+        }
+    }
+
+    private func captureFailureContext(
+        classificationHint: ACPRecoveryIssueKind? = nil,
+        occurredAt: Date = Date()
+    ) -> ACPTransportFailureContext {
+        ACPTransportFailureContext(
+            occurredAt: occurredAt,
+            classificationHint: classificationHint,
+            processExitStatus: lastProcessExitStatus,
+            terminationReason: lastTerminationReason,
+            lastRequestMethod: lastRequestMethod,
+            lastRequestID: lastRequestID,
+            wasPromptInFlight: promptSessionIDInFlight != nil,
+            diagnostics: latestDiagnostics,
+            lifecycleEvents: lifecycleEvents
+        )
+    }
+
+    private func classifyTransportSendError(
+        _ error: any Error,
+        method: ACPMethod,
+        requestID: Int?
+    ) -> any Error {
+        if let transportError = error as? LocalACPTransportError,
+           case .processNotRunning = transportError {
+            return ACPSessionClientError.deadTransport(
+                method: method.rawValue,
+                requestID: requestID
+            )
+        }
+
+        return error
+    }
+
+    private func recoveryKind(
+        for error: any Error,
+        method: ACPMethod?
+    ) -> ACPRecoveryIssueKind? {
+        if let sessionError = error as? ACPSessionClientError {
+            switch sessionError {
+            case .requestTimedOut:
+                return .requestTimeout
+            case .invalidResponse:
+                return .invalidResponse
+            case .deadTransport:
+                return .deadTransportWhileSending
+            case .serverError(let method, _) where method == ACPMethod.sessionLoad.rawValue:
+                return .sessionResumeFailure
+            default:
+                break
+            }
+        }
+
+        if let transportError = error as? LocalACPTransportError {
+            return transportError.recoveryKind
+        }
+
+        if let method, method == .sessionLoad {
+            return .sessionResumeFailure
+        }
+
+        return nil
+    }
+
     private func makeTimeoutTask(for requestID: Int, method: ACPMethod, timeout: TimeInterval) -> Task<Void, Never> {
         Task { [weak self] in
             do {
@@ -1850,14 +2072,16 @@ final class ACPSessionClient {
             }
 
             await MainActor.run {
+                let timeoutError = ACPSessionClientError.requestTimedOut(
+                    method: method.rawValue,
+                    timeout: timeout
+                )
+                self?.lastFailureContext = self?.captureFailureContext(
+                    classificationHint: .requestTimeout
+                )
                 self?.resolvePendingResponse(
                     requestID: requestID,
-                    with: .failure(
-                        ACPSessionClientError.requestTimedOut(
-                            method: method.rawValue,
-                            timeout: timeout
-                        )
-                    )
+                    with: .failure(timeoutError)
                 )
             }
         }

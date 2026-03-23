@@ -7,6 +7,9 @@
 
 import Foundation
 import Observation
+#if canImport(AppKit)
+import AppKit
+#endif
 
 nonisolated enum AppWorkingDirectory: Sendable {
     static func resolve(
@@ -208,11 +211,16 @@ final class ACPWorkspacePermissionStore: ACPWorkspacePermissionPersisting {
     }
 }
 
-nonisolated enum ACPRecoveryIssueKind: Equatable, Sendable {
+nonisolated enum ACPRecoveryIssueKind: String, Codable, Equatable, Sendable {
     case missingExecutable
     case authenticationRequired
     case modelUnavailable
-    case subprocessFailure
+    case subprocessExit
+    case subprocessSignalTermination
+    case requestTimeout
+    case deadTransportWhileSending
+    case invalidResponse
+    case sessionResumeFailure
     case transportFailure
 }
 
@@ -252,6 +260,7 @@ final class ACPStore {
     var isSending = false
     var lastErrorDescription: String?
     var recoveryIssue: ACPRecoveryIssue?
+    var latestFailureSnapshot: ACPTransportFailureSnapshot?
     var currentAssistantMessageIndex: Int?
     var scrollTargetMessageID: UUID?
 
@@ -263,12 +272,12 @@ final class ACPStore {
     @ObservationIgnored private let mcpServers: [ACPMCPServer]
     @ObservationIgnored private let sessionPersistence: ACPWorkspaceSessionPersisting
     @ObservationIgnored private let permissionPersistence: ACPWorkspacePermissionPersisting
+    @ObservationIgnored private let failurePersistence: ACPWorkspaceFailurePersisting
     @ObservationIgnored private var nextActivitySequence = 1
     @ObservationIgnored private var terminalMessageIDs: [String: UUID] = [:]
     @ObservationIgnored private var toolCallMessageIDs: [String: UUID] = [:]
     @ObservationIgnored private var terminalOutputSnapshots: [String: String] = [:]
     @ObservationIgnored private var pendingPermissionResolvers: [UUID: PendingPermissionResolver] = [:]
-    @ObservationIgnored private var latestTransportDiagnostic: String?
 
     init(
         transport: AgentTransport? = nil,
@@ -278,7 +287,8 @@ final class ACPStore {
         clientCapabilities: ACPClientCapabilities = .atelierCodeDefaults,
         mcpServers: [ACPMCPServer] = [],
         sessionPersistence: ACPWorkspaceSessionPersisting = ACPWorkspaceSessionStore.standard,
-        permissionPersistence: ACPWorkspacePermissionPersisting = ACPWorkspacePermissionStore.standard
+        permissionPersistence: ACPWorkspacePermissionPersisting = ACPWorkspacePermissionStore.standard,
+        failurePersistence: ACPWorkspaceFailurePersisting = ACPWorkspaceFailureStore.standard
     ) {
         let resolvedTransport = transport ?? LocalACPTransport(
             executableOverridePath: geminiSettings.executableOverridePath,
@@ -292,6 +302,7 @@ final class ACPStore {
         self.mcpServers = mcpServers
         self.sessionPersistence = sessionPersistence
         self.permissionPersistence = permissionPersistence
+        self.failurePersistence = failurePersistence
         sessionClient = ACPSessionClient(transport: resolvedTransport)
         sessionClient.permissionPolicy = ACPPermissionPolicy(
             resolveOutcome: { [weak self] request, context in
@@ -312,19 +323,12 @@ final class ACPStore {
             self?.handleTerminalStateChange(state)
         }
         sessionClient.onTerminalStatesReset = { [weak self] in
-            self?.terminalStates.removeAll()
-            self?.terminalOutputSnapshots.removeAll()
-            self?.terminalMessageIDs.removeAll()
+            self?.pendingPermissionRequests.removeAll()
         }
         sessionClient.onTransportError = { [weak self] error in
             self?.handleFailure(error)
         }
-
-        if let localTransport = resolvedTransport as? LocalACPTransport {
-            localTransport.onDiagnostic = { [weak self] diagnostic in
-                self?.latestTransportDiagnostic = diagnostic
-            }
-        }
+        latestFailureSnapshot = failurePersistence.snapshot(for: cwd)
     }
 
     var canSendPrompt: Bool {
@@ -339,6 +343,10 @@ final class ACPStore {
 
     var canCancelPrompt: Bool {
         isSending && connectionState != .cancelling
+    }
+
+    var hasFailureDetails: Bool {
+        latestFailureSnapshot != nil
     }
 
     var recoverySetupState: AppBlockingSetupState? {
@@ -382,6 +390,10 @@ final class ACPStore {
         recoveryIssue != nil || lastErrorDescription != nil
     }
 
+    var latestFailureReport: String? {
+        latestFailureSnapshot?.copyableReport
+    }
+
     private var trimmedDraftPrompt: String {
         draftPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -420,6 +432,7 @@ final class ACPStore {
             if let sessionID = sessionClient.sessionID {
                 sessionPersistence.save(sessionID: sessionID, for: cwd)
             }
+            recordRecoverableResumeFailureIfNeeded(previousSessionID: persistedSessionID)
             isConnecting = false
             connectionState = isSending ? .streaming : .ready
         } catch {
@@ -475,6 +488,33 @@ final class ACPStore {
         }
     }
 
+    func reconnect() async {
+        resolveAllPendingPermissionRequests(with: .deny)
+        pendingPermissionRequests.removeAll()
+        sessionClient.reset()
+        isConnecting = false
+        isSending = false
+        currentAssistantMessageIndex = nil
+        connectionState = .disconnected
+        lastErrorDescription = nil
+        recoveryIssue = nil
+        await connect()
+    }
+
+    func resetSession() async {
+        sessionPersistence.removeSession(for: cwd)
+        await reconnect()
+    }
+
+    func copyLatestFailureDiagnostics() {
+        guard let report = latestFailureReport else { return }
+
+        #if canImport(AppKit)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(report, forType: .string)
+        #endif
+    }
+
     func teardown() {
         resolveAllPendingPermissionRequests(with: .deny)
         sessionClient.reset()
@@ -489,6 +529,7 @@ final class ACPStore {
         isSending = false
         lastErrorDescription = nil
         recoveryIssue = nil
+        latestFailureSnapshot = nil
         currentAssistantMessageIndex = nil
         scrollTargetMessageID = nil
         nextActivitySequence = 1
@@ -496,7 +537,6 @@ final class ACPStore {
         toolCallMessageIDs = [:]
         terminalOutputSnapshots = [:]
         pendingPermissionResolvers = [:]
-        latestTransportDiagnostic = nil
     }
 
     private func prepareForPrompt(_ prompt: String) {
@@ -813,15 +853,16 @@ final class ACPStore {
     }
 
     private func handleFailure(_ error: any Error) {
+        let recoveryIssue = classifyRecoveryIssue(for: error)
+        let failureSnapshot = makeFailureSnapshot(for: error, recoveryIssue: recoveryIssue)
+
         resolveAllPendingPermissionRequests(with: .deny)
         sessionClient.reset()
-        terminalStates.removeAll()
-        terminalOutputSnapshots.removeAll()
-        terminalMessageIDs.removeAll()
-        toolCallMessageIDs.removeAll()
         pendingPermissionRequests.removeAll()
         lastErrorDescription = error.localizedDescription
-        recoveryIssue = classifyRecoveryIssue(for: error)
+        self.recoveryIssue = recoveryIssue
+        latestFailureSnapshot = failureSnapshot
+        failurePersistence.save(snapshot: failureSnapshot, for: cwd)
         isConnecting = false
         isSending = false
         currentAssistantMessageIndex = nil
@@ -857,18 +898,52 @@ final class ACPStore {
                     recoverySuggestion: "Choose an available model in Settings, then reconnect or reset the session.",
                     suggestedCommand: nil
                 )
+            case .requestTimedOut(let method, let timeout):
+                return ACPRecoveryIssue(
+                    kind: .requestTimeout,
+                    title: "ACP request timed out",
+                    detail: "Method: \(method)\nTimeout: \(formattedTimeout(timeout))\n\(error.localizedDescription)",
+                    recoverySuggestion: "Reconnect to retry the request. Reset the session if resume state may be stale.",
+                    suggestedCommand: nil
+                )
+            case .invalidResponse(let method):
+                return ACPRecoveryIssue(
+                    kind: .invalidResponse,
+                    title: "Invalid ACP response received",
+                    detail: "Method: \(method)\n\(error.localizedDescription)",
+                    recoverySuggestion: "Reconnect to start a fresh transport after a protocol or decoding failure.",
+                    suggestedCommand: nil
+                )
+            case .deadTransport(let method, let requestID):
+                let requestDescription = requestID.map { "\(method) (#\($0))" } ?? method
+                return ACPRecoveryIssue(
+                    kind: .deadTransportWhileSending,
+                    title: "Gemini transport was already gone",
+                    detail: "AtelierCode tried to send \(requestDescription) after the ACP transport had already stopped.",
+                    recoverySuggestion: "Reconnect to launch a fresh Gemini ACP subprocess before retrying the request.",
+                    suggestedCommand: nil
+                )
+            case .serverError(let method, _):
+                if method == ACPMethod.sessionLoad.rawValue {
+                    return ACPRecoveryIssue(
+                        kind: .sessionResumeFailure,
+                        title: "Saved ACP session could not be resumed",
+                        detail: error.localizedDescription,
+                        recoverySuggestion: "Reset the session to discard stale resume state, or reconnect to try again.",
+                        suggestedCommand: nil
+                    )
+                }
             default:
                 break
             }
         }
 
         if let error = error as? LocalACPTransportError {
-            let suggestion = latestTransportDiagnostic.map { "Last Gemini diagnostic: \($0)" }
             return ACPRecoveryIssue(
-                kind: .subprocessFailure,
-                title: "Gemini subprocess failed",
+                kind: error.recoveryKind,
+                title: error.recoveryTitle,
                 detail: error.localizedDescription,
-                recoverySuggestion: suggestion ?? "Reconnect to launch a fresh Gemini ACP subprocess.",
+                recoverySuggestion: "Reconnect to launch a fresh Gemini ACP subprocess.",
                 suggestedCommand: nil
             )
         }
@@ -880,6 +955,99 @@ final class ACPStore {
             recoverySuggestion: "Reconnect to retry the ACP session, or reset the session if resume state may be stale.",
             suggestedCommand: nil
         )
+    }
+
+    private func recordRecoverableResumeFailureIfNeeded(previousSessionID: String?) {
+        guard
+            let previousSessionID,
+            let context = sessionClient.takeRecoverableFailureContext(),
+            let error = sessionClient.takeRecoverableLoadFailure()
+        else {
+            return
+        }
+
+        let recoveryIssue = ACPRecoveryIssue(
+            kind: .sessionResumeFailure,
+            title: "Previous ACP session could not be resumed",
+            detail: error.localizedDescription,
+            recoverySuggestion: "AtelierCode started a fresh session and preserved the resume failure details below.",
+            suggestedCommand: nil
+        )
+
+        latestFailureSnapshot = makeFailureSnapshot(
+            for: error,
+            recoveryIssue: recoveryIssue,
+            context: context
+        )
+
+        if let latestFailureSnapshot {
+            failurePersistence.save(snapshot: latestFailureSnapshot, for: cwd)
+        }
+
+        appendActivity(
+            to: nil,
+            ACPMessageActivity(
+                sequence: nextSequence(),
+                kind: .permission,
+                title: "Started a fresh ACP session",
+                detail: "Saved session \(previousSessionID) could not be resumed. AtelierCode kept the failure details and continued with a new session."
+            )
+        )
+    }
+
+    private func makeFailureSnapshot(
+        for error: any Error,
+        recoveryIssue: ACPRecoveryIssue,
+        context explicitContext: ACPTransportFailureContext? = nil
+    ) -> ACPTransportFailureSnapshot {
+        let context = explicitContext ?? sessionClient.lastFailureContext
+        let recentActivities = Array(hostActivities.suffix(12))
+        let recentTerminals = Array(visibleTerminalStates.prefix(4))
+        let mostRecentTerminal = recentTerminals.first
+        let lastUserPrompt = messages.reversed().first(where: { $0.role == .user })?.text
+        let lastAssistantMessage = messages.reversed().first(where: {
+            $0.role == .assistant && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        })?.text
+
+        return ACPTransportFailureSnapshot(
+            occurredAt: context?.occurredAt ?? Date(),
+            workspacePath: cwd,
+            model: geminiSettings.defaultModel,
+            recoveryKind: recoveryIssue.kind,
+            title: recoveryIssue.title,
+            explanation: recoveryIssue.detail,
+            underlyingError: error.localizedDescription,
+            processExitStatus: context?.processExitStatus,
+            terminationReason: context?.terminationReason,
+            lastRequestMethod: context?.lastRequestMethod,
+            lastRequestID: context?.lastRequestID,
+            wasPromptInFlight: context?.wasPromptInFlight ?? isSending,
+            lastUserPrompt: sanitizedMultiline(lastUserPrompt),
+            lastAssistantMessage: sanitizedMultiline(lastAssistantMessage),
+            lastTerminalCommand: mostRecentTerminal?.command,
+            lastTerminalCwd: mostRecentTerminal?.cwd,
+            diagnostics: context?.diagnostics ?? [],
+            lifecycleEvents: context?.lifecycleEvents ?? [],
+            recentActivities: recentActivities,
+            recentTerminals: recentTerminals,
+            recommendedAction: recoveryIssue.recoverySuggestion
+        )
+    }
+
+    private func sanitizedMultiline(_ value: String?, limit: Int = 1_000) -> String? {
+        guard let value else { return nil }
+        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedValue.isEmpty else { return nil }
+        guard trimmedValue.count > limit else { return trimmedValue }
+        return String(trimmedValue.prefix(limit)) + "…"
+    }
+
+    private func formattedTimeout(_ timeout: TimeInterval) -> String {
+        if timeout.rounded(.towardZero) == timeout {
+            return "\(Int(timeout))s"
+        }
+
+        return String(format: "%.2fs", timeout)
     }
 
     func activities(for messageID: UUID) -> [ACPMessageActivity] {

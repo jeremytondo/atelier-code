@@ -25,6 +25,18 @@ struct ContentView: View {
 
                     Divider()
 
+                    if let snapshot = store.latestFailureSnapshot {
+                        FailureDetailsCard(
+                            snapshot: snapshot,
+                            isActiveFailure: store.recoveryIssue != nil,
+                            onReconnect: onReconnect,
+                            onResetSession: onResetSession,
+                            onCopyDiagnostics: { store.copyLatestFailureDiagnostics() }
+                        )
+
+                        Divider()
+                    }
+
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 14) {
                             if store.messages.isEmpty {
@@ -129,6 +141,14 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
                 .accessibilityIdentifier("workspace.reset")
 
+                if store.hasFailureDetails {
+                    Button("Copy Diagnostics") {
+                        store.copyLatestFailureDiagnostics()
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("workspace.copyDiagnostics")
+                }
+
                 Text(store.statusText)
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(store.isErrorVisible ? Color.red : Color.secondary)
@@ -221,6 +241,156 @@ struct ContentView: View {
         }
 
         return "Send"
+    }
+}
+
+private struct FailureDetailsCard: View {
+    let snapshot: ACPTransportFailureSnapshot
+    let isActiveFailure: Bool
+    let onReconnect: () -> Void
+    let onResetSession: () -> Void
+    let onCopyDiagnostics: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(isActiveFailure ? snapshot.title : "Most recent ACP failure")
+                        .font(.headline.weight(.semibold))
+
+                    Text(snapshot.explanation)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer()
+
+                Text(snapshot.timestampText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            failureMetadata
+
+            if !snapshot.diagnostics.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Recent Gemini diagnostics")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    Text(snapshot.diagnosticsText)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Color.black.opacity(0.06))
+                        )
+                }
+            }
+
+            if !snapshot.lifecycleEvents.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Transport lifecycle")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    ForEach(snapshot.lifecycleEvents.suffix(5)) { event in
+                        Text(lifecycleLine(for: event))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button("Reconnect") {
+                    onReconnect()
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button("Reset Session") {
+                    onResetSession()
+                }
+                .buttonStyle(.bordered)
+
+                Button("Copy Diagnostics") {
+                    onCopyDiagnostics()
+                }
+                .buttonStyle(.bordered)
+            }
+
+            if let recommendedAction = snapshot.recommendedAction, !recommendedAction.isEmpty {
+                Text(recommendedAction)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(red: 0.38, green: 0.12, blue: 0.08).opacity(0.12),
+                    Color(nsColor: .textBackgroundColor).opacity(0.95)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 0, style: .continuous)
+                .stroke(Color.red.opacity(0.14), lineWidth: 1)
+        )
+    }
+
+    private var failureMetadata: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let lastRequestMethod = snapshot.lastRequestMethod {
+                Text(requestLine(for: lastRequestMethod))
+            }
+
+            if let processExitStatus = snapshot.processExitStatus {
+                Text("Exit status: \(processExitStatus)")
+            }
+
+            if let terminationReason = snapshot.terminationReason, !terminationReason.isEmpty {
+                Text("Termination: \(terminationReason)")
+            }
+
+            if let lastTerminalCommand = snapshot.lastTerminalCommand {
+                let cwdText = snapshot.lastTerminalCwd.map { " (\($0))" } ?? ""
+                Text("Last terminal: \(lastTerminalCommand)\(cwdText)")
+            }
+
+            if snapshot.wasPromptInFlight {
+                Text("A prompt was in flight when the failure happened.")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .textSelection(.enabled)
+    }
+
+    private func requestLine(for method: String) -> String {
+        if let requestID = snapshot.lastRequestID {
+            return "Last ACP request: \(method) (#\(requestID))"
+        }
+
+        return "Last ACP request: \(method)"
+    }
+
+    private func lifecycleLine(for event: ACPTransportLifecycleEvent) -> String {
+        let detailSuffix: String
+        if let detail = event.detail, !detail.isEmpty {
+            detailSuffix = " • \(detail)"
+        } else {
+            detailSuffix = ""
+        }
+
+        return "\(event.kind.title) • \(event.occurredAt.formatted(date: .omitted, time: .standard))\(detailSuffix)"
     }
 }
 

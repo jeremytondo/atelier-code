@@ -808,7 +808,7 @@ nonisolated struct ACPSessionUpdate: Decodable, Equatable, Sendable {
     }
 }
 
-nonisolated struct ACPAvailableCommand: Decodable, Equatable, Sendable {
+nonisolated struct ACPAvailableCommand: Codable, Equatable, Sendable {
     let name: String
     let description: String?
 }
