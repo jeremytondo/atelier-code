@@ -27,6 +27,7 @@
 		DEB6E8C02F71D853004B8E3E /* AtelierCode.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AtelierCode.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		DEB6E8CD2F71D854004B8E3E /* AtelierCodeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AtelierCodeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DEB6E8D72F71D854004B8E3E /* AtelierCodeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AtelierCodeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DEF0FE952F71DDC500E68955 /* architecture.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = architecture.md; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -75,6 +76,7 @@
 		DEB6E8B72F71D853004B8E3E = {
 			isa = PBXGroup;
 			children = (
+				DEF0FE942F71DDBA00E68955 /* Docs */,
 				DEB6E8C22F71D853004B8E3E /* AtelierCode */,
 				DEB6E8D02F71D854004B8E3E /* AtelierCodeTests */,
 				DEB6E8DA2F71D854004B8E3E /* AtelierCodeUITests */,
@@ -90,6 +92,14 @@
 				DEB6E8D72F71D854004B8E3E /* AtelierCodeUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		DEF0FE942F71DDBA00E68955 /* Docs */ = {
+			isa = PBXGroup;
+			children = (
+				DEF0FE952F71DDC500E68955 /* architecture.md */,
+			);
+			path = Docs;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
