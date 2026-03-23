@@ -449,6 +449,7 @@ struct ACPSessionClientTests {
         }
         """)
 
+        #expect(await waitUntil { fileReadResponse != nil })
         let response = try #require(fileReadResponse)
         let result = try #require(response["result"] as? [String: Any])
 
@@ -524,6 +525,7 @@ struct ACPSessionClientTests {
         }
         """)
 
+        #expect(await waitUntil { fileReadResponse != nil })
         let response = try #require(fileReadResponse)
         let result = try #require(response["result"] as? [String: Any])
 
@@ -2264,7 +2266,7 @@ struct ACPSessionClientTests {
         #expect(client.sessionID == "session_fresh")
     }
 
-    @Test func sessionClientUsesInjectedPermissionPolicy() throws {
+    @Test func sessionClientUsesInjectedPermissionPolicy() async throws {
         let transport = FakeAgentTransport()
         let client = ACPSessionClient(
             transport: transport,
@@ -2302,6 +2304,7 @@ struct ACPSessionClientTests {
         }
         """)
 
+        #expect(await waitUntil { permissionResponse != nil })
         let response = try #require(permissionResponse)
         let result = try #require(response["result"] as? [String: Any])
         let outcome = try #require(result["outcome"] as? [String: Any])

@@ -189,7 +189,8 @@ struct ACPTransportTests {
         let environment = GeminiProcessEnvironment.make(
             currentEnvironment: ["PATH": "/usr/bin:/bin"],
             userHomeDirectory: "/Users/tester",
-            executableDirectory: "/opt/homebrew/bin"
+            executableDirectory: "/opt/homebrew/bin",
+            interactiveShellPATH: ""
         )
 
         #expect(
@@ -199,11 +200,26 @@ struct ACPTransportTests {
         #expect(environment["HOME"] == "/Users/tester")
     }
 
+    @Test func processEnvironmentPrefersInteractiveShellPATHEntries() {
+        let environment = GeminiProcessEnvironment.make(
+            currentEnvironment: ["PATH": "/usr/bin:/bin"],
+            userHomeDirectory: "/Users/tester",
+            executableDirectory: "/Users/tester/.local/share/mise/installs/gemini/latest/bin",
+            interactiveShellPATH: "/usr/local/go/bin:/opt/homebrew/sbin:/usr/bin:/Users/tester/.local/share/go"
+        )
+
+        #expect(
+            environment["PATH"] ==
+            "/Users/tester/.local/share/mise/installs/gemini/latest/bin:/usr/local/go/bin:/opt/homebrew/sbin:/usr/bin:/Users/tester/.local/share/go:/bin:/Users/tester/.local/share/mise/shims:/Users/tester/.local/bin:/Users/tester/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin"
+        )
+    }
+
     @Test func processEnvironmentSetsNoBrowser() {
         let environment = GeminiProcessEnvironment.make(
             currentEnvironment: [:],
             userHomeDirectory: "/Users/tester",
-            executableDirectory: nil
+            executableDirectory: nil,
+            interactiveShellPATH: ""
         )
 
         #expect(environment["NO_BROWSER"] == "1")
@@ -213,7 +229,8 @@ struct ACPTransportTests {
         let environment = GeminiProcessEnvironment.make(
             currentEnvironment: ["HOME": "/custom/home"],
             userHomeDirectory: "/Users/tester",
-            executableDirectory: nil
+            executableDirectory: nil,
+            interactiveShellPATH: ""
         )
 
         #expect(environment["HOME"] == "/custom/home")

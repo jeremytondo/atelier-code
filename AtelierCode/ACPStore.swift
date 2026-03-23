@@ -103,6 +103,111 @@ final class ACPWorkspaceSessionStore: ACPWorkspaceSessionPersisting {
     }
 }
 
+nonisolated struct ACPPersistedWorkspacePermissionRules: Codable, Equatable, Sendable {
+    let workspaceRoot: String
+    var decisions: [ACPWorkspacePermissionScope: ACPWorkspacePermissionRuleDecision]
+    let updatedAt: Date
+}
+
+@MainActor
+protocol ACPWorkspacePermissionPersisting: AnyObject {
+    func decision(
+        for workspaceRoot: String,
+        scope: ACPWorkspacePermissionScope
+    ) -> ACPWorkspacePermissionRuleDecision?
+    func save(
+        decision: ACPWorkspacePermissionRuleDecision,
+        for workspaceRoot: String,
+        scope: ACPWorkspacePermissionScope
+    )
+    func removeDecision(for workspaceRoot: String, scope: ACPWorkspacePermissionScope)
+    func removeAllDecisions(for workspaceRoot: String)
+}
+
+@MainActor
+final class ACPWorkspacePermissionStore: ACPWorkspacePermissionPersisting {
+    static let standard = ACPWorkspacePermissionStore()
+
+    private let userDefaults: UserDefaults
+    private let storageKey: String
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+
+    init(
+        userDefaults: UserDefaults = .standard,
+        storageKey: String = "AtelierCode.ACPWorkspacePermissionRules"
+    ) {
+        self.userDefaults = userDefaults
+        self.storageKey = storageKey
+    }
+
+    func decision(
+        for workspaceRoot: String,
+        scope: ACPWorkspacePermissionScope
+    ) -> ACPWorkspacePermissionRuleDecision? {
+        storedRules[Self.canonicalWorkspaceRoot(workspaceRoot)]?.decisions[scope]
+    }
+
+    func save(
+        decision: ACPWorkspacePermissionRuleDecision,
+        for workspaceRoot: String,
+        scope: ACPWorkspacePermissionScope
+    ) {
+        var rules = storedRules
+        let canonicalWorkspaceRoot = Self.canonicalWorkspaceRoot(workspaceRoot)
+        var decisions = rules[canonicalWorkspaceRoot]?.decisions ?? [:]
+        decisions[scope] = decision
+        rules[canonicalWorkspaceRoot] = ACPPersistedWorkspacePermissionRules(
+            workspaceRoot: canonicalWorkspaceRoot,
+            decisions: decisions,
+            updatedAt: Date()
+        )
+        persist(rules)
+    }
+
+    func removeDecision(for workspaceRoot: String, scope: ACPWorkspacePermissionScope) {
+        let canonicalWorkspaceRoot = Self.canonicalWorkspaceRoot(workspaceRoot)
+        var rules = storedRules
+        guard var entry = rules[canonicalWorkspaceRoot] else { return }
+        entry.decisions.removeValue(forKey: scope)
+
+        if entry.decisions.isEmpty {
+            rules.removeValue(forKey: canonicalWorkspaceRoot)
+        } else {
+            rules[canonicalWorkspaceRoot] = ACPPersistedWorkspacePermissionRules(
+                workspaceRoot: canonicalWorkspaceRoot,
+                decisions: entry.decisions,
+                updatedAt: Date()
+            )
+        }
+
+        persist(rules)
+    }
+
+    func removeAllDecisions(for workspaceRoot: String) {
+        var rules = storedRules
+        rules.removeValue(forKey: Self.canonicalWorkspaceRoot(workspaceRoot))
+        persist(rules)
+    }
+
+    private var storedRules: [String: ACPPersistedWorkspacePermissionRules] {
+        guard let data = userDefaults.data(forKey: storageKey) else { return [:] }
+        return (try? decoder.decode([String: ACPPersistedWorkspacePermissionRules].self, from: data)) ?? [:]
+    }
+
+    private func persist(_ rules: [String: ACPPersistedWorkspacePermissionRules]) {
+        guard let data = try? encoder.encode(rules) else { return }
+        userDefaults.set(data, forKey: storageKey)
+    }
+
+    private static func canonicalWorkspaceRoot(_ workspaceRoot: String) -> String {
+        URL(fileURLWithPath: workspaceRoot)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+    }
+}
+
 nonisolated enum ACPRecoveryIssueKind: Equatable, Sendable {
     case missingExecutable
     case authenticationRequired
@@ -131,10 +236,17 @@ nonisolated struct ACPRecoveryIssue: Equatable, Sendable {
 @MainActor
 @Observable
 final class ACPStore {
+    private struct PendingPermissionResolver {
+        let prompt: ACPPermissionPrompt
+        let resolve: (ACPPermissionPromptActionKind) -> Void
+    }
+
     var connectionState: ConnectionState = .disconnected
     var messages: [ConversationMessage] = []
     var activitiesByMessageID: [UUID: [ACPMessageActivity]] = [:]
+    var hostActivities: [ACPMessageActivity] = []
     var terminalStates: [String: ACPTerminalState] = [:]
+    var pendingPermissionRequests: [ACPPermissionPrompt] = []
     var draftPrompt = ""
     var isConnecting = false
     var isSending = false
@@ -150,10 +262,12 @@ final class ACPStore {
     @ObservationIgnored private let clientCapabilities: ACPClientCapabilities
     @ObservationIgnored private let mcpServers: [ACPMCPServer]
     @ObservationIgnored private let sessionPersistence: ACPWorkspaceSessionPersisting
+    @ObservationIgnored private let permissionPersistence: ACPWorkspacePermissionPersisting
     @ObservationIgnored private var nextActivitySequence = 1
     @ObservationIgnored private var terminalMessageIDs: [String: UUID] = [:]
     @ObservationIgnored private var toolCallMessageIDs: [String: UUID] = [:]
     @ObservationIgnored private var terminalOutputSnapshots: [String: String] = [:]
+    @ObservationIgnored private var pendingPermissionResolvers: [UUID: PendingPermissionResolver] = [:]
     @ObservationIgnored private var latestTransportDiagnostic: String?
 
     init(
@@ -163,7 +277,8 @@ final class ACPStore {
         clientInfo: ACPImplementationInfo = .atelierCode,
         clientCapabilities: ACPClientCapabilities = .atelierCodeDefaults,
         mcpServers: [ACPMCPServer] = [],
-        sessionPersistence: ACPWorkspaceSessionPersisting = ACPWorkspaceSessionStore.standard
+        sessionPersistence: ACPWorkspaceSessionPersisting = ACPWorkspaceSessionStore.standard,
+        permissionPersistence: ACPWorkspacePermissionPersisting = ACPWorkspacePermissionStore.standard
     ) {
         let resolvedTransport = transport ?? LocalACPTransport(
             executableOverridePath: geminiSettings.executableOverridePath,
@@ -176,7 +291,17 @@ final class ACPStore {
         self.clientCapabilities = clientCapabilities
         self.mcpServers = mcpServers
         self.sessionPersistence = sessionPersistence
+        self.permissionPersistence = permissionPersistence
         sessionClient = ACPSessionClient(transport: resolvedTransport)
+        sessionClient.permissionPolicy = ACPPermissionPolicy(
+            resolveOutcome: { [weak self] request, context in
+                await self?.resolveAgentPermissionRequest(request, context: context) ?? .cancelled
+            },
+            authorizeLocalAction: { [weak self] action, context in
+                await self?.authorizeLocalAction(action, context: context)
+                    ?? .deny(message: action.defaultDeniedMessage)
+            }
+        )
         sessionClient.onSessionUpdate = { [weak self] params in
             self?.handleSessionUpdate(params)
         }
@@ -218,6 +343,14 @@ final class ACPStore {
 
     var recoverySetupState: AppBlockingSetupState? {
         recoveryIssue?.setupState
+    }
+
+    var visibleTerminalStates: [ACPTerminalState] {
+        terminalStates.values.sorted { lhs, rhs in
+            let lhsExitSequence = hostActivities.last(where: { $0.terminal?.terminalId == lhs.id })?.sequence ?? 0
+            let rhsExitSequence = hostActivities.last(where: { $0.terminal?.terminalId == rhs.id })?.sequence ?? 0
+            return lhsExitSequence > rhsExitSequence
+        }
     }
 
     var statusText: String {
@@ -343,11 +476,14 @@ final class ACPStore {
     }
 
     func teardown() {
+        resolveAllPendingPermissionRequests(with: .deny)
         sessionClient.reset()
         connectionState = .disconnected
         messages = []
         activitiesByMessageID = [:]
+        hostActivities = []
         terminalStates = [:]
+        pendingPermissionRequests = []
         draftPrompt = ""
         isConnecting = false
         isSending = false
@@ -359,6 +495,7 @@ final class ACPStore {
         terminalMessageIDs = [:]
         toolCallMessageIDs = [:]
         terminalOutputSnapshots = [:]
+        pendingPermissionResolvers = [:]
         latestTransportDiagnostic = nil
     }
 
@@ -465,6 +602,103 @@ final class ACPStore {
             detail: detail,
             toolCallId: decision.toolCallId
         )
+    }
+
+    func resolvePermissionRequest(_ prompt: ACPPermissionPrompt, with action: ACPPermissionPromptAction) {
+        guard let resolver = pendingPermissionResolvers.removeValue(forKey: prompt.id) else { return }
+        pendingPermissionRequests.removeAll { $0.id == prompt.id }
+        resolver.resolve(action.kind)
+    }
+
+    private func resolveAgentPermissionRequest(
+        _ request: ACPRequestPermissionRequest,
+        context: ACPPermissionContext
+    ) async -> ACPRequestPermissionOutcome {
+        let prompt = ACPPermissionPrompt(
+            source: .agentTool,
+            title: "Approve tool permission",
+            detail: agentPermissionDetail(for: request, context: context),
+            toolCallId: context.toolCallId,
+            actions: request.options.map { option in
+                ACPPermissionPromptAction(
+                    id: option.optionId,
+                    title: option.name,
+                    role: option.kind.contains("reject") || option.kind.contains("deny") ? .destructive : .primary,
+                    kind: .selectACPOption(optionId: option.optionId)
+                )
+            }
+        )
+
+        appendActivity(
+            kind: .permission,
+            title: prompt.title,
+            detail: prompt.detail,
+            toolCallId: context.toolCallId
+        )
+
+        let selection = await enqueuePermissionPrompt(prompt)
+        if case .selectACPOption(let optionId) = selection {
+            return .selected(optionId: optionId)
+        }
+
+        return .cancelled
+    }
+
+    private func authorizeLocalAction(
+        _ action: ACPPermissionLocalAction,
+        context: ACPPermissionContext
+    ) async -> ACPPermissionAuthorization {
+        if let savedDecision = savedDecision(for: action) {
+            appendActivity(
+                kind: .permission,
+                title: savedDecision == .allow ? "Permission granted" : "Permission denied",
+                detail: "\(permissionSubject(for: action)) \(savedDecision == .allow ? "allowed" : "denied") by saved workspace rule."
+            )
+
+            switch savedDecision {
+            case .allow:
+                return .allow
+            case .deny:
+                return .deny(message: action.defaultDeniedMessage)
+            }
+        }
+
+        let prompt = prompt(for: action)
+        appendActivity(
+            kind: .permission,
+            title: prompt.title,
+            detail: prompt.detail,
+            toolCallId: context.toolCallId
+        )
+
+        let selection = await enqueuePermissionPrompt(prompt)
+        let authorization = localAuthorization(for: action, selection: selection)
+        let isAllowed: Bool
+        switch authorization {
+        case .allow:
+            isAllowed = true
+        case .deny:
+            isAllowed = false
+        }
+
+        appendActivity(
+            kind: .permission,
+            title: isAllowed ? "Permission granted" : "Permission denied",
+            detail: localPermissionDecisionDetail(for: action, selection: selection)
+        )
+
+        if let scope = prompt.persistenceScope {
+            switch selection {
+            case .allowAlwaysForWorkspace:
+                permissionPersistence.save(decision: .allow, for: cwd, scope: scope)
+            case .deny:
+                permissionPersistence.save(decision: .deny, for: cwd, scope: scope)
+            case .allowOnce, .selectACPOption:
+                break
+            }
+        }
+
+        return authorization
     }
 
     private func handleTerminalStateChange(_ state: ACPTerminalState) {
@@ -579,11 +813,13 @@ final class ACPStore {
     }
 
     private func handleFailure(_ error: any Error) {
+        resolveAllPendingPermissionRequests(with: .deny)
         sessionClient.reset()
         terminalStates.removeAll()
         terminalOutputSnapshots.removeAll()
         terminalMessageIDs.removeAll()
         toolCallMessageIDs.removeAll()
+        pendingPermissionRequests.removeAll()
         lastErrorDescription = error.localizedDescription
         recoveryIssue = classifyRecoveryIssue(for: error)
         isConnecting = false
@@ -679,6 +915,8 @@ final class ACPStore {
     }
 
     private func appendActivity(to messageID: UUID?, _ activity: ACPMessageActivity) {
+        hostActivities.append(activity)
+
         guard let messageID else { return }
         activitiesByMessageID[messageID, default: []].append(activity)
         scrollTargetMessageID = messageID
@@ -763,5 +1001,197 @@ final class ACPStore {
 
         messages[currentAssistantMessageIndex].text = text
         scrollTargetMessageID = messages[currentAssistantMessageIndex].id
+    }
+
+    private func enqueuePermissionPrompt(_ prompt: ACPPermissionPrompt) async -> ACPPermissionPromptActionKind {
+        await withCheckedContinuation { continuation in
+            pendingPermissionRequests.append(prompt)
+            pendingPermissionResolvers[prompt.id] = PendingPermissionResolver(
+                prompt: prompt,
+                resolve: { selection in
+                    continuation.resume(returning: selection)
+                }
+            )
+        }
+    }
+
+    private func resolveAllPendingPermissionRequests(with fallback: ACPPermissionPromptActionKind) {
+        let resolvers = pendingPermissionResolvers.values
+        pendingPermissionResolvers.removeAll()
+        pendingPermissionRequests.removeAll()
+        for resolver in resolvers {
+            resolver.resolve(fallback)
+        }
+    }
+
+    private func savedDecision(for action: ACPPermissionLocalAction) -> ACPWorkspacePermissionRuleDecision? {
+        guard let scope = permissionScope(for: action) else { return nil }
+        return permissionPersistence.decision(for: cwd, scope: scope)
+    }
+
+    private func permissionScope(for action: ACPPermissionLocalAction) -> ACPWorkspacePermissionScope? {
+        switch action {
+        case .fileRead:
+            return .fileRead
+        case .terminalCreate:
+            return .terminalCreate
+        case .terminalKill, .terminalRelease:
+            return nil
+        }
+    }
+
+    private func prompt(for action: ACPPermissionLocalAction) -> ACPPermissionPrompt {
+        switch action {
+        case .fileRead(let path):
+            return ACPPermissionPrompt(
+                source: .fileRead,
+                title: "Read workspace file",
+                detail: path,
+                persistenceScope: .fileRead,
+                actions: [
+                    ACPPermissionPromptAction(
+                        id: "allow_once",
+                        title: "Allow once",
+                        role: .primary,
+                        kind: .allowOnce
+                    ),
+                    ACPPermissionPromptAction(
+                        id: "allow_workspace",
+                        title: "Always for this workspace",
+                        role: .secondary,
+                        kind: .allowAlwaysForWorkspace
+                    ),
+                    ACPPermissionPromptAction(
+                        id: "deny",
+                        title: "Deny",
+                        role: .destructive,
+                        kind: .deny
+                    ),
+                ]
+            )
+        case .terminalCreate(let command, let cwd):
+            return ACPPermissionPrompt(
+                source: .terminalCreate,
+                title: "Create terminal",
+                detail: "\(command)\nWorking directory: \(cwd)",
+                persistenceScope: .terminalCreate,
+                actions: [
+                    ACPPermissionPromptAction(
+                        id: "allow_once",
+                        title: "Allow once",
+                        role: .primary,
+                        kind: .allowOnce
+                    ),
+                    ACPPermissionPromptAction(
+                        id: "allow_workspace",
+                        title: "Always for this workspace",
+                        role: .secondary,
+                        kind: .allowAlwaysForWorkspace
+                    ),
+                    ACPPermissionPromptAction(
+                        id: "deny",
+                        title: "Deny",
+                        role: .destructive,
+                        kind: .deny
+                    ),
+                ]
+            )
+        case .terminalKill(let terminalId):
+            return ACPPermissionPrompt(
+                source: .terminalKill,
+                title: "Kill terminal",
+                detail: "Terminal ID: \(terminalId)",
+                actions: [
+                    ACPPermissionPromptAction(
+                        id: "allow_once",
+                        title: "Allow once",
+                        role: .primary,
+                        kind: .allowOnce
+                    ),
+                    ACPPermissionPromptAction(
+                        id: "deny",
+                        title: "Deny",
+                        role: .destructive,
+                        kind: .deny
+                    ),
+                ]
+            )
+        case .terminalRelease(let terminalId):
+            return ACPPermissionPrompt(
+                source: .terminalRelease,
+                title: "Release terminal",
+                detail: "Terminal ID: \(terminalId)",
+                actions: [
+                    ACPPermissionPromptAction(
+                        id: "allow_once",
+                        title: "Allow once",
+                        role: .primary,
+                        kind: .allowOnce
+                    ),
+                    ACPPermissionPromptAction(
+                        id: "deny",
+                        title: "Deny",
+                        role: .destructive,
+                        kind: .deny
+                    ),
+                ]
+            )
+        }
+    }
+
+    private func localAuthorization(
+        for action: ACPPermissionLocalAction,
+        selection: ACPPermissionPromptActionKind
+    ) -> ACPPermissionAuthorization {
+        switch selection {
+        case .allowOnce, .allowAlwaysForWorkspace:
+            return .allow
+        case .deny, .selectACPOption:
+            return .deny(message: action.defaultDeniedMessage)
+        }
+    }
+
+    private func localPermissionDecisionDetail(
+        for action: ACPPermissionLocalAction,
+        selection: ACPPermissionPromptActionKind
+    ) -> String {
+        switch selection {
+        case .allowOnce:
+            return "\(permissionSubject(for: action)) allowed once."
+        case .allowAlwaysForWorkspace:
+            return "\(permissionSubject(for: action)) allowed for this workspace."
+        case .deny:
+            if permissionScope(for: action) != nil {
+                return "\(permissionSubject(for: action)) denied for this workspace."
+            }
+            return "\(permissionSubject(for: action)) denied."
+        case .selectACPOption:
+            return "\(permissionSubject(for: action)) denied."
+        }
+    }
+
+    private func permissionSubject(for action: ACPPermissionLocalAction) -> String {
+        switch action {
+        case .fileRead:
+            return "File reads"
+        case .terminalCreate:
+            return "Terminal creation"
+        case .terminalKill:
+            return "Terminal kill"
+        case .terminalRelease:
+            return "Terminal release"
+        }
+    }
+
+    private func agentPermissionDetail(
+        for request: ACPRequestPermissionRequest,
+        context: ACPPermissionContext
+    ) -> String {
+        let optionSummary = request.options.map(\.name).joined(separator: ", ")
+        if let toolCallId = context.toolCallId, !toolCallId.isEmpty {
+            return "Tool call: \(toolCallId)\nOptions: \(optionSummary)"
+        }
+
+        return "Gemini requested approval to continue a tool action.\nOptions: \(optionSummary)"
     }
 }

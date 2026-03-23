@@ -44,6 +44,72 @@ nonisolated struct ACPTerminalState: Identifiable, Equatable, Sendable {
     var isReleased: Bool
 }
 
+nonisolated enum ACPWorkspacePermissionScope: String, Codable, CaseIterable, Equatable, Sendable {
+    case fileRead
+    case terminalCreate
+}
+
+nonisolated enum ACPWorkspacePermissionRuleDecision: String, Codable, Equatable, Sendable {
+    case allow
+    case deny
+}
+
+nonisolated enum ACPPermissionPromptSource: String, Equatable, Sendable {
+    case agentTool
+    case fileRead
+    case terminalCreate
+    case terminalKill
+    case terminalRelease
+}
+
+nonisolated enum ACPPermissionPromptActionRole: String, Equatable, Sendable {
+    case primary
+    case secondary
+    case destructive
+}
+
+nonisolated enum ACPPermissionPromptActionKind: Equatable, Sendable {
+    case selectACPOption(optionId: String)
+    case allowOnce
+    case allowAlwaysForWorkspace
+    case deny
+}
+
+nonisolated struct ACPPermissionPromptAction: Identifiable, Equatable, Sendable {
+    let id: String
+    let title: String
+    let role: ACPPermissionPromptActionRole
+    let kind: ACPPermissionPromptActionKind
+}
+
+nonisolated struct ACPPermissionPrompt: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let source: ACPPermissionPromptSource
+    let title: String
+    let detail: String
+    let toolCallId: String?
+    let persistenceScope: ACPWorkspacePermissionScope?
+    let actions: [ACPPermissionPromptAction]
+
+    init(
+        id: UUID = UUID(),
+        source: ACPPermissionPromptSource,
+        title: String,
+        detail: String,
+        toolCallId: String? = nil,
+        persistenceScope: ACPWorkspacePermissionScope? = nil,
+        actions: [ACPPermissionPromptAction]
+    ) {
+        self.id = id
+        self.source = source
+        self.title = title
+        self.detail = detail
+        self.toolCallId = toolCallId
+        self.persistenceScope = persistenceScope
+        self.actions = actions
+    }
+}
+
 nonisolated enum ACPMessageActivityKind: String, Equatable, Sendable {
     case thinking
     case tool

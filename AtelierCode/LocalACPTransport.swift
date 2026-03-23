@@ -11,11 +11,17 @@ nonisolated struct GeminiProcessEnvironment: Sendable {
     static func make(
         currentEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         userHomeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path,
-        executableDirectory: String? = nil
+        executableDirectory: String? = nil,
+        interactiveShellPATH: String? = nil
     ) -> [String: String] {
         var environment = currentEnvironment
+        let resolvedInteractiveShellPATH = interactiveShellPATH ?? discoveredInteractiveShellPATH(
+            currentEnvironment: currentEnvironment,
+            userHomeDirectory: userHomeDirectory
+        )
         let mergedPathDirectories = uniquePaths(
             (executableDirectory.map { [$0] } ?? []) +
+            pathDirectories(from: resolvedInteractiveShellPATH) +
             pathDirectories(from: currentEnvironment["PATH"]) +
             fallbackPATHDirectories(userHomeDirectory: userHomeDirectory)
         )
@@ -28,6 +34,45 @@ nonisolated struct GeminiProcessEnvironment: Sendable {
         }
 
         return environment
+    }
+
+    static func discoveredInteractiveShellPATH(
+        currentEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        userHomeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> String? {
+        let shellPath = resolvedShellPath(currentEnvironment: currentEnvironment)
+        let shellURL = URL(fileURLWithPath: shellPath)
+        guard FileManager.default.isExecutableFile(atPath: shellURL.path) else {
+            return nil
+        }
+
+        let process = Process()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.executableURL = shellURL
+        process.arguments = shellArguments(for: shellURL.lastPathComponent)
+        process.environment = shellEnvironment(
+            currentEnvironment: currentEnvironment,
+            userHomeDirectory: userHomeDirectory,
+            shellPath: shellURL.path
+        )
+        process.currentDirectoryURL = URL(fileURLWithPath: userHomeDirectory, isDirectory: true)
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        guard process.terminationStatus == 0 else { return nil }
+
+        let path = String(decoding: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+        return path
     }
 
     static func fallbackPATHDirectories(userHomeDirectory: String) -> [String] {
@@ -49,6 +94,36 @@ nonisolated struct GeminiProcessEnvironment: Sendable {
     private static func pathDirectories(from path: String?) -> [String] {
         guard let path, !path.isEmpty else { return [] }
         return path.split(separator: ":").map(String.init)
+    }
+
+    private static func resolvedShellPath(currentEnvironment: [String: String]) -> String {
+        let shellPath = currentEnvironment["SHELL"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let shellPath, !shellPath.isEmpty {
+            return shellPath
+        }
+
+        return "/bin/zsh"
+    }
+
+    private static func shellArguments(for shellName: String) -> [String] {
+        let command = #"printf %s "$PATH""#
+        if shellName == "zsh" || shellName == "bash" {
+            return ["-ilc", command]
+        }
+
+        return ["-lc", command]
+    }
+
+    private static func shellEnvironment(
+        currentEnvironment: [String: String],
+        userHomeDirectory: String,
+        shellPath: String
+    ) -> [String: String] {
+        var environment = currentEnvironment
+        environment["HOME"] = environment["HOME"]?.isEmpty == false ? environment["HOME"] : userHomeDirectory
+        environment["SHELL"] = shellPath
+        environment["PWD"] = userHomeDirectory
+        return environment
     }
 
     private static func uniquePaths(_ paths: [String]) -> [String] {

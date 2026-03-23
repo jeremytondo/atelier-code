@@ -271,13 +271,14 @@ struct AppShellModelTests {
             sessionPersistence: sessionPersistence,
             settingsPersistence: TransientGeminiAppSettingsPersistence(),
             workspaceSelectionPersistence: InMemoryWorkspaceSelectionPersistence(),
-            storeFactory: { workspacePath, sessionPersistence, settings in
+            storeFactory: { workspacePath, sessionPersistence, permissionPersistence, settings in
                 capturedSettings.append(settings)
                 return ACPStore(
                     transport: MockACPTransport(scenario: .ready),
                     cwd: workspacePath,
                     geminiSettings: settings,
-                    sessionPersistence: sessionPersistence
+                    sessionPersistence: sessionPersistence,
+                    permissionPersistence: permissionPersistence
                 )
             }
         )

@@ -176,12 +176,12 @@ nonisolated enum ACPPermissionAuthorization: Sendable {
 }
 
 nonisolated struct ACPPermissionPolicy: Sendable {
-    private let resolveOutcome: @Sendable (ACPRequestPermissionRequest, ACPPermissionContext) -> ACPRequestPermissionOutcome
-    private let authorizeLocalAction: @Sendable (ACPPermissionLocalAction, ACPPermissionContext) -> ACPPermissionAuthorization
+    private let resolveOutcome: @Sendable (ACPRequestPermissionRequest, ACPPermissionContext) async -> ACPRequestPermissionOutcome
+    private let authorizeLocalAction: @Sendable (ACPPermissionLocalAction, ACPPermissionContext) async -> ACPPermissionAuthorization
 
     init(
-        resolveOutcome: @escaping @Sendable (ACPRequestPermissionRequest, ACPPermissionContext) -> ACPRequestPermissionOutcome,
-        authorizeLocalAction: @escaping @Sendable (ACPPermissionLocalAction, ACPPermissionContext) -> ACPPermissionAuthorization = { _, _ in .allow }
+        resolveOutcome: @escaping @Sendable (ACPRequestPermissionRequest, ACPPermissionContext) async -> ACPRequestPermissionOutcome,
+        authorizeLocalAction: @escaping @Sendable (ACPPermissionLocalAction, ACPPermissionContext) async -> ACPPermissionAuthorization = { _, _ in .allow }
     ) {
         self.resolveOutcome = resolveOutcome
         self.authorizeLocalAction = authorizeLocalAction
@@ -190,15 +190,15 @@ nonisolated struct ACPPermissionPolicy: Sendable {
     func outcome(
         for request: ACPRequestPermissionRequest,
         context: ACPPermissionContext
-    ) -> ACPRequestPermissionOutcome {
-        resolveOutcome(request, context)
+    ) async -> ACPRequestPermissionOutcome {
+        await resolveOutcome(request, context)
     }
 
     func authorization(
         for action: ACPPermissionLocalAction,
         context: ACPPermissionContext
-    ) -> ACPPermissionAuthorization {
-        authorizeLocalAction(action, context)
+    ) async -> ACPPermissionAuthorization {
+        await authorizeLocalAction(action, context)
     }
 
     static let autoApproveCompatible = ACPPermissionPolicy { request, _ in
@@ -221,6 +221,14 @@ nonisolated struct ACPWorkspaceAccessPolicy: Sendable {
 
     func readTextFile(request: ACPReadTextFileRequest) throws -> ACPReadTextFileResponse {
         let authorizedRead = try authorizeRead(request: request)
+        return try readTextFile(authorizedRead)
+    }
+
+    func resolveAuthorizedRead(request: ACPReadTextFileRequest) throws -> AuthorizedWorkspaceRead {
+        try authorizeRead(request: request)
+    }
+
+    func readTextFile(_ authorizedRead: AuthorizedWorkspaceRead) throws -> ACPReadTextFileResponse {
         let content = try Self.readTextContent(
             at: authorizedRead.resolvedPath,
             startLine: authorizedRead.startLine,
@@ -356,7 +364,7 @@ nonisolated struct ACPWorkspaceAccessPolicy: Sendable {
         return standardizedPath
     }
 
-    private struct AuthorizedWorkspaceRead: Sendable {
+    struct AuthorizedWorkspaceRead: Sendable {
         let resolvedPath: String
         let startLine: Int
         let lineLimit: Int?
@@ -936,7 +944,7 @@ final class ACPSessionClient {
 
     private let transport: AgentTransport
     private let requestTimeouts: ACPSessionClientTimeouts
-    private let permissionPolicy: ACPPermissionPolicy
+    var permissionPolicy: ACPPermissionPolicy
     private let terminalSessionManager: ACPTerminalSessionManager
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -1268,30 +1276,36 @@ final class ACPSessionClient {
             return
         }
 
-        let outcome = permissionPolicy.outcome(
-            for: request.params,
-            context: ACPPermissionContext(
-                category: .agentTool,
-                sessionId: request.params.sessionId,
-                toolCallId: request.params.toolCall?.toolCallId
-            )
+        let context = ACPPermissionContext(
+            category: .agentTool,
+            sessionId: request.params.sessionId,
+            toolCallId: request.params.toolCall?.toolCallId
         )
 
-        onPermissionDecision?(
-            ACPPermissionDecision(
-                sessionId: request.params.sessionId,
-                toolCallId: request.params.toolCall?.toolCallId,
-                options: request.params.options,
-                outcome: outcome
-            )
-        )
+        Task { @MainActor [weak self] in
+            guard let self else { return }
 
-        sendClientResponse(
-            ACPClientResponse(
-                id: request.id,
-                result: ACPRequestPermissionResponse(outcome: outcome)
+            let outcome = await self.permissionPolicy.outcome(for: request.params, context: context)
+            self.onPermissionDecision?(
+                ACPPermissionDecision(
+                    sessionId: request.params.sessionId,
+                    toolCallId: request.params.toolCall?.toolCallId,
+                    options: request.params.options,
+                    outcome: outcome
+                )
             )
-        )
+
+            if let currentSessionID = self.sessionID, currentSessionID != request.params.sessionId {
+                return
+            }
+
+            self.sendClientResponse(
+                ACPClientResponse(
+                    id: request.id,
+                    result: ACPRequestPermissionResponse(outcome: outcome)
+                )
+            )
+        }
     }
 
     private func handleReadTextFileRequest(id: ACPRequestID?, data: Data) {
@@ -1343,28 +1357,66 @@ final class ACPSessionClient {
             return
         }
 
+        let authorizedRead: ACPWorkspaceAccessPolicy.AuthorizedWorkspaceRead
         do {
-            let response = try workspaceAccessPolicy.readTextFile(request: request.params)
-            sendClientResponse(
-                ACPClientResponse(
-                    id: request.id,
-                    result: response
-                )
-            )
+            authorizedRead = try workspaceAccessPolicy.resolveAuthorizedRead(request: request.params)
         } catch let error as ACPWorkspaceAccessError {
             sendClientErrorResponse(id: request.id, error: error.clientError)
+            return
         } catch {
             sendClientErrorResponse(
                 id: request.id,
                 error: ACPClientError(
                     code: ACPClientErrorCode.internalError,
-                    message: "AtelierCode hit an unexpected error while reading a workspace file.",
+                    message: "AtelierCode hit an unexpected error while validating a workspace file read.",
                     data: .object([
-                        "reason": .string("unexpected_read_failure"),
+                        "reason": .string("unexpected_read_validation_failure"),
                         "path": .string(request.params.path),
                     ])
                 )
             )
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            do {
+                try await self.assertAuthorized(
+                    action: .fileRead(path: authorizedRead.resolvedPath),
+                    context: ACPPermissionContext(
+                        category: .fileRead,
+                        sessionId: sessionID,
+                        toolCallId: nil
+                    )
+                )
+
+                guard self.sessionID == sessionID else { return }
+
+                let response = try workspaceAccessPolicy.readTextFile(authorizedRead)
+                self.sendClientResponse(
+                    ACPClientResponse(
+                        id: request.id,
+                        result: response
+                    )
+                )
+            } catch let error as ACPWorkspaceAccessError {
+                self.sendClientErrorResponse(id: request.id, error: error.clientError)
+            } catch let error as ACPClientError {
+                self.sendClientErrorResponse(id: request.id, error: error)
+            } catch {
+                self.sendClientErrorResponse(
+                    id: request.id,
+                    error: ACPClientError(
+                        code: ACPClientErrorCode.internalError,
+                        message: "AtelierCode hit an unexpected error while reading a workspace file.",
+                        data: .object([
+                            "reason": .string("unexpected_read_failure"),
+                            "path": .string(request.params.path),
+                        ])
+                    )
+                )
+            }
         }
     }
 
@@ -1383,44 +1435,65 @@ final class ACPSessionClient {
             return
         }
 
+        let sessionID: String
+        let workspaceAccessPolicy: ACPWorkspaceAccessPolicy
         do {
-            let sessionID = try requireKnownSession(requestSessionId: request.params.sessionId)
-            let workspaceAccessPolicy = try requireWorkspaceAccessPolicy()
-            try assertAuthorized(
-                action: .terminalCreate(
-                    command: request.params.command,
-                    cwd: request.params.cwd ?? workspaceAccessPolicy.workspaceRoot
-                ),
-                context: ACPPermissionContext(
-                    category: .terminal,
-                    sessionId: sessionID,
-                    toolCallId: nil
-                )
-            )
-
-            let response = try terminalSessionManager.createTerminal(
-                request: request.params,
-                workspaceAccessPolicy: workspaceAccessPolicy
-            )
-            sendClientResponse(ACPClientResponse(id: request.id, result: response))
-        } catch let error as ACPWorkspaceAccessError {
-            sendClientErrorResponse(id: request.id, error: error.clientError)
-        } catch let error as ACPTerminalManagerError {
-            sendClientErrorResponse(id: request.id, error: error.clientError)
+            sessionID = try requireKnownSession(requestSessionId: request.params.sessionId)
+            workspaceAccessPolicy = try requireWorkspaceAccessPolicy()
         } catch let error as ACPClientError {
             sendClientErrorResponse(id: request.id, error: error)
+            return
         } catch {
             sendClientErrorResponse(
                 id: request.id,
-                error: ACPClientError(
-                    code: ACPClientErrorCode.internalError,
-                    message: "AtelierCode hit an unexpected error while creating a terminal.",
-                    data: .object([
-                        "reason": .string("unexpected_terminal_create_failure"),
-                        "command": .string(request.params.command),
-                    ])
-                )
+                code: ACPClientErrorCode.internalError,
+                message: "AtelierCode could not validate the terminal creation request."
             )
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            do {
+                try await self.assertAuthorized(
+                    action: .terminalCreate(
+                        command: request.params.command,
+                        cwd: request.params.cwd ?? workspaceAccessPolicy.workspaceRoot
+                    ),
+                    context: ACPPermissionContext(
+                        category: .terminal,
+                        sessionId: sessionID,
+                        toolCallId: nil
+                    )
+                )
+
+                guard self.sessionID == sessionID else { return }
+
+                let response = try self.terminalSessionManager.createTerminal(
+                    request: request.params,
+                    workspaceAccessPolicy: workspaceAccessPolicy
+                )
+                self.sendClientResponse(ACPClientResponse(id: request.id, result: response))
+            } catch let error as ACPWorkspaceAccessError {
+                self.sendClientErrorResponse(id: request.id, error: error.clientError)
+            } catch let error as ACPTerminalManagerError {
+                self.sendClientErrorResponse(id: request.id, error: error.clientError)
+            } catch let error as ACPClientError {
+                self.sendClientErrorResponse(id: request.id, error: error)
+            } catch {
+                self.sendClientErrorResponse(
+                    id: request.id,
+                    error: ACPClientError(
+                        code: ACPClientErrorCode.internalError,
+                        message: "AtelierCode hit an unexpected error while creating a terminal.",
+                        data: .object([
+                            "reason": .string("unexpected_terminal_create_failure"),
+                            "command": .string(request.params.command),
+                        ])
+                    )
+                )
+            }
         }
     }
 
@@ -1532,35 +1605,55 @@ final class ACPSessionClient {
             return
         }
 
+        let sessionID: String
         do {
-            let sessionID = try requireKnownSession(requestSessionId: request.params.sessionId)
-            try assertAuthorized(
-                action: .terminalKill(terminalId: request.params.terminalId),
-                context: ACPPermissionContext(
-                    category: .terminal,
-                    sessionId: sessionID,
-                    toolCallId: nil
-                )
-            )
-
-            let response = try terminalSessionManager.kill(terminalId: request.params.terminalId)
-            sendClientResponse(ACPClientResponse(id: request.id, result: response))
-        } catch let error as ACPTerminalManagerError {
-            sendClientErrorResponse(id: request.id, error: error.clientError)
+            sessionID = try requireKnownSession(requestSessionId: request.params.sessionId)
         } catch let error as ACPClientError {
             sendClientErrorResponse(id: request.id, error: error)
+            return
         } catch {
             sendClientErrorResponse(
                 id: request.id,
-                error: ACPClientError(
-                    code: ACPClientErrorCode.internalError,
-                    message: "AtelierCode hit an unexpected error while killing the terminal.",
-                    data: .object([
-                        "reason": .string("unexpected_terminal_kill_failure"),
-                        "terminalId": .string(request.params.terminalId),
-                    ])
-                )
+                code: ACPClientErrorCode.internalError,
+                message: "AtelierCode could not validate the terminal kill request."
             )
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            do {
+                try await self.assertAuthorized(
+                    action: .terminalKill(terminalId: request.params.terminalId),
+                    context: ACPPermissionContext(
+                        category: .terminal,
+                        sessionId: sessionID,
+                        toolCallId: nil
+                    )
+                )
+
+                guard self.sessionID == sessionID else { return }
+
+                let response = try self.terminalSessionManager.kill(terminalId: request.params.terminalId)
+                self.sendClientResponse(ACPClientResponse(id: request.id, result: response))
+            } catch let error as ACPTerminalManagerError {
+                self.sendClientErrorResponse(id: request.id, error: error.clientError)
+            } catch let error as ACPClientError {
+                self.sendClientErrorResponse(id: request.id, error: error)
+            } catch {
+                self.sendClientErrorResponse(
+                    id: request.id,
+                    error: ACPClientError(
+                        code: ACPClientErrorCode.internalError,
+                        message: "AtelierCode hit an unexpected error while killing the terminal.",
+                        data: .object([
+                            "reason": .string("unexpected_terminal_kill_failure"),
+                            "terminalId": .string(request.params.terminalId),
+                        ])
+                    )
+                )
+            }
         }
     }
 
@@ -1579,35 +1672,55 @@ final class ACPSessionClient {
             return
         }
 
+        let sessionID: String
         do {
-            let sessionID = try requireKnownSession(requestSessionId: request.params.sessionId)
-            try assertAuthorized(
-                action: .terminalRelease(terminalId: request.params.terminalId),
-                context: ACPPermissionContext(
-                    category: .terminal,
-                    sessionId: sessionID,
-                    toolCallId: nil
-                )
-            )
-
-            let response = try terminalSessionManager.release(terminalId: request.params.terminalId)
-            sendClientResponse(ACPClientResponse(id: request.id, result: response))
-        } catch let error as ACPTerminalManagerError {
-            sendClientErrorResponse(id: request.id, error: error.clientError)
+            sessionID = try requireKnownSession(requestSessionId: request.params.sessionId)
         } catch let error as ACPClientError {
             sendClientErrorResponse(id: request.id, error: error)
+            return
         } catch {
             sendClientErrorResponse(
                 id: request.id,
-                error: ACPClientError(
-                    code: ACPClientErrorCode.internalError,
-                    message: "AtelierCode hit an unexpected error while releasing the terminal.",
-                    data: .object([
-                        "reason": .string("unexpected_terminal_release_failure"),
-                        "terminalId": .string(request.params.terminalId),
-                    ])
-                )
+                code: ACPClientErrorCode.internalError,
+                message: "AtelierCode could not validate the terminal release request."
             )
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            do {
+                try await self.assertAuthorized(
+                    action: .terminalRelease(terminalId: request.params.terminalId),
+                    context: ACPPermissionContext(
+                        category: .terminal,
+                        sessionId: sessionID,
+                        toolCallId: nil
+                    )
+                )
+
+                guard self.sessionID == sessionID else { return }
+
+                let response = try self.terminalSessionManager.release(terminalId: request.params.terminalId)
+                self.sendClientResponse(ACPClientResponse(id: request.id, result: response))
+            } catch let error as ACPTerminalManagerError {
+                self.sendClientErrorResponse(id: request.id, error: error.clientError)
+            } catch let error as ACPClientError {
+                self.sendClientErrorResponse(id: request.id, error: error)
+            } catch {
+                self.sendClientErrorResponse(
+                    id: request.id,
+                    error: ACPClientError(
+                        code: ACPClientErrorCode.internalError,
+                        message: "AtelierCode hit an unexpected error while releasing the terminal.",
+                        data: .object([
+                            "reason": .string("unexpected_terminal_release_failure"),
+                            "terminalId": .string(request.params.terminalId),
+                        ])
+                    )
+                )
+            }
         }
     }
 
@@ -1648,8 +1761,8 @@ final class ACPSessionClient {
     private func assertAuthorized(
         action: ACPPermissionLocalAction,
         context: ACPPermissionContext
-    ) throws {
-        let authorization = permissionPolicy.authorization(for: action, context: context)
+    ) async throws {
+        let authorization = await permissionPolicy.authorization(for: action, context: context)
         guard case .allow = authorization else {
             let deniedMessage: String
             if case .deny(let message) = authorization {

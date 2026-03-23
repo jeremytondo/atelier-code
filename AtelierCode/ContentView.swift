@@ -19,43 +19,51 @@ struct ContentView: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            VStack(spacing: 0) {
-                header
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    header
 
-                Divider()
+                    Divider()
 
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
-                        if store.messages.isEmpty {
-                            placeholder
-                        }
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 14) {
+                            if store.messages.isEmpty {
+                                placeholder
+                            }
 
-                        ForEach(store.messages) { message in
-                            MessageRow(
-                                message: message,
-                                activities: store.activities(for: message.id)
-                            )
+                            ForEach(store.messages) { message in
+                                MessageRow(
+                                    message: message,
+                                    activities: store.activities(for: message.id)
+                                )
                                 .id(message.id)
+                            }
                         }
+                        .padding(20)
                     }
-                    .padding(20)
-                }
-                .background(
-                    LinearGradient(
-                        colors: [
-                            Color(nsColor: .windowBackgroundColor),
-                            Color(nsColor: .underPageBackgroundColor)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
+                    .background(
+                        LinearGradient(
+                            colors: [
+                                Color(nsColor: .windowBackgroundColor),
+                                Color(nsColor: .underPageBackgroundColor)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
                     )
-                )
+
+                    Divider()
+
+                    composer
+                }
 
                 Divider()
 
-                composer
+                HostActivitySidebar(store: store)
+                    .frame(minWidth: 320, idealWidth: 360, maxWidth: 420)
+                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.72))
             }
-            .frame(minWidth: 640, minHeight: 520)
+            .frame(minWidth: 980, minHeight: 560)
             .background(Color(nsColor: .controlBackgroundColor))
             .onChange(of: store.scrollTargetMessageID) { _, newValue in
                 guard let newValue else { return }
@@ -314,6 +322,278 @@ private struct MessageRow: View {
             }
         }
         .frame(maxWidth: 520, alignment: .leading)
+    }
+}
+
+private struct HostActivitySidebar: View {
+    @Bindable var store: ACPStore
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Host activity")
+                        .font(.title3.weight(.semibold))
+
+                    Text("Permissions, tools, and terminals stay inspectable here while the chat keeps its inline activity trail.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                if !store.pendingPermissionRequests.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Pending permissions")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.secondary)
+
+                        ForEach(store.pendingPermissionRequests) { prompt in
+                            PermissionPromptCard(store: store, prompt: prompt)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Terminal sessions")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    if store.visibleTerminalStates.isEmpty {
+                        SidebarEmptyState(text: "Terminal sessions will appear here when the agent starts host work.")
+                    } else {
+                        ForEach(store.visibleTerminalStates) { terminal in
+                            TerminalInspectorCard(terminal: terminal)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Event stream")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    if store.hostActivities.isEmpty {
+                        SidebarEmptyState(text: "Tool progress, permission events, and terminal output will stream here.")
+                    } else {
+                        ForEach(store.hostActivities.sorted(by: { $0.sequence > $1.sequence })) { activity in
+                            ActivityCard(activity: activity)
+                        }
+                    }
+                }
+            }
+            .padding(18)
+        }
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .controlBackgroundColor),
+                    Color(nsColor: .windowBackgroundColor)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+    }
+}
+
+private struct PermissionPromptCard: View {
+    @Bindable var store: ACPStore
+    let prompt: ACPPermissionPrompt
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(prompt.title)
+                    .font(.subheadline.weight(.semibold))
+
+                Spacer()
+
+                Text(sourceLabel)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(sourceColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule()
+                            .fill(sourceColor.opacity(0.12))
+                    )
+            }
+
+            Text(prompt.detail)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(prompt.actions) { action in
+                    PermissionActionButton(title: action.title, role: action.role) {
+                        store.resolvePermissionRequest(prompt, with: action)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(nsColor: .textBackgroundColor).opacity(0.92))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(sourceColor.opacity(0.22), lineWidth: 1)
+        )
+    }
+
+    private var sourceLabel: String {
+        switch prompt.source {
+        case .agentTool:
+            return "Tool"
+        case .fileRead:
+            return "File read"
+        case .terminalCreate:
+            return "Terminal"
+        case .terminalKill:
+            return "Kill"
+        case .terminalRelease:
+            return "Release"
+        }
+    }
+
+    private var sourceColor: Color {
+        switch prompt.source {
+        case .agentTool:
+            return Color(red: 0.15, green: 0.43, blue: 0.74)
+        case .fileRead:
+            return Color(red: 0.22, green: 0.48, blue: 0.34)
+        case .terminalCreate:
+            return Color(red: 0.63, green: 0.37, blue: 0.14)
+        case .terminalKill, .terminalRelease:
+            return Color(red: 0.72, green: 0.22, blue: 0.18)
+        }
+    }
+
+}
+
+private struct TerminalInspectorCard: View {
+    let terminal: ACPTerminalState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(terminal.command)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+
+                Spacer()
+
+                Text(statusLabel)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(statusColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule()
+                            .fill(statusColor.opacity(0.12))
+                    )
+            }
+
+            Text(terminal.cwd)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            if !terminal.output.isEmpty {
+                Text(terminal.output)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(Color(nsColor: .textColor))
+                    .textSelection(.enabled)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.black.opacity(0.06))
+                    )
+            } else {
+                SidebarEmptyState(text: "No terminal output yet.")
+            }
+
+            if terminal.truncated {
+                Text("Output truncated")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(nsColor: .textBackgroundColor).opacity(0.92))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(statusColor.opacity(0.22), lineWidth: 1)
+        )
+    }
+
+    private var statusLabel: String {
+        if terminal.isReleased {
+            return "Released"
+        }
+
+        if let exitStatus = terminal.exitStatus {
+            if let exitCode = exitStatus.exitCode {
+                return "Exit \(exitCode)"
+            }
+
+            if let signal = exitStatus.signal {
+                return signal
+            }
+        }
+
+        return "Running"
+    }
+
+    private var statusColor: Color {
+        if terminal.isReleased {
+            return Color(red: 0.52, green: 0.37, blue: 0.18)
+        }
+
+        if terminal.exitStatus != nil {
+            return Color(red: 0.22, green: 0.48, blue: 0.34)
+        }
+
+        return Color(red: 0.15, green: 0.43, blue: 0.74)
+    }
+}
+
+private struct SidebarEmptyState: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor).opacity(0.6))
+            )
+    }
+}
+
+private struct PermissionActionButton: View {
+    let title: String
+    let role: ACPPermissionPromptActionRole
+    let action: () -> Void
+
+    var body: some View {
+        switch role {
+        case .primary:
+            Button(title, action: action)
+                .buttonStyle(.borderedProminent)
+        case .secondary, .destructive:
+            Button(title, action: action)
+                .buttonStyle(.bordered)
+        }
     }
 }
 

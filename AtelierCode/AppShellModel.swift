@@ -328,6 +328,39 @@ final class TransientWorkspaceSessionPersistence: ACPWorkspaceSessionPersisting 
 }
 
 @MainActor
+final class TransientWorkspacePermissionPersistence: ACPWorkspacePermissionPersisting {
+    private var decisions: [String: [ACPWorkspacePermissionScope: ACPWorkspacePermissionRuleDecision]] = [:]
+
+    func decision(
+        for workspaceRoot: String,
+        scope: ACPWorkspacePermissionScope
+    ) -> ACPWorkspacePermissionRuleDecision? {
+        decisions[workspaceRoot]?[scope]
+    }
+
+    func save(
+        decision: ACPWorkspacePermissionRuleDecision,
+        for workspaceRoot: String,
+        scope: ACPWorkspacePermissionScope
+    ) {
+        var workspaceDecisions = decisions[workspaceRoot] ?? [:]
+        workspaceDecisions[scope] = decision
+        decisions[workspaceRoot] = workspaceDecisions
+    }
+
+    func removeDecision(for workspaceRoot: String, scope: ACPWorkspacePermissionScope) {
+        decisions[workspaceRoot]?.removeValue(forKey: scope)
+        if decisions[workspaceRoot]?.isEmpty == true {
+            decisions.removeValue(forKey: workspaceRoot)
+        }
+    }
+
+    func removeAllDecisions(for workspaceRoot: String) {
+        decisions.removeValue(forKey: workspaceRoot)
+    }
+}
+
+@MainActor
 @Observable
 final class AppShellModel {
     let launchMode: AppLaunchMode
@@ -338,22 +371,25 @@ final class AppShellModel {
     var mountedStore: ACPStore?
 
     @ObservationIgnored private let sessionPersistence: ACPWorkspaceSessionPersisting
+    @ObservationIgnored private let permissionPersistence: ACPWorkspacePermissionPersisting
     @ObservationIgnored private let settingsPersistence: GeminiAppSettingsPersisting
     @ObservationIgnored private let workspaceSelectionPersistence: AppWorkspaceSelectionPersisting
-    @ObservationIgnored private let storeFactory: (String, ACPWorkspaceSessionPersisting, GeminiAppSettings) -> ACPStore
+    @ObservationIgnored private let storeFactory: (String, ACPWorkspaceSessionPersisting, ACPWorkspacePermissionPersisting, GeminiAppSettings) -> ACPStore
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
 
     init(
         configuration: AppLaunchConfiguration = .fromCurrentEnvironment(),
         autostart: Bool = true,
         sessionPersistence: ACPWorkspaceSessionPersisting? = nil,
+        permissionPersistence: ACPWorkspacePermissionPersisting? = nil,
         settingsPersistence: GeminiAppSettingsPersisting? = nil,
         workspaceSelectionPersistence: AppWorkspaceSelectionPersisting? = nil,
-        storeFactory: @escaping (String, ACPWorkspaceSessionPersisting, GeminiAppSettings) -> ACPStore = { workspacePath, sessionPersistence, settings in
+        storeFactory: @escaping (String, ACPWorkspaceSessionPersisting, ACPWorkspacePermissionPersisting, GeminiAppSettings) -> ACPStore = { workspacePath, sessionPersistence, permissionPersistence, settings in
             ACPStore(
                 cwd: workspacePath,
                 geminiSettings: settings,
-                sessionPersistence: sessionPersistence
+                sessionPersistence: sessionPersistence,
+                permissionPersistence: permissionPersistence
             )
         }
     ) {
@@ -362,6 +398,9 @@ final class AppShellModel {
         self.sessionPersistence = sessionPersistence ?? (configuration.launchMode == .live
             ? ACPWorkspaceSessionStore.standard
             : TransientWorkspaceSessionPersistence())
+        self.permissionPersistence = permissionPersistence ?? (configuration.launchMode == .live
+            ? ACPWorkspacePermissionStore.standard
+            : TransientWorkspacePermissionPersistence())
         self.settingsPersistence = settingsPersistence ?? (configuration.launchMode == .live
             ? GeminiAppSettingsStore.standard
             : TransientGeminiAppSettingsPersistence())
@@ -436,7 +475,8 @@ final class AppShellModel {
             let store = ACPStore(
                 transport: MockACPTransport(scenario: transportScenario),
                 cwd: workspacePath,
-                sessionPersistence: sessionPersistence
+                sessionPersistence: sessionPersistence,
+                permissionPersistence: permissionPersistence
             )
             mountedStore = store
 
@@ -558,7 +598,12 @@ final class AppShellModel {
         workspaceSelectionPersistence.saveSelectedWorkspacePath(canonicalWorkspacePath)
         blockingSetupState = .none
 
-        let store = storeFactory(canonicalWorkspacePath, sessionPersistence, geminiSettings)
+        let store = storeFactory(
+            canonicalWorkspacePath,
+            sessionPersistence,
+            permissionPersistence,
+            geminiSettings
+        )
         mountedStore = store
 
         guard autostart else { return }
@@ -622,7 +667,9 @@ final class AppShellModel {
         store.connectionState = .ready
         store.messages = []
         store.activitiesByMessageID = [:]
+        store.hostActivities = []
         store.terminalStates = [:]
+        store.pendingPermissionRequests = []
         store.draftPrompt = "Summarize the current workspace shell."
         store.isConnecting = false
         store.isSending = false
@@ -643,44 +690,52 @@ final class AppShellModel {
 
         store.connectionState = .ready
         store.messages = [userMessage, assistantMessage]
-        store.activitiesByMessageID = [
-            assistantMessage.id: [
-                ACPMessageActivity(
-                    sequence: 1,
-                    kind: .availableCommands,
-                    title: "Available commands updated",
-                    detail: "read_file, run_tests"
-                ),
-                ACPMessageActivity(
-                    sequence: 2,
-                    kind: .thinking,
-                    title: "Gemini is thinking",
-                    detail: "Checking the app shell and launch seams."
-                ),
-                ACPMessageActivity(
-                    sequence: 3,
-                    kind: .tool,
-                    title: "Tool: Read workspace",
-                    detail: "Scanning the AtelierCode app target."
-                ),
-                ACPMessageActivity(
-                    sequence: 4,
-                    kind: .terminal,
-                    title: "Terminal output",
-                    detail: nil,
-                    terminal: ACPTerminalActivitySnapshot(
-                        terminalId: "terminal_preview",
-                        command: "rg --files AtelierCode",
-                        cwd: selectedWorkspacePath ?? AppMockScenario.activity.defaultWorkspacePath,
-                        newOutput: "AtelierCode/ContentView.swift\nAtelierCode/ACPStore.swift",
-                        fullOutput: "AtelierCode/ContentView.swift\nAtelierCode/ACPStore.swift",
-                        truncated: false,
-                        exitStatus: ACPTerminalExitStatus(exitCode: 0, signal: nil),
-                        isReleased: true
-                    )
-                ),
-            ]
+        let previewActivities = [
+            ACPMessageActivity(
+                sequence: 1,
+                kind: .availableCommands,
+                title: "Available commands updated",
+                detail: "read_file, run_tests"
+            ),
+            ACPMessageActivity(
+                sequence: 2,
+                kind: .thinking,
+                title: "Gemini is thinking",
+                detail: "Checking the app shell and launch seams."
+            ),
+            ACPMessageActivity(
+                sequence: 3,
+                kind: .tool,
+                title: "Tool: Read workspace",
+                detail: "Scanning the AtelierCode app target."
+            ),
+            ACPMessageActivity(
+                sequence: 4,
+                kind: .permission,
+                title: "Read workspace file",
+                detail: "AtelierCode/ACPStore.swift"
+            ),
+            ACPMessageActivity(
+                sequence: 5,
+                kind: .terminal,
+                title: "Terminal output",
+                detail: nil,
+                terminal: ACPTerminalActivitySnapshot(
+                    terminalId: "terminal_preview",
+                    command: "rg --files AtelierCode",
+                    cwd: selectedWorkspacePath ?? AppMockScenario.activity.defaultWorkspacePath,
+                    newOutput: "AtelierCode/ContentView.swift\nAtelierCode/ACPStore.swift",
+                    fullOutput: "AtelierCode/ContentView.swift\nAtelierCode/ACPStore.swift",
+                    truncated: false,
+                    exitStatus: ACPTerminalExitStatus(exitCode: 0, signal: nil),
+                    isReleased: true
+                )
+            ),
         ]
+        store.activitiesByMessageID = [
+            assistantMessage.id: previewActivities
+        ]
+        store.hostActivities = previewActivities
         store.terminalStates = [
             "terminal_preview": ACPTerminalState(
                 id: "terminal_preview",
@@ -690,6 +745,34 @@ final class AppShellModel {
                 truncated: false,
                 exitStatus: ACPTerminalExitStatus(exitCode: 0, signal: nil),
                 isReleased: true
+            )
+        ]
+        store.pendingPermissionRequests = [
+            ACPPermissionPrompt(
+                source: .terminalCreate,
+                title: "Create terminal",
+                detail: "rg --files AtelierCode\nWorking directory: \(selectedWorkspacePath ?? AppMockScenario.activity.defaultWorkspacePath)",
+                persistenceScope: .terminalCreate,
+                actions: [
+                    ACPPermissionPromptAction(
+                        id: "allow_once",
+                        title: "Allow once",
+                        role: .primary,
+                        kind: .allowOnce
+                    ),
+                    ACPPermissionPromptAction(
+                        id: "allow_workspace",
+                        title: "Always for this workspace",
+                        role: .secondary,
+                        kind: .allowAlwaysForWorkspace
+                    ),
+                    ACPPermissionPromptAction(
+                        id: "deny",
+                        title: "Deny",
+                        role: .destructive,
+                        kind: .deny
+                    ),
+                ]
             )
         ]
         store.draftPrompt = "Review launch mode handling."

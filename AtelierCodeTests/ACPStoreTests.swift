@@ -571,6 +571,16 @@ struct ACPStoreTests {
         }
         """)
 
+        #expect(await waitUntil(timeout: 5) { store.pendingPermissionRequests.count == 1 })
+        let permissionPrompt = try #require(store.pendingPermissionRequests.first)
+        let allowOnceAction = try #require(permissionPrompt.actions.first(where: { action in
+            if case .allowOnce = action.kind {
+                return true
+            }
+            return false
+        }))
+        store.resolvePermissionRequest(permissionPrompt, with: allowOnceAction)
+
         let created = await waitUntil(timeout: 5) {
             outboundResponses["terminal_create_store"] != nil
         }
@@ -593,6 +603,7 @@ struct ACPStoreTests {
             })
         }
         #expect(activityAppended)
+        #expect(store.hostActivities.contains(where: { $0.kind == .permission }))
     }
 
     @Test func cancelPromptSendsCancelAndLeavesSessionUsable() async {
@@ -666,6 +677,112 @@ struct ACPStoreTests {
         #expect(store.isSending == false)
         #expect(store.isErrorVisible == false)
         #expect(store.messages.last?.text == "Generation cancelled.")
+    }
+
+    @Test func fileReadPermissionRuleCanBeSavedForWorkspace() async throws {
+        let fileManager = FileManager.default
+        let workspaceURL = fileManager.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fileURL = workspaceURL.appendingPathComponent("notes.txt")
+        try fileManager.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        try Data("hello\nworkspace".utf8).write(to: fileURL)
+        defer {
+            try? fileManager.removeItem(at: workspaceURL)
+        }
+
+        let transport = FakeACPStoreTransport()
+        let permissionPersistence = InMemoryWorkspacePermissionPersistence()
+        let store = ACPStore(
+            transport: transport,
+            cwd: workspaceURL.path,
+            permissionPersistence: permissionPersistence
+        )
+        var outboundResponses: [String: [String: Any]] = [:]
+
+        transport.onSend = { data in
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+            if let method = object["method"] as? String {
+                let requestID = try #require(object["id"] as? Int)
+
+                switch method {
+                case ACPMethod.initialize.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "protocolVersion": 1
+                      }
+                    }
+                    """)
+
+                case ACPMethod.sessionNew.rawValue:
+                    transport.deliver("""
+                    {
+                      "jsonrpc": "2.0",
+                      "id": \(requestID),
+                      "result": {
+                        "sessionId": "session_123"
+                      }
+                    }
+                    """)
+
+                default:
+                    Issue.record("Unexpected method \(method)")
+                }
+            } else if let responseID = object["id"] as? String {
+                outboundResponses[responseID] = object
+            }
+        }
+
+        await store.connect()
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "fs_1",
+          "method": "fs/read_text_file",
+          "params": {
+            "sessionId": "session_123",
+            "path": "notes.txt"
+          }
+        }
+        """)
+
+        #expect(await waitUntil(timeout: 5) { store.pendingPermissionRequests.count == 1 })
+        let prompt = try #require(store.pendingPermissionRequests.first)
+        let allowWorkspaceAction = try #require(prompt.actions.first(where: { action in
+            if case .allowAlwaysForWorkspace = action.kind {
+                return true
+            }
+            return false
+        }))
+        store.resolvePermissionRequest(prompt, with: allowWorkspaceAction)
+
+        #expect(await waitUntil(timeout: 5) { outboundResponses["fs_1"] != nil })
+        let firstResponse = try #require(outboundResponses["fs_1"])
+        let firstResult = try #require(firstResponse["result"] as? [String: Any])
+        #expect(firstResult["content"] as? String == "hello\nworkspace")
+        #expect(permissionPersistence.storedDecisions[workspaceURL.path]?[.fileRead] == .allow)
+
+        transport.deliver("""
+        {
+          "jsonrpc": "2.0",
+          "id": "fs_2",
+          "method": "fs/read_text_file",
+          "params": {
+            "sessionId": "session_123",
+            "path": "notes.txt"
+          }
+        }
+        """)
+
+        #expect(await waitUntil(timeout: 5) { outboundResponses["fs_2"] != nil })
+        let secondResponse = try #require(outboundResponses["fs_2"])
+        let secondResult = try #require(secondResponse["result"] as? [String: Any])
+        #expect(secondResult["content"] as? String == "hello\nworkspace")
+        #expect(store.pendingPermissionRequests.isEmpty)
     }
 
     @Test func connectResumesPersistedSessionWhenAvailable() async {
@@ -1009,6 +1126,14 @@ struct ACPStoreTests {
         await store.connect()
         store.messages = [ConversationMessage(role: .assistant, text: "Temporary transcript")]
         store.activitiesByMessageID = [UUID(): []]
+        store.hostActivities = [
+            ACPMessageActivity(
+                sequence: 1,
+                kind: .permission,
+                title: "Permission granted",
+                detail: "Temporary permission"
+            )
+        ]
         store.terminalStates = [
             "terminal_1": ACPTerminalState(
                 id: "terminal_1",
@@ -1018,6 +1143,22 @@ struct ACPStoreTests {
                 truncated: false,
                 exitStatus: nil,
                 isReleased: false
+            )
+        ]
+        store.pendingPermissionRequests = [
+            ACPPermissionPrompt(
+                source: .fileRead,
+                title: "Read workspace file",
+                detail: "/tmp/atelier/file.txt",
+                persistenceScope: .fileRead,
+                actions: [
+                    ACPPermissionPromptAction(
+                        id: "allow_once",
+                        title: "Allow once",
+                        role: .primary,
+                        kind: .allowOnce
+                    )
+                ]
             )
         ]
         store.draftPrompt = "Temporary draft"
@@ -1030,7 +1171,9 @@ struct ACPStoreTests {
         #expect(store.connectionState == .disconnected)
         #expect(store.messages.isEmpty)
         #expect(store.activitiesByMessageID.isEmpty)
+        #expect(store.hostActivities.isEmpty)
         #expect(store.terminalStates.isEmpty)
+        #expect(store.pendingPermissionRequests.isEmpty)
         #expect(store.draftPrompt.isEmpty)
         #expect(store.isConnecting == false)
         #expect(store.isSending == false)
@@ -1101,6 +1244,39 @@ private final class InMemoryWorkspaceSessionPersistence: ACPWorkspaceSessionPers
 
     func removeSession(for workspaceRoot: String) {
         storedSessions.removeValue(forKey: workspaceRoot)
+    }
+}
+
+@MainActor
+private final class InMemoryWorkspacePermissionPersistence: ACPWorkspacePermissionPersisting {
+    var storedDecisions: [String: [ACPWorkspacePermissionScope: ACPWorkspacePermissionRuleDecision]] = [:]
+
+    func decision(
+        for workspaceRoot: String,
+        scope: ACPWorkspacePermissionScope
+    ) -> ACPWorkspacePermissionRuleDecision? {
+        storedDecisions[workspaceRoot]?[scope]
+    }
+
+    func save(
+        decision: ACPWorkspacePermissionRuleDecision,
+        for workspaceRoot: String,
+        scope: ACPWorkspacePermissionScope
+    ) {
+        var workspaceDecisions = storedDecisions[workspaceRoot] ?? [:]
+        workspaceDecisions[scope] = decision
+        storedDecisions[workspaceRoot] = workspaceDecisions
+    }
+
+    func removeDecision(for workspaceRoot: String, scope: ACPWorkspacePermissionScope) {
+        storedDecisions[workspaceRoot]?.removeValue(forKey: scope)
+        if storedDecisions[workspaceRoot]?.isEmpty == true {
+            storedDecisions.removeValue(forKey: workspaceRoot)
+        }
+    }
+
+    func removeAllDecisions(for workspaceRoot: String) {
+        storedDecisions.removeValue(forKey: workspaceRoot)
     }
 }
 
