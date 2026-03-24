@@ -3,18 +3,24 @@ import Testing
 
 @MainActor
 struct ThreadSessionTests {
-    @Test func assistantAndThinkingDeltasAppendCorrectly() async throws {
+    @Test func orderedTurnItemsUpdateInPlaceAsEventsArrive() async throws {
         let session = ThreadSession(threadID: "thread-1", title: "Thread")
 
         session.beginTurn(userPrompt: "Hello")
-        session.appendAssistantTextDelta("Hello")
-        session.appendAssistantTextDelta(", world")
-        session.appendThinkingDelta("Reasoning")
-        session.appendThinkingDelta(" continues")
+        session.appendAssistantTextDelta("Hello", itemID: "assistant-1")
+        session.appendThinkingDelta("Reasoning", itemID: "reasoning-1")
+        session.startActivity(id: "tool-1", kind: .tool, title: "swift test", detail: "Running")
+        session.appendAssistantTextDelta(", world", itemID: "assistant-1")
+        session.appendAssistantTextDelta("Follow-up", itemID: "assistant-2")
+        session.appendThinkingDelta(" continues", itemID: "reasoning-1")
 
-        #expect(session.messages.count == 2)
-        #expect(session.messages.last?.text == "Hello, world")
-        #expect(session.turnState.thinkingText == "Reasoning continues")
+        #expect(session.messages.map(\.text) == ["Hello"])
+        #expect(session.turnItems.map(\.id) == ["assistant-1", "reasoning-1", "tool-1", "assistant-2"])
+        #expect(session.turnItems.map(\.kind) == [.assistant, .reasoning, .tool, .assistant])
+        #expect(session.turnItems[0].text == "Hello, world")
+        #expect(session.turnItems[1].text == "Reasoning continues")
+        #expect(session.turnItems[2].detail == "Running")
+        #expect(session.turnItems[3].text == "Follow-up")
     }
 
     @Test func activityItemsProgressCorrectly() async throws {
@@ -45,6 +51,7 @@ struct ThreadSessionTests {
         #expect(session.activityItems[1].kind == .fileChange)
         #expect(session.activityItems[1].files == changedFiles)
         #expect(session.activityItems[1].status == .completed)
+        #expect(session.turnItems.map(\.kind) == [.tool, .fileChange])
     }
 
     @Test func approvalQueueHandlesResolveDuplicateAndStaleCases() async throws {
@@ -98,6 +105,8 @@ struct ThreadSessionTests {
         let session = ThreadSession(threadID: "thread-1", title: "Thread")
 
         session.beginTurn()
+        session.appendAssistantTextDelta("First")
+        session.appendAssistantTextDelta(" response", itemID: "assistant-2")
         session.startActivity(id: "tool-1", kind: .tool, title: "xcodebuild")
         session.enqueueApprovalRequest(
             ApprovalRequest(
@@ -113,28 +122,31 @@ struct ThreadSessionTests {
         session.completeTurn()
         #expect(session.turnState.phase == .completed)
         #expect(session.pendingApprovals.isEmpty)
-        #expect(session.activityItems.allSatisfy { $0.status == .completed })
+        #expect(session.turnItems.allSatisfy { $0.status == .completed })
+        #expect(session.messages.last?.text == "First response")
 
         session.beginTurn()
+        session.appendAssistantTextDelta("Partial")
         session.startActivity(id: "tool-2", kind: .tool, title: "swift test")
         session.replacePlanState(PlanState(summary: nil, steps: [PlanStep(id: "step-1", title: "Run tests", status: .inProgress)]))
         session.cancelTurn()
         #expect(session.turnState.phase == .cancelled)
-        #expect(session.activityItems.allSatisfy { $0.status == .cancelled })
+        #expect(session.turnItems.allSatisfy { $0.status == .cancelled })
         #expect(session.planState == nil)
 
         session.beginTurn()
+        session.appendThinkingDelta("Checking")
         session.startActivity(id: "tool-3", kind: .tool, title: "Build")
         session.replaceAggregatedDiff(AggregatedDiff(summary: "Temp", files: []))
         session.failTurn("Bridge disconnected")
         #expect(session.turnState.phase == .failed)
         #expect(session.turnState.failureDescription == "Bridge disconnected")
-        #expect(session.activityItems.allSatisfy { $0.status == .failed || $0.status == .cancelled })
+        #expect(session.turnItems.allSatisfy { $0.status == .failed || $0.status == .cancelled })
         #expect(session.aggregatedDiff == nil)
 
         session.clearVolatilePerTurnState()
         #expect(session.turnState.phase == .idle)
-        #expect(session.activityItems.isEmpty)
+        #expect(session.turnItems.isEmpty)
         #expect(session.pendingApprovals.isEmpty)
         #expect(session.planState == nil)
     }

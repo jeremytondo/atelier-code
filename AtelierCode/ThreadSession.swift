@@ -8,8 +8,8 @@ final class ThreadSession {
     private(set) var title: String
     private(set) var messages: [ConversationMessage]
     private(set) var turnState: TurnState
+    private(set) var turnItems: [TurnItem]
     private(set) var pendingApprovals: [ApprovalRequest]
-    private(set) var activityItems: [ActivityItem]
     private(set) var planState: PlanState?
     private(set) var aggregatedDiff: AggregatedDiff?
 
@@ -18,8 +18,8 @@ final class ThreadSession {
         title: String,
         messages: [ConversationMessage] = [],
         turnState: TurnState? = nil,
+        turnItems: [TurnItem] = [],
         pendingApprovals: [ApprovalRequest] = [],
-        activityItems: [ActivityItem] = [],
         planState: PlanState? = nil,
         aggregatedDiff: AggregatedDiff? = nil
     ) {
@@ -27,10 +27,21 @@ final class ThreadSession {
         self.title = title
         self.messages = messages
         self.turnState = turnState ?? TurnState()
+        self.turnItems = turnItems
         self.pendingApprovals = pendingApprovals
-        self.activityItems = activityItems
         self.planState = planState
         self.aggregatedDiff = aggregatedDiff
+    }
+
+    var activityItems: [ActivityItem] {
+        turnItems.compactMap(\.activityItem)
+    }
+
+    var reasoningText: String {
+        turnItems
+            .filter { $0.kind == .reasoning }
+            .map(\.text)
+            .joined()
     }
 
     func updateThreadIdentity(id: String, title: String) {
@@ -63,39 +74,27 @@ final class ThreadSession {
             )
         }
 
-        turnState = TurnState(phase: .inProgress, assistantMessageID: nil, thinkingText: "", failureDescription: nil)
+        turnState = TurnState(phase: .inProgress, failureDescription: nil)
+        turnItems.removeAll()
         pendingApprovals.removeAll()
-        activityItems.removeAll()
         planState = nil
         aggregatedDiff = nil
     }
 
-    func appendAssistantTextDelta(_ delta: String) {
+    func appendAssistantTextDelta(_ delta: String, itemID: String = "assistant") {
         guard delta.isEmpty == false else {
             return
         }
 
-        if let assistantMessageID = turnState.assistantMessageID,
-           let index = messages.firstIndex(where: { $0.id == assistantMessageID }) {
-            messages[index].text += delta
-            return
-        }
-
-        let message = ConversationMessage(
-            id: UUID().uuidString,
-            role: .assistant,
-            text: delta
-        )
-        messages.append(message)
-        turnState.assistantMessageID = message.id
+        appendTextDelta(delta, to: itemID, kind: .assistant, title: "Assistant")
     }
 
-    func appendThinkingDelta(_ delta: String) {
+    func appendThinkingDelta(_ delta: String, itemID: String = "reasoning") {
         guard delta.isEmpty == false else {
             return
         }
 
-        turnState.thinkingText += delta
+        appendTextDelta(delta, to: itemID, kind: .reasoning, title: "Reasoning")
     }
 
     func startActivity(
@@ -107,22 +106,23 @@ final class ThreadSession {
         workingDirectory: String? = nil,
         files: [DiffFileChange] = []
     ) {
-        if let index = activityItems.firstIndex(where: { $0.id == id }) {
-            activityItems[index].title = title
-            activityItems[index].detail = detail
-            activityItems[index].command = command
-            activityItems[index].workingDirectory = workingDirectory
-            activityItems[index].files = files
-            activityItems[index].status = .running
-            activityItems[index].exitCode = nil
+        if let index = turnItems.firstIndex(where: { $0.id == id }) {
+            turnItems[index].title = title
+            turnItems[index].detail = detail
+            turnItems[index].command = command
+            turnItems[index].workingDirectory = workingDirectory
+            turnItems[index].files = files
+            turnItems[index].status = .running
+            turnItems[index].exitCode = nil
             return
         }
 
-        activityItems.append(
-            ActivityItem(
+        turnItems.append(
+            TurnItem(
                 id: id,
-                kind: kind,
+                kind: kind.turnItemKind,
                 title: title,
+                text: "",
                 detail: detail,
                 command: command,
                 workingDirectory: workingDirectory,
@@ -135,23 +135,23 @@ final class ThreadSession {
     }
 
     func updateActivity(id: String, detail: String?) {
-        guard let index = activityItems.firstIndex(where: { $0.id == id }) else {
+        guard let index = turnItems.firstIndex(where: { $0.id == id }) else {
             return
         }
 
-        activityItems[index].detail = detail
+        turnItems[index].detail = detail
     }
 
     func appendActivityOutput(id: String, delta: String) {
         guard delta.isEmpty == false,
-              let index = activityItems.firstIndex(where: { $0.id == id }) else {
+              let index = turnItems.firstIndex(where: { $0.id == id }) else {
             return
         }
 
-        if activityItems[index].output.isEmpty {
-            activityItems[index].output = delta
+        if turnItems[index].output.isEmpty {
+            turnItems[index].output = delta
         } else {
-            activityItems[index].output += delta
+            turnItems[index].output += delta
         }
     }
 
@@ -162,21 +162,21 @@ final class ThreadSession {
         files: [DiffFileChange]? = nil,
         exitCode: Int? = nil
     ) {
-        guard let index = activityItems.firstIndex(where: { $0.id == id }) else {
+        guard let index = turnItems.firstIndex(where: { $0.id == id }) else {
             return
         }
 
-        activityItems[index].status = status
+        turnItems[index].status = status
 
         if let detail {
-            activityItems[index].detail = detail
+            turnItems[index].detail = detail
         }
 
         if let files {
-            activityItems[index].files = files
+            turnItems[index].files = files
         }
 
-        activityItems[index].exitCode = exitCode
+        turnItems[index].exitCode = exitCode
     }
 
     func enqueueApprovalRequest(_ request: ApprovalRequest) {
@@ -224,13 +224,14 @@ final class ThreadSession {
     func completeTurn() {
         turnState.phase = .completed
         pendingApprovals.removeAll()
-        markRunningActivities(as: .completed)
+        markRunningTurnItems(as: .completed)
+        appendCompletedAssistantTranscript()
     }
 
     func cancelTurn() {
         turnState.phase = .cancelled
         pendingApprovals.removeAll()
-        markRunningActivities(as: .cancelled)
+        markRunningTurnItems(as: .cancelled)
 
         planState = nil
         aggregatedDiff = nil
@@ -240,7 +241,7 @@ final class ThreadSession {
         turnState.phase = .failed
         turnState.failureDescription = message
         pendingApprovals.removeAll()
-        markRunningActivities(as: .failed)
+        markRunningTurnItems(as: .failed)
 
         planState = nil
         aggregatedDiff = nil
@@ -249,14 +250,100 @@ final class ThreadSession {
     func clearVolatilePerTurnState() {
         turnState = TurnState()
         pendingApprovals.removeAll()
-        activityItems.removeAll()
+        turnItems.removeAll()
         planState = nil
         aggregatedDiff = nil
     }
 
-    private func markRunningActivities(as status: ActivityStatus) {
-        for index in activityItems.indices where activityItems[index].status == .running {
-            activityItems[index].status = status
+    private func appendTextDelta(_ delta: String, to itemID: String, kind: TurnItemKind, title: String) {
+        if let index = turnItems.firstIndex(where: { $0.id == itemID }) {
+            turnItems[index].text += delta
+            turnItems[index].status = .running
+            return
+        }
+
+        turnItems.append(
+            TurnItem(
+                id: itemID,
+                kind: kind,
+                title: title,
+                text: delta,
+                detail: nil,
+                command: nil,
+                workingDirectory: nil,
+                output: "",
+                files: [],
+                status: .running,
+                exitCode: nil
+            )
+        )
+    }
+
+    private func appendCompletedAssistantTranscript() {
+        let assistantText = turnItems
+            .filter { $0.kind == .assistant }
+            .map(\.text)
+            .joined()
+
+        guard assistantText.isEmpty == false else {
+            return
+        }
+
+        messages.append(
+            ConversationMessage(
+                id: UUID().uuidString,
+                role: .assistant,
+                text: assistantText
+            )
+        )
+    }
+
+    private func markRunningTurnItems(as status: ActivityStatus) {
+        for index in turnItems.indices where turnItems[index].status == .running {
+            turnItems[index].status = status
+        }
+    }
+}
+
+private extension TurnItem {
+    var activityItem: ActivityItem? {
+        guard let kind = activityKind else {
+            return nil
+        }
+
+        return ActivityItem(
+            id: id,
+            kind: kind,
+            title: title,
+            detail: detail,
+            command: command,
+            workingDirectory: workingDirectory,
+            output: output,
+            files: files,
+            status: status,
+            exitCode: exitCode
+        )
+    }
+
+    var activityKind: ActivityKind? {
+        switch kind {
+        case .assistant, .reasoning:
+            return nil
+        case .tool:
+            return .tool
+        case .fileChange:
+            return .fileChange
+        }
+    }
+}
+
+private extension ActivityKind {
+    var turnItemKind: TurnItemKind {
+        switch self {
+        case .tool:
+            return .tool
+        case .fileChange:
+            return .fileChange
         }
     }
 }

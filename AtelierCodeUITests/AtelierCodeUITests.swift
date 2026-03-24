@@ -53,7 +53,7 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Activity"].exists)
     }
 
-    func testPhase2TurnShowsGroupedSectionsAndApproveRemovesApproval() throws {
+    func testPhase2TurnShowsInlineRowsAndApproveKeepsCompletedTurnVisible() throws {
         let app = try makeApp(scenario: "phase2", workspaceName: "Phase2ApproveWorkspace")
         app.launch()
 
@@ -67,7 +67,9 @@ final class AtelierCodeUITests: XCTestCase {
 
         XCTAssertTrue(app.buttons["Approve"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Approvals"].exists)
-        XCTAssertTrue(app.staticTexts["Activity"].exists)
+        XCTAssertTrue(app.staticTexts["I grouped the current turn details under the transcript."].exists)
+        XCTAssertTrue(app.staticTexts["Reasoning"].exists)
+        XCTAssertTrue(app.staticTexts["Run tests"].exists)
         XCTAssertTrue(app.staticTexts["Plan"].exists)
         XCTAssertTrue(app.staticTexts["Turn Diff"].exists)
         XCTAssertTrue(app.buttons["Approve"].exists)
@@ -75,8 +77,11 @@ final class AtelierCodeUITests: XCTestCase {
         app.buttons["Approve"].click()
 
         XCTAssertFalse(app.staticTexts["Approvals"].waitForExistence(timeout: 1))
-        XCTAssertTrue(app.staticTexts["Activity"].exists)
+        XCTAssertTrue(app.staticTexts["Reasoning"].exists)
+        XCTAssertTrue(app.staticTexts["Plan"].exists)
         XCTAssertTrue(app.staticTexts["Turn Diff"].exists)
+        XCTAssertTrue(app.staticTexts["Run tests"].exists)
+        XCTAssertTrue(app.staticTexts["I grouped the current turn details under the transcript."].exists)
     }
 
     func testPhase2TurnDeclineRemovesApprovalAndKeepsTurnDetailsVisible() throws {
@@ -99,6 +104,38 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Approvals"].waitForExistence(timeout: 1))
         XCTAssertTrue(app.staticTexts["Reasoning"].exists)
         XCTAssertTrue(app.staticTexts["Plan"].exists)
+        XCTAssertTrue(app.staticTexts["Turn Diff"].exists)
+        XCTAssertTrue(app.staticTexts["I grouped the current turn details under the transcript."].exists)
+    }
+
+    func testPhase2InlineTurnRowsAppearBeforeFooterPanels() throws {
+        let app = try makeApp(scenario: "phase2", workspaceName: "Phase2OrderingWorkspace")
+        app.launch()
+
+        let composer = app.textViews["conversation-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.click()
+        composer.typeText("Check inline ordering")
+
+        app.buttons["conversation-send-button"].click()
+        app.scrollViews.firstMatch.swipeUp()
+
+        let promptText = app.staticTexts["Check inline ordering"]
+        let assistantText = app.staticTexts["I grouped the current turn details under the transcript."]
+        let reasoningHeading = app.staticTexts["Reasoning"]
+        let toolTitle = app.staticTexts["Run tests"]
+        let approvalsHeading = app.staticTexts["Approvals"]
+
+        XCTAssertTrue(promptText.waitForExistence(timeout: 5))
+        XCTAssertTrue(assistantText.exists)
+        XCTAssertTrue(reasoningHeading.exists)
+        XCTAssertTrue(toolTitle.exists)
+        XCTAssertTrue(approvalsHeading.exists)
+
+        XCTAssertLessThan(promptText.frame.minY, assistantText.frame.minY)
+        XCTAssertLessThan(assistantText.frame.minY, reasoningHeading.frame.minY)
+        XCTAssertLessThan(reasoningHeading.frame.minY, toolTitle.frame.minY)
+        XCTAssertLessThan(toolTitle.frame.minY, approvalsHeading.frame.minY)
     }
 
     func testRetryRecoversFromConnectionError() throws {
