@@ -80,18 +80,25 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
 
     init(
         controller: WorkspaceController,
-        executableLocator: BridgeExecutableLocator = BridgeExecutableLocator(),
-        processLauncher: @escaping ProcessLauncher = { try DefaultBridgeProcessHandle(executableURL: $0) },
-        socketFactory: @escaping SocketFactory = { URLSessionBridgeSocketClient(url: $0) },
-        openURLAction: @escaping OpenURLAction = { NSWorkspace.shared.open($0) },
-        appVersion: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+        executableLocator: BridgeExecutableLocator? = nil,
+        processLauncher: ProcessLauncher? = nil,
+        socketFactory: SocketFactory? = nil,
+        openURLAction: OpenURLAction? = nil,
+        appVersion: String? = nil
     ) {
+        let resolvedExecutableLocator = executableLocator ?? BridgeExecutableLocator()
+        let resolvedProcessLauncher = processLauncher ?? { try DefaultBridgeProcessHandle(executableURL: $0) }
+        let resolvedSocketFactory = socketFactory ?? { URLSessionBridgeSocketClient(url: $0) }
+        let resolvedOpenURLAction = openURLAction ?? { NSWorkspace.shared.open($0) }
+        let resolvedAppVersion = appVersion
+            ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0")
+
         self.controller = controller
-        self.executableLocator = executableLocator
-        self.processLauncher = processLauncher
-        self.socketFactory = socketFactory
-        self.openURLAction = openURLAction
-        self.appVersion = appVersion
+        self.executableLocator = resolvedExecutableLocator
+        self.processLauncher = resolvedProcessLauncher
+        self.socketFactory = resolvedSocketFactory
+        self.openURLAction = resolvedOpenURLAction
+        self.appVersion = resolvedAppVersion
     }
 
     func start() async throws {
@@ -309,6 +316,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         )
     }
 
+    func resolveApproval(id: String, resolution: ApprovalResolution) async throws {
+        try await resolveApproval(id: id, resolution: resolution, rememberDecision: false)
+    }
+
     func resolveApproval(id: String, resolution: ApprovalResolution, rememberDecision: Bool = false) async throws {
         guard let session = controller.activeThreadSession else {
             throw WorkspaceBridgeRuntimeError.missingActiveThread
@@ -316,19 +327,24 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
 
         let requestID = nextRequestID(prefix: "approval-resolve")
         pendingCommands[requestID] = .approvalResolve
-        try await sendCommand(
-            id: requestID,
-            type: .approvalResolve,
-            threadID: session.threadID,
-            turnID: currentTurnID,
-            payload: BridgeApprovalResolvePayload(
-                approvalID: id,
-                resolution: resolution.bridgeValue,
-                rememberDecision: rememberDecision ? true : nil
+        do {
+            try await sendCommand(
+                id: requestID,
+                type: .approvalResolve,
+                threadID: session.threadID,
+                turnID: currentTurnID,
+                payload: BridgeApprovalResolvePayload(
+                    approvalID: id,
+                    resolution: resolution.bridgeValue,
+                    rememberDecision: rememberDecision ? true : nil
+                )
             )
-        )
-        pendingCommands.removeValue(forKey: requestID)
-        session.resolveApprovalRequest(id: id, resolution: resolution)
+            pendingCommands.removeValue(forKey: requestID)
+            session.resolveApprovalRequest(id: id, resolution: resolution)
+        } catch {
+            pendingCommands.removeValue(forKey: requestID)
+            throw error
+        }
     }
 
     private func runReceiveLoop() async {
@@ -380,7 +396,9 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 id: event.activityID ?? UUID().uuidString,
                 kind: .tool,
                 title: payload.title,
-                detail: payload.detail ?? payload.command ?? ""
+                detail: payload.detail,
+                command: payload.command,
+                workingDirectory: payload.workingDirectory
             )
         case .toolOutput(let payload):
             guard let session = session(for: event.threadID),
@@ -398,7 +416,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             session.completeActivity(
                 id: activityID,
                 status: payload.status.activityStatus,
-                detail: payload.detail
+                detail: payload.detail,
+                exitCode: payload.exitCode
             )
         case .fileChangeStarted(let payload):
             guard let session = session(for: event.threadID) else {
@@ -409,7 +428,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 id: event.activityID ?? UUID().uuidString,
                 kind: .fileChange,
                 title: payload.title,
-                detail: payload.detail ?? payload.files.map(\.path).joined(separator: ", ")
+                detail: payload.detail,
+                files: payload.files.map { $0.toDiffFileChange() }
             )
         case .fileChangeCompleted(let payload):
             guard let session = session(for: event.threadID),
@@ -420,7 +440,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             session.completeActivity(
                 id: activityID,
                 status: payload.status.activityStatus,
-                detail: payload.detail
+                detail: payload.detail,
+                files: payload.files.map { $0.toDiffFileChange() }
             )
         case .approvalRequested(let payload):
             guard let session = session(for: event.threadID) else {

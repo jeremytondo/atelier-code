@@ -101,9 +101,14 @@ struct WorkspaceBridgeRuntimeTests {
         )
 
         try await runtime.start()
-        try await waitUntil { controller.rateLimitState?.buckets.count == 1 }
+        try await waitUntil {
+            controller.rateLimitState?.buckets.count == 1
+                && controller.threadSummaries.count == 1
+                && pendingCommandCount(in: runtime) == 0
+        }
 
         #expect(controller.rateLimitState?.buckets.count == 1)
+        #expect(controller.threadSummaries.count == 1)
         #expect(pendingCommandCount(in: runtime) == 0)
 
         try await runtime.refreshAccount()
@@ -151,7 +156,10 @@ struct WorkspaceBridgeRuntimeTests {
                 id: "approval-1",
                 kind: .generic,
                 title: "Approve",
-                detail: "Please approve"
+                detail: "Please approve",
+                command: nil,
+                files: [],
+                riskLevel: nil
             )
         )
 
@@ -173,6 +181,103 @@ struct WorkspaceBridgeRuntimeTests {
         try await waitUntil { pendingCommandCount(in: runtime) == 0 && session.pendingApprovals.isEmpty }
 
         #expect(pendingCommandCount(in: runtime) == 0)
+        #expect(approvalResolvePayload(from: socketClient.sentTexts.last) == ["approvalID": "approval-1", "resolution": "approved"])
+    }
+
+    @Test func structuredTurnEventsPopulateRichSessionState() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-structured-turn"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4666)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = WorkspaceBridgeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        let session = controller.openThread(id: "thread-1", title: "Thread")
+
+        try await runtime.startTurn(prompt: "Inspect the current turn")
+        socketClient.enqueue(turnStartedJSON(requestID: "ateliercode-turn-start-4", threadID: "thread-1", turnID: "turn-1"))
+        socketClient.enqueue(thinkingDeltaJSON(threadID: "thread-1", turnID: "turn-1", delta: "Checking the streamed reasoning."))
+        socketClient.enqueue(toolStartedJSON(
+            threadID: "thread-1",
+            turnID: "turn-1",
+            activityID: "tool-1",
+            title: "Run tests",
+            detail: "Checking the session state.",
+            command: "swift test",
+            workingDirectory: workspace.canonicalPath
+        ))
+        socketClient.enqueue(toolOutputJSON(threadID: "thread-1", turnID: "turn-1", activityID: "tool-1", delta: "Compiling...\n"))
+        socketClient.enqueue(toolCompletedJSON(
+            threadID: "thread-1",
+            turnID: "turn-1",
+            activityID: "tool-1",
+            status: "completed",
+            detail: "All tests passed.",
+            exitCode: 0
+        ))
+        socketClient.enqueue(fileChangeStartedJSON(
+            threadID: "thread-1",
+            turnID: "turn-1",
+            activityID: "file-1",
+            title: "AtelierCode/ContentView.swift",
+            detail: "Preparing the patch."
+        ))
+        socketClient.enqueue(fileChangeCompletedJSON(
+            threadID: "thread-1",
+            turnID: "turn-1",
+            activityID: "file-1",
+            status: "completed",
+            detail: "Applied the patch."
+        ))
+        socketClient.enqueue(approvalRequestedJSON(threadID: "thread-1", turnID: "turn-1", approvalID: "approval-1", workspacePath: workspace.canonicalPath))
+        socketClient.enqueue(planUpdatedJSON(threadID: "thread-1", turnID: "turn-1"))
+        socketClient.enqueue(diffUpdatedJSON(threadID: "thread-1", turnID: "turn-1"))
+
+        try await waitUntil {
+            session.turnState.thinkingText.isEmpty == false &&
+            session.activityItems.count == 2 &&
+            session.pendingApprovals.count == 1 &&
+            session.planState != nil &&
+            session.aggregatedDiff != nil
+        }
+
+        #expect(session.turnState.thinkingText == "Checking the streamed reasoning.")
+        #expect(session.activityItems[0].command == "swift test")
+        #expect(session.activityItems[0].workingDirectory == workspace.canonicalPath)
+        #expect(session.activityItems[0].output == "Compiling...\n")
+        #expect(session.activityItems[0].exitCode == 0)
+        #expect(session.activityItems[1].files == [
+            DiffFileChange(id: "AtelierCode/ContentView.swift", path: "AtelierCode/ContentView.swift", additions: 4, deletions: 1)
+        ])
+        #expect(session.pendingApprovals[0].command == ApprovalCommandContext(command: "xcodebuild test -scheme AtelierCode", workingDirectory: workspace.canonicalPath))
+        #expect(session.pendingApprovals[0].files == [
+            DiffFileChange(id: "AtelierCode/ContentView.swift", path: "AtelierCode/ContentView.swift", additions: 4, deletions: 1)
+        ])
+        #expect(session.pendingApprovals[0].riskLevel == .medium)
+        #expect(session.planState == PlanState(
+            summary: "Wrap up phase 2.",
+            steps: [
+                PlanStep(id: "step-0", title: "Preserve structured activity", status: .completed),
+                PlanStep(id: "step-1", title: "Render grouped turn sections", status: .inProgress)
+            ]
+        ))
+        #expect(session.aggregatedDiff == AggregatedDiff(
+            summary: "1 file changed",
+            files: [DiffFileChange(id: "AtelierCode/ContentView.swift", path: "AtelierCode/ContentView.swift", additions: 4, deletions: 1)]
+        ))
     }
 
     @Test func startThreadAndWaitReturnsCreatedSession() async throws {
@@ -472,10 +577,102 @@ private func messageDeltaJSON(threadID: String, turnID: String, delta: String) -
     """
 }
 
+private func thinkingDeltaJSON(threadID: String, turnID: String, delta: String) -> String {
+    """
+    {"type":"thinking.delta","timestamp":"2026-03-24T10:00:06Z","threadID":"\(threadID)","turnID":"\(turnID)","payload":{"delta":"\(jsonEscaped(delta))"}}
+    """
+}
+
+private func toolStartedJSON(
+    threadID: String,
+    turnID: String,
+    activityID: String,
+    title: String,
+    detail: String,
+    command: String,
+    workingDirectory: String
+) -> String {
+    """
+    {"type":"tool.started","timestamp":"2026-03-24T10:00:06Z","threadID":"\(threadID)","turnID":"\(turnID)","activityID":"\(activityID)","payload":{"title":"\(jsonEscaped(title))","detail":"\(jsonEscaped(detail))","kind":"command","command":"\(jsonEscaped(command))","workingDirectory":"\(jsonEscaped(workingDirectory))"}}
+    """
+}
+
+private func toolOutputJSON(threadID: String, turnID: String, activityID: String, delta: String) -> String {
+    """
+    {"type":"tool.output","timestamp":"2026-03-24T10:00:06Z","threadID":"\(threadID)","turnID":"\(turnID)","activityID":"\(activityID)","payload":{"stream":"combined","delta":"\(jsonEscaped(delta))"}}
+    """
+}
+
+private func toolCompletedJSON(
+    threadID: String,
+    turnID: String,
+    activityID: String,
+    status: String,
+    detail: String,
+    exitCode: Int
+) -> String {
+    """
+    {"type":"tool.completed","timestamp":"2026-03-24T10:00:06Z","threadID":"\(threadID)","turnID":"\(turnID)","activityID":"\(activityID)","payload":{"status":"\(status)","detail":"\(jsonEscaped(detail))","exitCode":\(exitCode)}}
+    """
+}
+
+private func fileChangeStartedJSON(
+    threadID: String,
+    turnID: String,
+    activityID: String,
+    title: String,
+    detail: String
+) -> String {
+    """
+    {"type":"fileChange.started","timestamp":"2026-03-24T10:00:06Z","threadID":"\(threadID)","turnID":"\(turnID)","activityID":"\(activityID)","payload":{"title":"\(jsonEscaped(title))","detail":"\(jsonEscaped(detail))","files":[{"id":"AtelierCode/ContentView.swift","path":"AtelierCode/ContentView.swift","additions":4,"deletions":1}]}}
+    """
+}
+
+private func fileChangeCompletedJSON(
+    threadID: String,
+    turnID: String,
+    activityID: String,
+    status: String,
+    detail: String
+) -> String {
+    """
+    {"type":"fileChange.completed","timestamp":"2026-03-24T10:00:06Z","threadID":"\(threadID)","turnID":"\(turnID)","activityID":"\(activityID)","payload":{"status":"\(status)","detail":"\(jsonEscaped(detail))","files":[{"id":"AtelierCode/ContentView.swift","path":"AtelierCode/ContentView.swift","additions":4,"deletions":1}]}}
+    """
+}
+
+private func approvalRequestedJSON(threadID: String, turnID: String, approvalID: String, workspacePath: String) -> String {
+    """
+    {"type":"approval.requested","timestamp":"2026-03-24T10:00:06Z","threadID":"\(threadID)","turnID":"\(turnID)","payload":{"approvalID":"\(approvalID)","kind":"command","title":"Approve command execution","detail":"The command needs confirmation.","command":{"command":"xcodebuild test -scheme AtelierCode","workingDirectory":"\(jsonEscaped(workspacePath))"},"files":[{"id":"AtelierCode/ContentView.swift","path":"AtelierCode/ContentView.swift","additions":4,"deletions":1}],"riskLevel":"medium"}}
+    """
+}
+
+private func planUpdatedJSON(threadID: String, turnID: String) -> String {
+    """
+    {"type":"plan.updated","timestamp":"2026-03-24T10:00:06Z","threadID":"\(threadID)","turnID":"\(turnID)","payload":{"summary":"Wrap up phase 2.","steps":[{"id":"step-0","title":"Preserve structured activity","status":"completed"},{"id":"step-1","title":"Render grouped turn sections","status":"in_progress"}]}}
+    """
+}
+
+private func diffUpdatedJSON(threadID: String, turnID: String) -> String {
+    """
+    {"type":"diff.updated","timestamp":"2026-03-24T10:00:06Z","threadID":"\(threadID)","turnID":"\(turnID)","payload":{"summary":"1 file changed","files":[{"id":"AtelierCode/ContentView.swift","path":"AtelierCode/ContentView.swift","additions":4,"deletions":1}]}}
+    """
+}
+
 private func turnCompletedJSON(threadID: String, turnID: String, status: String) -> String {
     """
     {"type":"turn.completed","timestamp":"2026-03-24T10:00:07Z","threadID":"\(threadID)","turnID":"\(turnID)","payload":{"status":"\(status)","detail":null}}
     """
+}
+
+private func approvalResolvePayload(from message: String?) -> [String: String]? {
+    guard let payload = commandPayload(from: message) else {
+        return nil
+    }
+
+    return [
+        "approvalID": payload["approvalID"] as? String ?? "",
+        "resolution": payload["resolution"] as? String ?? ""
+    ]
 }
 
 private func pendingCommandCount(in runtime: WorkspaceBridgeRuntime) -> Int {
@@ -504,13 +701,38 @@ private func abandonedThreadRequestCount(in runtime: WorkspaceBridgeRuntime) -> 
 
 private func sentMessageTypes(from messages: [String]) -> [String] {
     messages.compactMap { message in
-        guard let data = message.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard let object = commandObject(from: message) else {
             return nil
         }
 
         return object["type"] as? String
     }
+}
+
+private func commandPayload(from message: String?) -> [String: Any]? {
+    guard let message,
+          let object = commandObject(from: message),
+          let payload = object["payload"] as? [String: Any] else {
+        return nil
+    }
+
+    return payload
+}
+
+private func commandObject(from message: String) -> [String: Any]? {
+    guard let data = message.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        return nil
+    }
+
+    return object
+}
+
+private func jsonEscaped(_ value: String) -> String {
+    value
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\n", with: "\\n")
 }
 
 private func waitUntil(

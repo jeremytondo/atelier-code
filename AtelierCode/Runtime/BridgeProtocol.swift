@@ -584,7 +584,19 @@ extension BridgeApprovalRequestedPayload {
             id: approvalID,
             kind: kind,
             title: title,
-            detail: detail
+            detail: detail,
+            command: command?.toApprovalCommandContext(),
+            files: (files ?? []).map { $0.toDiffFileChange() },
+            riskLevel: riskLevel.flatMap(ApprovalRiskLevel.init(rawValue:))
+        )
+    }
+}
+
+extension BridgeApprovalCommandContextDTO {
+    func toApprovalCommandContext() -> ApprovalCommandContext {
+        ApprovalCommandContext(
+            command: command,
+            workingDirectory: workingDirectory
         )
     }
 }
