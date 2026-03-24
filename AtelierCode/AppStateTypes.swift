@@ -225,12 +225,22 @@ enum ActivityStatus: String, Equatable, Sendable {
     case cancelled
 }
 
+struct ApprovalCommandContext: Equatable, Sendable {
+    var command: String
+    var workingDirectory: String?
+}
+
 struct ActivityItem: Equatable, Sendable, Identifiable {
     let id: String
     let kind: ActivityKind
     var title: String
-    var detail: String
+    var detail: String?
+    var command: String?
+    var workingDirectory: String?
+    var output: String
+    var files: [DiffFileChange]
     var status: ActivityStatus
+    var exitCode: Int?
 }
 
 enum ApprovalKind: String, Equatable, Sendable {
@@ -246,11 +256,21 @@ enum ApprovalResolution: String, Equatable, Sendable {
     case stale
 }
 
+enum ApprovalRiskLevel: String, Equatable, Sendable {
+    case low
+    case medium
+    case high
+}
+
 struct ApprovalRequest: Equatable, Sendable, Identifiable {
     let id: String
     let kind: ApprovalKind
     var title: String
     var detail: String
+    var command: ApprovalCommandContext?
+    var files: [DiffFileChange]
+    var riskLevel: ApprovalRiskLevel?
+    var pendingResolution: ApprovalResolution? = nil
 }
 
 enum PlanStepStatus: String, Equatable, Sendable {

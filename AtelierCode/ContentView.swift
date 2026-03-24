@@ -139,7 +139,7 @@ private struct ActiveWorkspaceConversationView: View {
                         DiagnosticsSection(diagnostics: appModel.startupDiagnostics)
                     }
 
-                    ConversationSurface(controller: controller)
+                    ConversationSurface(appModel: appModel, controller: controller)
                 }
                 .padding(24)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -211,6 +211,7 @@ private struct WorkspaceHeader: View {
 }
 
 private struct ConversationSurface: View {
+    let appModel: AppModel
     let controller: WorkspaceController
 
     var body: some View {
@@ -229,7 +230,7 @@ private struct ConversationSurface: View {
                 )
                 .accessibilityIdentifier("workspace-error-state")
             case .ready:
-                ConversationTranscript(session: controller.activeThreadSession)
+                ConversationTranscript(appModel: appModel, session: controller.activeThreadSession)
             }
         }
     }
@@ -261,11 +262,12 @@ private enum ConversationSurfaceState {
 }
 
 private struct ConversationTranscript: View {
+    let appModel: AppModel
     let session: ThreadSession?
 
     var body: some View {
         if let session {
-            TranscriptBody(session: session)
+            TranscriptBody(appModel: appModel, session: session)
         } else {
             StateCard(
                 title: "Start the First Turn",
@@ -277,6 +279,7 @@ private struct ConversationTranscript: View {
 }
 
 private struct TranscriptBody: View {
+    let appModel: AppModel
     let session: ThreadSession
     @State private var transcriptWidth: CGFloat = 720
 
@@ -291,21 +294,11 @@ private struct TranscriptBody: View {
                         .id(message.id)
                 }
 
-                if session.turnState.thinkingText.isEmpty == false {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Reasoning", systemImage: "sparkles")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Text(session.turnState.thinkingText)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
-                    .id("thinking")
-                }
+                TurnDetailsStack(
+                    appModel: appModel,
+                    session: session,
+                    maxWidth: min(transcriptWidth * 0.72, 720)
+                )
 
                 if let failureDescription = session.turnState.failureDescription {
                     StateCard(
@@ -314,6 +307,10 @@ private struct TranscriptBody: View {
                     )
                     .id("failure")
                 }
+
+                Color.clear
+                    .frame(height: 1)
+                    .id("transcript-end")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
@@ -334,22 +331,18 @@ private struct TranscriptBody: View {
 
     private var scrollAnchor: TranscriptScrollAnchor {
         TranscriptScrollAnchor(
-            lastMessageID: session.messages.last?.id,
-            lastMessageText: session.messages.last?.text,
-            thinkingText: session.turnState.thinkingText,
-            failureDescription: session.turnState.failureDescription
+            messages: session.messages,
+            turnState: session.turnState,
+            pendingApprovals: session.pendingApprovals,
+            activityItems: session.activityItems,
+            planState: session.planState,
+            aggregatedDiff: session.aggregatedDiff
         )
     }
 
     private func scrollToLatest(using proxy: ScrollViewProxy) {
-        if let lastMessageID = session.messages.last?.id {
-            withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(lastMessageID, anchor: .bottom)
-            }
-        } else if session.turnState.thinkingText.isEmpty == false {
-            withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo("thinking", anchor: .bottom)
-            }
+        withAnimation(.easeOut(duration: 0.2)) {
+            proxy.scrollTo("transcript-end", anchor: .bottom)
         }
     }
 }
@@ -380,6 +373,476 @@ private struct ConversationMessageBubble: View {
                 Spacer(minLength: 48)
             }
         }
+    }
+}
+
+private struct TurnDetailsStack: View {
+    let appModel: AppModel
+    let session: ThreadSession
+    let maxWidth: CGFloat
+
+    @State private var isReasoningExpanded: Bool
+
+    init(appModel: AppModel, session: ThreadSession, maxWidth: CGFloat) {
+        self.appModel = appModel
+        self.session = session
+        self.maxWidth = maxWidth
+        _isReasoningExpanded = State(initialValue: session.turnState.phase == .inProgress)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if session.turnState.thinkingText.isEmpty == false {
+                ReasoningSection(
+                    text: session.turnState.thinkingText,
+                    isExpanded: $isReasoningExpanded,
+                    maxWidth: maxWidth
+                )
+            }
+
+            if session.pendingApprovals.isEmpty == false {
+                TurnSectionCard(
+                    title: "Approvals",
+                    systemImage: "checkmark.shield",
+                    maxWidth: maxWidth,
+                    accessibilityIdentifier: "turn-approvals-section"
+                ) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(session.pendingApprovals) { approval in
+                            ApprovalCard(appModel: appModel, approval: approval)
+                        }
+                    }
+                }
+            }
+
+            if session.activityItems.isEmpty == false {
+                TurnSectionCard(
+                    title: "Activity",
+                    systemImage: "waveform.path.ecg",
+                    maxWidth: maxWidth,
+                    accessibilityIdentifier: "turn-activity-section"
+                ) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(session.activityItems) { activity in
+                            ActivityCard(activity: activity)
+                        }
+                    }
+                }
+            }
+
+            if let planState = session.planState,
+               planState.summary?.isEmpty == false || planState.steps.isEmpty == false {
+                PlanSection(planState: planState, maxWidth: maxWidth)
+            }
+
+            if let aggregatedDiff = session.aggregatedDiff,
+               aggregatedDiff.summary.isEmpty == false || aggregatedDiff.files.isEmpty == false {
+                DiffSection(aggregatedDiff: aggregatedDiff, maxWidth: maxWidth)
+            }
+        }
+    }
+}
+
+private struct ReasoningSection: View {
+    let text: String
+    @Binding var isExpanded: Bool
+    let maxWidth: CGFloat
+
+    var body: some View {
+        TurnSectionCard(
+            title: "Reasoning",
+            systemImage: "sparkles",
+            maxWidth: maxWidth,
+            accessibilityIdentifier: "turn-reasoning-section"
+        ) {
+            DisclosureGroup(isExpanded: $isExpanded) {
+                Text(text)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .padding(.top, 4)
+            } label: {
+                Text(isExpanded ? "Hide details" : "Show details")
+                    .font(.subheadline.weight(.medium))
+            }
+        }
+    }
+}
+
+private struct ApprovalCard: View {
+    let appModel: AppModel
+    let approval: ApprovalRequest
+
+    private var isResolving: Bool {
+        approval.pendingResolution != nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(approval.title)
+                        .font(.headline)
+
+                    if approval.detail.isEmpty == false {
+                        Text(approval.detail)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                if let riskLevel = approval.riskLevel {
+                    RiskBadge(riskLevel: riskLevel)
+                }
+            }
+
+            if let command = approval.command {
+                CommandContextView(command: command.command, workingDirectory: command.workingDirectory)
+            }
+
+            if approval.files.isEmpty == false {
+                FileSummaryList(files: approval.files)
+            }
+
+            HStack(spacing: 10) {
+                Button("Approve") {
+                    Task {
+                        _ = await appModel.resolveApproval(id: approval.id, resolution: .approved)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isResolving)
+                .accessibilityIdentifier("approval-\(approval.id)-approve-button")
+
+                Button("Decline") {
+                    Task {
+                        _ = await appModel.resolveApproval(id: approval.id, resolution: .declined)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(isResolving)
+                .accessibilityIdentifier("approval-\(approval.id)-decline-button")
+            }
+
+            if let pendingResolution = approval.pendingResolution {
+                Text(pendingResolution == .approved ? "Sending approval..." : "Sending decline...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+private struct ActivityCard: View {
+    let activity: ActivityItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(activity.title)
+                        .font(.headline)
+
+                    if let detail = activity.detail, detail.isEmpty == false {
+                        Text(detail)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                ActivityStatusBadge(status: activity.status)
+            }
+
+            if activity.command?.isEmpty == false || activity.workingDirectory != nil {
+                CommandContextView(command: activity.command ?? "", workingDirectory: activity.workingDirectory)
+            }
+
+            if activity.output.isEmpty == false {
+                Text(activity.output)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
+            if activity.files.isEmpty == false {
+                FileSummaryList(files: activity.files)
+            }
+
+            if let exitCode = activity.exitCode {
+                Text("Exit code: \(exitCode)")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(exitCode == 0 ? .green : .secondary)
+                    .monospacedDigit()
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+private struct PlanSection: View {
+    let planState: PlanState
+    let maxWidth: CGFloat
+
+    private var completedCount: Int {
+        planState.steps.filter { $0.status == .completed }.count
+    }
+
+    private var inProgressCount: Int {
+        planState.steps.filter { $0.status == .inProgress }.count
+    }
+
+    var body: some View {
+        TurnSectionCard(
+            title: "Plan",
+            systemImage: "list.bullet.clipboard",
+            maxWidth: maxWidth,
+            accessibilityIdentifier: "turn-plan-section"
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    if let summary = planState.summary, summary.isEmpty == false {
+                        Text(summary)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    PlanCountBadge(text: "\(completedCount)/\(planState.steps.count) done")
+
+                    if inProgressCount > 0 {
+                        PlanCountBadge(text: "\(inProgressCount) active")
+                    }
+                }
+
+                if planState.steps.isEmpty == false {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(planState.steps) { step in
+                            PlanStepRow(step: step)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct DiffSection: View {
+    let aggregatedDiff: AggregatedDiff
+    let maxWidth: CGFloat
+
+    private var totalAdditions: Int {
+        aggregatedDiff.files.reduce(0) { $0 + $1.additions }
+    }
+
+    private var totalDeletions: Int {
+        aggregatedDiff.files.reduce(0) { $0 + $1.deletions }
+    }
+
+    var body: some View {
+        TurnSectionCard(
+            title: "Turn Diff",
+            systemImage: "arrow.triangle.branch",
+            maxWidth: maxWidth,
+            accessibilityIdentifier: "turn-diff-section"
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    Text(aggregatedDiff.summary)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Spacer(minLength: 0)
+
+                    HStack(spacing: 8) {
+                        DiffCountBadge(value: totalAdditions, label: "+", color: .green)
+                        DiffCountBadge(value: totalDeletions, label: "-", color: .red)
+                    }
+                }
+
+                if aggregatedDiff.files.isEmpty == false {
+                    FileSummaryList(files: aggregatedDiff.files)
+                }
+            }
+        }
+    }
+}
+
+private struct TurnSectionCard<Content: View>: View {
+    let title: String
+    let systemImage: String
+    let maxWidth: CGFloat
+    let accessibilityIdentifier: String
+    let content: Content
+
+    init(
+        title: String,
+        systemImage: String,
+        maxWidth: CGFloat,
+        accessibilityIdentifier: String,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.maxWidth = maxWidth
+        self.accessibilityIdentifier = accessibilityIdentifier
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: systemImage)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            content
+        }
+        .padding(16)
+        .frame(maxWidth: maxWidth, alignment: .leading)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(accessibilityIdentifier)
+    }
+}
+
+private struct CommandContextView: View {
+    let command: String
+    let workingDirectory: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if command.isEmpty == false {
+                Text(command)
+                    .font(.system(.subheadline, design: .monospaced))
+                    .textSelection(.enabled)
+            }
+
+            if let workingDirectory, workingDirectory.isEmpty == false {
+                Text(workingDirectory)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.black.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct FileSummaryList: View {
+    let files: [DiffFileChange]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(files) { file in
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(file.path)
+                        .font(.system(.subheadline, design: .monospaced))
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+
+                    Spacer(minLength: 0)
+
+                    HStack(spacing: 8) {
+                        DiffCountBadge(value: file.additions, label: "+", color: .green)
+                        DiffCountBadge(value: file.deletions, label: "-", color: .red)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct PlanStepRow: View {
+    let step: PlanStep
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Circle()
+                .fill(step.status.tintColor)
+                .frame(width: 8, height: 8)
+                .padding(.top, 5)
+
+            Text(step.title)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+
+            Spacer(minLength: 0)
+
+            Text(step.status.label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(step.status.tintColor)
+        }
+    }
+}
+
+private struct ActivityStatusBadge: View {
+    let status: ActivityStatus
+
+    var body: some View {
+        Text(status.label)
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .foregroundStyle(status.tintColor)
+            .background(status.tintColor.opacity(0.14), in: Capsule())
+    }
+}
+
+private struct RiskBadge: View {
+    let riskLevel: ApprovalRiskLevel
+
+    var body: some View {
+        Text(riskLevel.label)
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .foregroundStyle(riskLevel.tintColor)
+            .background(riskLevel.tintColor.opacity(0.14), in: Capsule())
+    }
+}
+
+private struct PlanCountBadge: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .foregroundStyle(.secondary)
+            .background(Color.secondary.opacity(0.12), in: Capsule())
+    }
+}
+
+private struct DiffCountBadge: View {
+    let value: Int
+    let label: String
+    let color: Color
+
+    var body: some View {
+        Text("\(label)\(value)")
+            .font(.caption.weight(.semibold))
+            .monospacedDigit()
+            .foregroundStyle(color)
     }
 }
 
@@ -718,13 +1181,19 @@ private final class PreviewWorkspaceRuntime: WorkspaceConversationRuntime {
         controller.activeThreadSession?.cancelTurn()
         controller.setConnectionStatus(.ready)
     }
+
+    func resolveApproval(id: String, resolution: ApprovalResolution) async throws {
+        controller.activeThreadSession?.resolveApprovalRequest(id: id, resolution: resolution)
+    }
 }
 
 private struct TranscriptScrollAnchor: Equatable {
-    let lastMessageID: String?
-    let lastMessageText: String?
-    let thinkingText: String
-    let failureDescription: String?
+    let messages: [ConversationMessage]
+    let turnState: TurnState
+    let pendingApprovals: [ApprovalRequest]
+    let activityItems: [ActivityItem]
+    let planState: PlanState?
+    let aggregatedDiff: AggregatedDiff?
 }
 
 private struct TranscriptWidthPreferenceKey: PreferenceKey {
@@ -808,6 +1277,75 @@ private extension AuthState {
             return "Signed Out"
         case .signedIn(let accountDescription):
             return accountDescription
+        }
+    }
+}
+
+private extension ActivityStatus {
+    var label: String {
+        switch self {
+        case .running:
+            return "Running"
+        case .completed:
+            return "Completed"
+        case .failed:
+            return "Failed"
+        case .cancelled:
+            return "Cancelled"
+        }
+    }
+
+    var tintColor: Color {
+        switch self {
+        case .running:
+            return .blue
+        case .completed:
+            return .green
+        case .failed:
+            return .red
+        case .cancelled:
+            return .secondary
+        }
+    }
+}
+
+private extension ApprovalRiskLevel {
+    var label: String {
+        rawValue.capitalized
+    }
+
+    var tintColor: Color {
+        switch self {
+        case .low:
+            return .green
+        case .medium:
+            return .orange
+        case .high:
+            return .red
+        }
+    }
+}
+
+private extension PlanStepStatus {
+    var label: String {
+        switch self {
+        case .pending:
+            return "Pending"
+        case .inProgress:
+            return "In Progress"
+        case .completed:
+            return "Completed"
+        }
+    }
+
+    var tintColor: Color {
+        switch self {
+        case .pending:
+            return .secondary
+        case .inProgress:
+            return .orange
+        case .completed:
+            return .green
         }
     }
 }

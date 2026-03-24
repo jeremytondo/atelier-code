@@ -661,7 +661,20 @@ export async function executeBridgeCommand(
         return [];
       case "approval.resolve":
         await client.resolveApproval(command.payload.approvalID, command.payload);
-        return [];
+        return [
+          {
+            type: "approval.resolved",
+            timestamp: new Date().toISOString(),
+            provider: "codex",
+            requestID: command.id,
+            threadID: command.threadID,
+            turnID: command.turnID,
+            payload: {
+              approvalID: command.payload.approvalID,
+              resolution: command.payload.resolution,
+            },
+          },
+        ];
       case "account.read": {
         const result = await client.readAccount(command.id, command.payload);
         return buildAccountEvents(command.id, result);

@@ -11,6 +11,7 @@ import SwiftUI
 struct AtelierCodeApp: App {
     @State private var appModel: AppModel
 
+    @MainActor
     init() {
         _appModel = State(initialValue: AppBootstrap.makeAppModel())
     }

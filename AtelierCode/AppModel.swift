@@ -23,19 +23,23 @@ final class AppModel {
     @ObservationIgnored private var runtimeLifecycleTask: Task<Void, Never>?
 
     init(
-        preferencesStore: any AppPreferencesStore = UserDefaultsAppPreferencesStore(),
+        preferencesStore: (any AppPreferencesStore)? = nil,
         fileManager: FileManager = .default,
-        bridgeDiagnosticProvider: @escaping () -> StartupDiagnostic = { StartupDiagnostic.defaultBridgeDiagnostic() },
+        bridgeDiagnosticProvider: (() -> StartupDiagnostic)? = nil,
         now: @escaping () -> Date = Date.init,
-        runtimeFactory: @escaping @MainActor (WorkspaceController) -> any WorkspaceConversationRuntime = { WorkspaceBridgeRuntime(controller: $0) }
+        runtimeFactory: (@MainActor (WorkspaceController) -> any WorkspaceConversationRuntime)? = nil
     ) {
-        self.preferencesStore = preferencesStore
-        self.fileManager = fileManager
-        self.bridgeDiagnosticProvider = bridgeDiagnosticProvider
-        self.now = now
-        self.runtimeFactory = runtimeFactory
+        let resolvedPreferencesStore = preferencesStore ?? UserDefaultsAppPreferencesStore()
+        let resolvedBridgeDiagnosticProvider = bridgeDiagnosticProvider ?? { StartupDiagnostic.defaultBridgeDiagnostic() }
+        let resolvedRuntimeFactory = runtimeFactory ?? { WorkspaceBridgeRuntime(controller: $0) }
 
-        let loadedSnapshot = try? preferencesStore.loadSnapshot()
+        self.preferencesStore = resolvedPreferencesStore
+        self.fileManager = fileManager
+        self.bridgeDiagnosticProvider = resolvedBridgeDiagnosticProvider
+        self.now = now
+        self.runtimeFactory = resolvedRuntimeFactory
+
+        let loadedSnapshot = try? resolvedPreferencesStore.loadSnapshot()
         let normalizedRecentWorkspaces = Self.normalizeRecentWorkspaces(loadedSnapshot?.recentWorkspaces ?? [])
         let selectedPath = loadedSnapshot?.lastSelectedWorkspacePath.map(WorkspaceRecord.canonicalizedPath(for:))
         let codexOverridePath = loadedSnapshot?.codexPathOverride
@@ -45,7 +49,7 @@ final class AppModel {
         lastSelectedWorkspacePath = selectedPath
         codexPathOverride = codexOverridePath
         uiPreferences = preferences
-        startupDiagnostics = [bridgeDiagnosticProvider()]
+        startupDiagnostics = [resolvedBridgeDiagnosticProvider()]
         activeWorkspaceController = nil
 
         if let codexOverridePath {
@@ -62,7 +66,7 @@ final class AppModel {
                     )
                 let controller = WorkspaceController(workspace: restoredWorkspace)
                 activeWorkspaceController = controller
-                activeWorkspaceRuntime = runtimeFactory(controller)
+                activeWorkspaceRuntime = resolvedRuntimeFactory(controller)
                 startupDiagnostics.append(.restoredWorkspacePresent(restoredWorkspace))
             } else {
                 lastSelectedWorkspacePath = nil
@@ -215,6 +219,31 @@ final class AppModel {
         } catch {
             controller.setConnectionStatus(.error(message: error.localizedDescription))
             controller.activeThreadSession?.failTurn(error.localizedDescription)
+        }
+    }
+
+    @discardableResult
+    func resolveApproval(id: String, resolution: ApprovalResolution) async -> Bool {
+        guard let controller = activeWorkspaceController,
+              let session = controller.activeThreadSession,
+              session.beginApprovalResolution(id: id, resolution: resolution),
+              let runtime = activeWorkspaceRuntime else {
+            return false
+        }
+
+        do {
+            try await runtime.resolveApproval(id: id, resolution: resolution)
+            return true
+        } catch is CancellationError {
+            session.clearApprovalResolution(id: id)
+            return false
+        } catch {
+            session.clearApprovalResolution(id: id)
+            controller.setConnectionStatus(.error(message: error.localizedDescription))
+            if controller.activeThreadSession?.turnState.phase == .inProgress {
+                controller.activeThreadSession?.failTurn(error.localizedDescription)
+            }
+            return false
         }
     }
 

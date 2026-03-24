@@ -115,6 +115,36 @@ describe("executeBridgeCommand", () => {
     ]);
   });
 
+  test("emits an approval resolved event after forwarding an approval decision", async () => {
+    const client = new FakeCodexClient();
+
+    const events = await executeBridgeCommand(client, {
+      id: "req-approval",
+      type: "approval.resolve",
+      timestamp: new Date().toISOString(),
+      provider: "codex",
+      threadID: "thread-1",
+      turnID: "turn-1",
+      payload: {
+        approvalID: "approval-1",
+        resolution: "approved",
+      },
+    });
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "approval.resolved",
+        requestID: "req-approval",
+        threadID: "thread-1",
+        turnID: "turn-1",
+        payload: {
+          approvalID: "approval-1",
+          resolution: "approved",
+        },
+      }),
+    ]);
+  });
+
   test("preserves browser login handoff details in account login result events", async () => {
     const client = new FakeCodexClient();
 

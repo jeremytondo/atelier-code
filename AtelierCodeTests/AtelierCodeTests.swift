@@ -187,6 +187,83 @@ struct AppModelTests {
         #expect(appModel.activeWorkspaceController?.activeThreadSession?.turnState.phase == .cancelled)
     }
 
+    @Test func resolveApprovalForwardsDecisionToActiveRuntime() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "conversation-approval")
+
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
+        _ = await appModel.sendPrompt("Wait for approval")
+
+        let session = try #require(appModel.activeWorkspaceController?.activeThreadSession)
+        session.enqueueApprovalRequest(
+            ApprovalRequest(
+                id: "approval-1",
+                kind: .command,
+                title: "Approve command execution",
+                detail: "swift test",
+                command: ApprovalCommandContext(command: "swift test", workingDirectory: workspaceURL.path),
+                files: [],
+                riskLevel: .medium
+            )
+        )
+
+        let didResolve = await appModel.resolveApproval(id: "approval-1", resolution: .approved)
+
+        #expect(didResolve)
+        #expect(runtimeCoordinator.resolveApprovalCalls.count == 1)
+        #expect(runtimeCoordinator.resolveApprovalCalls.first?.0 == "approval-1")
+        #expect(runtimeCoordinator.resolveApprovalCalls.first?.1 == .approved)
+        #expect(session.pendingApprovals.isEmpty)
+    }
+
+    @Test func resolveApprovalIgnoresDuplicateInFlightDecision() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        runtimeCoordinator.shouldDelayApprovalResolution = true
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "conversation-approval-dedup")
+
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
+        _ = await appModel.sendPrompt("Wait for approval")
+
+        let session = try #require(appModel.activeWorkspaceController?.activeThreadSession)
+        session.enqueueApprovalRequest(
+            ApprovalRequest(
+                id: "approval-1",
+                kind: .command,
+                title: "Approve command execution",
+                detail: "swift test",
+                command: ApprovalCommandContext(command: "swift test", workingDirectory: workspaceURL.path),
+                files: [],
+                riskLevel: .medium
+            )
+        )
+
+        async let firstResult = appModel.resolveApproval(id: "approval-1", resolution: .approved)
+        try await waitUntil { session.pendingApprovals.first?.pendingResolution == .approved }
+        let secondResult = await appModel.resolveApproval(id: "approval-1", resolution: .declined)
+
+        runtimeCoordinator.releaseDelayedApprovalResolutions()
+        let firstDidResolve = await firstResult
+
+        #expect(firstDidResolve)
+        #expect(secondResult == false)
+        #expect(runtimeCoordinator.resolveApprovalCalls.count == 1)
+        #expect(runtimeCoordinator.resolveApprovalCalls.first?.1 == .approved)
+    }
+
     @Test func reselectingActiveWorkspaceKeepsCurrentConversationSession() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
@@ -348,8 +425,11 @@ private final class TestRuntimeCoordinator {
     var startTurnPrompts: [String] = []
     var startTurnConfigurations: [BridgeTurnStartConfiguration?] = []
     var cancelCount = 0
+    var resolveApprovalCalls: [(String, ApprovalResolution)] = []
     var shouldDelayTurnStart = false
+    var shouldDelayApprovalResolution = false
     private var pendingDelayedTurnStarts: [CheckedContinuation<Void, Never>] = []
+    private var pendingDelayedApprovalResolutions: [CheckedContinuation<Void, Never>] = []
 
     var pendingDelayedTurnStartCount: Int {
         pendingDelayedTurnStarts.count
@@ -362,6 +442,22 @@ private final class TestRuntimeCoordinator {
     func releaseDelayedTurnStarts() {
         let continuations = pendingDelayedTurnStarts
         pendingDelayedTurnStarts.removeAll()
+        continuations.forEach { $0.resume() }
+    }
+
+    func awaitDelayedApprovalResolutionIfNeeded() async {
+        guard shouldDelayApprovalResolution else {
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            pendingDelayedApprovalResolutions.append(continuation)
+        }
+    }
+
+    func releaseDelayedApprovalResolutions() {
+        let continuations = pendingDelayedApprovalResolutions
+        pendingDelayedApprovalResolutions.removeAll()
         continuations.forEach { $0.resume() }
     }
 }
@@ -422,6 +518,12 @@ private final class TestWorkspaceRuntime: WorkspaceConversationRuntime {
         controller.setAwaitingTurnStart(false)
         controller.activeThreadSession?.cancelTurn()
         controller.setConnectionStatus(.ready)
+    }
+
+    func resolveApproval(id: String, resolution: ApprovalResolution) async throws {
+        coordinator.resolveApprovalCalls.append((id, resolution))
+        await coordinator.awaitDelayedApprovalResolutionIfNeeded()
+        controller.activeThreadSession?.resolveApprovalRequest(id: id, resolution: resolution)
     }
 }
 
@@ -517,6 +619,10 @@ private final class LifecycleProbeRuntime: WorkspaceConversationRuntime {
         controller.setAwaitingTurnStart(false)
         controller.activeThreadSession?.cancelTurn()
         controller.setConnectionStatus(.ready)
+    }
+
+    func resolveApproval(id: String, resolution: ApprovalResolution) async throws {
+        controller.activeThreadSession?.resolveApprovalRequest(id: id, resolution: resolution)
     }
 }
 

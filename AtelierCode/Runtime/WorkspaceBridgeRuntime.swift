@@ -49,7 +49,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         case threadList
         case turnStart(prompt: String)
         case turnCancel
-        case approvalResolve
+        case approvalResolve(id: String)
         case accountRead
         case accountLogin
         case accountLogout
@@ -73,6 +73,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     private var receiveTask: Task<Void, Never>?
     private var pendingCommands: [String: PendingCommand] = [:]
     private var pendingThreadStarts: [String: CheckedContinuation<ThreadSession, Error>] = [:]
+    private var pendingApprovalResolutions: [String: CheckedContinuation<Void, Error>] = [:]
     private var abandonedThreadRequestIDs: Set<String> = []
     private var requestCounter = 0
     private var currentTurnID: String?
@@ -80,18 +81,25 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
 
     init(
         controller: WorkspaceController,
-        executableLocator: BridgeExecutableLocator = BridgeExecutableLocator(),
-        processLauncher: @escaping ProcessLauncher = { try DefaultBridgeProcessHandle(executableURL: $0) },
-        socketFactory: @escaping SocketFactory = { URLSessionBridgeSocketClient(url: $0) },
-        openURLAction: @escaping OpenURLAction = { NSWorkspace.shared.open($0) },
-        appVersion: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+        executableLocator: BridgeExecutableLocator? = nil,
+        processLauncher: ProcessLauncher? = nil,
+        socketFactory: SocketFactory? = nil,
+        openURLAction: OpenURLAction? = nil,
+        appVersion: String? = nil
     ) {
+        let resolvedExecutableLocator = executableLocator ?? BridgeExecutableLocator()
+        let resolvedProcessLauncher = processLauncher ?? { try DefaultBridgeProcessHandle(executableURL: $0) }
+        let resolvedSocketFactory = socketFactory ?? { URLSessionBridgeSocketClient(url: $0) }
+        let resolvedOpenURLAction = openURLAction ?? { NSWorkspace.shared.open($0) }
+        let resolvedAppVersion = appVersion
+            ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0")
+
         self.controller = controller
-        self.executableLocator = executableLocator
-        self.processLauncher = processLauncher
-        self.socketFactory = socketFactory
-        self.openURLAction = openURLAction
-        self.appVersion = appVersion
+        self.executableLocator = resolvedExecutableLocator
+        self.processLauncher = resolvedProcessLauncher
+        self.socketFactory = resolvedSocketFactory
+        self.openURLAction = resolvedOpenURLAction
+        self.appVersion = resolvedAppVersion
     }
 
     func start() async throws {
@@ -155,11 +163,17 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         pendingCommands.removeAll()
         let pendingThreadStarts = self.pendingThreadStarts
         self.pendingThreadStarts.removeAll()
+        let pendingApprovalResolutions = self.pendingApprovalResolutions
+        self.pendingApprovalResolutions.removeAll()
         abandonedThreadRequestIDs.removeAll()
         currentTurnID = nil
         controller.setAwaitingTurnStart(false)
 
         for continuation in pendingThreadStarts.values {
+            continuation.resume(throwing: CancellationError())
+        }
+
+        for continuation in pendingApprovalResolutions.values {
             continuation.resume(throwing: CancellationError())
         }
 
@@ -309,26 +323,45 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         )
     }
 
+    func resolveApproval(id: String, resolution: ApprovalResolution) async throws {
+        try await resolveApproval(id: id, resolution: resolution, rememberDecision: false)
+    }
+
     func resolveApproval(id: String, resolution: ApprovalResolution, rememberDecision: Bool = false) async throws {
         guard let session = controller.activeThreadSession else {
             throw WorkspaceBridgeRuntimeError.missingActiveThread
         }
 
         let requestID = nextRequestID(prefix: "approval-resolve")
-        pendingCommands[requestID] = .approvalResolve
-        try await sendCommand(
-            id: requestID,
-            type: .approvalResolve,
-            threadID: session.threadID,
-            turnID: currentTurnID,
-            payload: BridgeApprovalResolvePayload(
-                approvalID: id,
-                resolution: resolution.bridgeValue,
-                rememberDecision: rememberDecision ? true : nil
-            )
-        )
-        pendingCommands.removeValue(forKey: requestID)
-        session.resolveApprovalRequest(id: id, resolution: resolution)
+        pendingCommands[requestID] = .approvalResolve(id: id)
+
+        try await withCheckedThrowingContinuation { continuation in
+            pendingApprovalResolutions[requestID] = continuation
+
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+
+                do {
+                    try await self.sendCommand(
+                        id: requestID,
+                        type: .approvalResolve,
+                        threadID: session.threadID,
+                        turnID: currentTurnID,
+                        payload: BridgeApprovalResolvePayload(
+                            approvalID: id,
+                            resolution: resolution.bridgeValue,
+                            rememberDecision: rememberDecision ? true : nil
+                        )
+                    )
+                } catch {
+                    self.pendingCommands.removeValue(forKey: requestID)
+                    self.pendingApprovalResolutions.removeValue(forKey: requestID)?.resume(throwing: error)
+                }
+            }
+        }
     }
 
     private func runReceiveLoop() async {
@@ -380,7 +413,9 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 id: event.activityID ?? UUID().uuidString,
                 kind: .tool,
                 title: payload.title,
-                detail: payload.detail ?? payload.command ?? ""
+                detail: payload.detail,
+                command: payload.command,
+                workingDirectory: payload.workingDirectory
             )
         case .toolOutput(let payload):
             guard let session = session(for: event.threadID),
@@ -398,7 +433,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             session.completeActivity(
                 id: activityID,
                 status: payload.status.activityStatus,
-                detail: payload.detail
+                detail: payload.detail,
+                exitCode: payload.exitCode
             )
         case .fileChangeStarted(let payload):
             guard let session = session(for: event.threadID) else {
@@ -409,7 +445,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 id: event.activityID ?? UUID().uuidString,
                 kind: .fileChange,
                 title: payload.title,
-                detail: payload.detail ?? payload.files.map(\.path).joined(separator: ", ")
+                detail: payload.detail,
+                files: payload.files.map { $0.toDiffFileChange() }
             )
         case .fileChangeCompleted(let payload):
             guard let session = session(for: event.threadID),
@@ -420,7 +457,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             session.completeActivity(
                 id: activityID,
                 status: payload.status.activityStatus,
-                detail: payload.detail
+                detail: payload.detail,
+                files: payload.files.map { $0.toDiffFileChange() }
             )
         case .approvalRequested(let payload):
             guard let session = session(for: event.threadID) else {
@@ -428,6 +466,20 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             }
 
             session.enqueueApprovalRequest(payload.toApprovalRequest())
+        case .approvalResolved(let payload):
+            if let requestID = event.requestID {
+                pendingCommands.removeValue(forKey: requestID)
+                pendingApprovalResolutions.removeValue(forKey: requestID)?.resume()
+            }
+
+            guard let session = session(for: event.threadID) else {
+                return
+            }
+
+            session.resolveApprovalRequest(
+                id: payload.approvalID,
+                resolution: payload.resolution.approvalResolution
+            )
         case .diffUpdated(let payload):
             guard let session = session(for: event.threadID) else {
                 return
@@ -617,6 +669,11 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 controller.setAwaitingTurnStart(false)
                 controller.activeThreadSession?.failTurn(payload.message)
                 currentTurnID = nil
+            case .approvalResolve(let approvalID):
+                controller.activeThreadSession?.clearApprovalResolution(id: approvalID)
+                pendingApprovalResolutions.removeValue(forKey: requestID)?.resume(
+                    throwing: RuntimeBridgeError.requestFailed(message: payload.message)
+                )
             case .accountLogin:
                 controller.clearPendingLogin()
             default:
@@ -770,6 +827,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         pendingCommands.removeAll()
         let pendingThreadStarts = self.pendingThreadStarts
         self.pendingThreadStarts.removeAll()
+        let pendingApprovalResolutions = self.pendingApprovalResolutions
+        self.pendingApprovalResolutions.removeAll()
         abandonedThreadRequestIDs.removeAll()
         currentTurnID = nil
         controller.setBridgeLifecycleState(.idle)
@@ -777,6 +836,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         controller.setConnectionStatus(.error(message: message))
 
         for continuation in pendingThreadStarts.values {
+            continuation.resume(throwing: RuntimeBridgeError.requestFailed(message: message))
+        }
+
+        for continuation in pendingApprovalResolutions.values {
             continuation.resume(throwing: RuntimeBridgeError.requestFailed(message: message))
         }
 

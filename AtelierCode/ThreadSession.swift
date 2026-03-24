@@ -17,7 +17,7 @@ final class ThreadSession {
         threadID: String,
         title: String,
         messages: [ConversationMessage] = [],
-        turnState: TurnState = TurnState(),
+        turnState: TurnState? = nil,
         pendingApprovals: [ApprovalRequest] = [],
         activityItems: [ActivityItem] = [],
         planState: PlanState? = nil,
@@ -26,7 +26,7 @@ final class ThreadSession {
         self.threadID = threadID
         self.title = title
         self.messages = messages
-        self.turnState = turnState
+        self.turnState = turnState ?? TurnState()
         self.pendingApprovals = pendingApprovals
         self.activityItems = activityItems
         self.planState = planState
@@ -98,11 +98,23 @@ final class ThreadSession {
         turnState.thinkingText += delta
     }
 
-    func startActivity(id: String, kind: ActivityKind, title: String, detail: String = "") {
+    func startActivity(
+        id: String,
+        kind: ActivityKind,
+        title: String,
+        detail: String? = nil,
+        command: String? = nil,
+        workingDirectory: String? = nil,
+        files: [DiffFileChange] = []
+    ) {
         if let index = activityItems.firstIndex(where: { $0.id == id }) {
             activityItems[index].title = title
             activityItems[index].detail = detail
+            activityItems[index].command = command
+            activityItems[index].workingDirectory = workingDirectory
+            activityItems[index].files = files
             activityItems[index].status = .running
+            activityItems[index].exitCode = nil
             return
         }
 
@@ -112,12 +124,17 @@ final class ThreadSession {
                 kind: kind,
                 title: title,
                 detail: detail,
-                status: .running
+                command: command,
+                workingDirectory: workingDirectory,
+                output: "",
+                files: files,
+                status: .running,
+                exitCode: nil
             )
         )
     }
 
-    func updateActivity(id: String, detail: String) {
+    func updateActivity(id: String, detail: String?) {
         guard let index = activityItems.firstIndex(where: { $0.id == id }) else {
             return
         }
@@ -131,14 +148,20 @@ final class ThreadSession {
             return
         }
 
-        if activityItems[index].detail.isEmpty {
-            activityItems[index].detail = delta
+        if activityItems[index].output.isEmpty {
+            activityItems[index].output = delta
         } else {
-            activityItems[index].detail += delta
+            activityItems[index].output += delta
         }
     }
 
-    func completeActivity(id: String, status: ActivityStatus = .completed, detail: String? = nil) {
+    func completeActivity(
+        id: String,
+        status: ActivityStatus = .completed,
+        detail: String? = nil,
+        files: [DiffFileChange]? = nil,
+        exitCode: Int? = nil
+    ) {
         guard let index = activityItems.firstIndex(where: { $0.id == id }) else {
             return
         }
@@ -148,6 +171,12 @@ final class ThreadSession {
         if let detail {
             activityItems[index].detail = detail
         }
+
+        if let files {
+            activityItems[index].files = files
+        }
+
+        activityItems[index].exitCode = exitCode
     }
 
     func enqueueApprovalRequest(_ request: ApprovalRequest) {
@@ -156,6 +185,24 @@ final class ThreadSession {
         }
 
         pendingApprovals.append(request)
+    }
+
+    func beginApprovalResolution(id: String, resolution: ApprovalResolution) -> Bool {
+        guard let index = pendingApprovals.firstIndex(where: { $0.id == id }),
+              pendingApprovals[index].pendingResolution == nil else {
+            return false
+        }
+
+        pendingApprovals[index].pendingResolution = resolution
+        return true
+    }
+
+    func clearApprovalResolution(id: String) {
+        guard let index = pendingApprovals.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        pendingApprovals[index].pendingResolution = nil
     }
 
     func resolveApprovalRequest(id: String, resolution _: ApprovalResolution) {
@@ -177,15 +224,13 @@ final class ThreadSession {
     func completeTurn() {
         turnState.phase = .completed
         pendingApprovals.removeAll()
+        markRunningActivities(as: .completed)
     }
 
     func cancelTurn() {
         turnState.phase = .cancelled
         pendingApprovals.removeAll()
-
-        for index in activityItems.indices where activityItems[index].status == .running {
-            activityItems[index].status = .cancelled
-        }
+        markRunningActivities(as: .cancelled)
 
         planState = nil
         aggregatedDiff = nil
@@ -195,10 +240,7 @@ final class ThreadSession {
         turnState.phase = .failed
         turnState.failureDescription = message
         pendingApprovals.removeAll()
-
-        for index in activityItems.indices where activityItems[index].status == .running {
-            activityItems[index].status = .failed
-        }
+        markRunningActivities(as: .failed)
 
         planState = nil
         aggregatedDiff = nil
@@ -210,5 +252,11 @@ final class ThreadSession {
         activityItems.removeAll()
         planState = nil
         aggregatedDiff = nil
+    }
+
+    private func markRunningActivities(as status: ActivityStatus) {
+        for index in activityItems.indices where activityItems[index].status == .running {
+            activityItems[index].status = status
+        }
     }
 }

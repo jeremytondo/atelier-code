@@ -33,6 +33,7 @@ private struct UITestScenario {
         case recentSelection = "recent-selection"
         case ready
         case retry
+        case phase2
     }
 
     let kind: Kind
@@ -138,6 +139,79 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
         controller.setAwaitingTurnStart(false)
         controller.setConnectionStatus(.streaming)
 
+        if coordinator.scenario == .phase2 {
+            let changedFiles = [
+                DiffFileChange(id: "phase2-content", path: "AtelierCode/ContentView.swift", additions: 24, deletions: 8),
+                DiffFileChange(id: "phase2-session", path: "AtelierCode/ThreadSession.swift", additions: 18, deletions: 4)
+            ]
+
+            try await Task.sleep(nanoseconds: 30_000_000)
+            session.appendAssistantTextDelta("I grouped the current turn details under the transcript.")
+            session.appendThinkingDelta("Inspecting activity, approvals, plan state, and diff summaries for the active turn.")
+            session.startActivity(
+                id: "phase2-tool",
+                kind: .tool,
+                title: "Run tests",
+                detail: "Checking the session and runtime wiring.",
+                command: "swift test --filter ThreadSessionTests",
+                workingDirectory: controller.workspace.canonicalPath
+            )
+            session.appendActivityOutput(
+                id: "phase2-tool",
+                delta: "Building AtelierCode...\nRunning ThreadSessionTests...\n"
+            )
+            session.completeActivity(
+                id: "phase2-tool",
+                status: .completed,
+                detail: "ThreadSessionTests finished successfully.",
+                exitCode: 0
+            )
+            session.startActivity(
+                id: "phase2-files",
+                kind: .fileChange,
+                title: "2 files changed",
+                detail: "Preparing the phase 2 UI update.",
+                files: changedFiles
+            )
+            session.completeActivity(
+                id: "phase2-files",
+                status: .completed,
+                detail: "Applied the current patch set.",
+                files: changedFiles
+            )
+            session.replacePlanState(
+                PlanState(
+                    summary: "Finish the grouped turn inspection UI.",
+                    steps: [
+                        PlanStep(id: "phase2-step-1", title: "Preserve structured activity data", status: .completed),
+                        PlanStep(id: "phase2-step-2", title: "Render grouped turn sections", status: .inProgress),
+                        PlanStep(id: "phase2-step-3", title: "Verify inline approvals in UI tests", status: .pending)
+                    ]
+                )
+            )
+            session.replaceAggregatedDiff(
+                AggregatedDiff(
+                    summary: "2 files changed",
+                    files: changedFiles
+                )
+            )
+            session.enqueueApprovalRequest(
+                ApprovalRequest(
+                    id: "phase2-approval",
+                    kind: .command,
+                    title: "Approve command execution",
+                    detail: "The harness is waiting for an inline decision before wrapping up the turn.",
+                    command: ApprovalCommandContext(
+                        command: "xcodebuild test -scheme AtelierCode",
+                        workingDirectory: controller.workspace.canonicalPath
+                    ),
+                    files: changedFiles,
+                    riskLevel: .medium
+                )
+            )
+            return
+        }
+
         try await Task.sleep(nanoseconds: 40_000_000)
         session.appendAssistantTextDelta("Working through the request")
         try await Task.sleep(nanoseconds: 40_000_000)
@@ -150,6 +224,12 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
         controller.setConnectionStatus(.cancelling)
         controller.setAwaitingTurnStart(false)
         controller.activeThreadSession?.cancelTurn()
+        controller.setConnectionStatus(.ready)
+    }
+
+    func resolveApproval(id: String, resolution: ApprovalResolution) async throws {
+        controller.activeThreadSession?.resolveApprovalRequest(id: id, resolution: resolution)
+        controller.activeThreadSession?.completeTurn()
         controller.setConnectionStatus(.ready)
     }
 }

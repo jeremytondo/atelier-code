@@ -48,6 +48,57 @@ final class AtelierCodeUITests: XCTestCase {
 
         XCTAssertTrue(app.staticTexts["Build the conversation MVP"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Working through the request in the UI test harness."].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Reasoning"].exists)
+        XCTAssertFalse(app.staticTexts["Approvals"].exists)
+        XCTAssertFalse(app.staticTexts["Activity"].exists)
+    }
+
+    func testPhase2TurnShowsGroupedSectionsAndApproveRemovesApproval() throws {
+        let app = try makeApp(scenario: "phase2", workspaceName: "Phase2ApproveWorkspace")
+        app.launch()
+
+        let composer = app.textViews["conversation-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.click()
+        composer.typeText("Show the grouped turn details")
+
+        app.buttons["conversation-send-button"].click()
+        app.scrollViews.firstMatch.swipeUp()
+
+        XCTAssertTrue(app.buttons["Approve"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Approvals"].exists)
+        XCTAssertTrue(app.staticTexts["Activity"].exists)
+        XCTAssertTrue(app.staticTexts["Plan"].exists)
+        XCTAssertTrue(app.staticTexts["Turn Diff"].exists)
+        XCTAssertTrue(app.buttons["Approve"].exists)
+
+        app.buttons["Approve"].click()
+
+        XCTAssertFalse(app.staticTexts["Approvals"].waitForExistence(timeout: 1))
+        XCTAssertTrue(app.staticTexts["Activity"].exists)
+        XCTAssertTrue(app.staticTexts["Turn Diff"].exists)
+    }
+
+    func testPhase2TurnDeclineRemovesApprovalAndKeepsTurnDetailsVisible() throws {
+        let app = try makeApp(scenario: "phase2", workspaceName: "Phase2DeclineWorkspace")
+        app.launch()
+
+        let composer = app.textViews["conversation-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.click()
+        composer.typeText("Decline the pending approval")
+
+        app.buttons["conversation-send-button"].click()
+        app.scrollViews.firstMatch.swipeUp()
+
+        XCTAssertTrue(app.buttons["Decline"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Decline"].exists)
+
+        app.buttons["Decline"].click()
+
+        XCTAssertFalse(app.staticTexts["Approvals"].waitForExistence(timeout: 1))
+        XCTAssertTrue(app.staticTexts["Reasoning"].exists)
+        XCTAssertTrue(app.staticTexts["Plan"].exists)
     }
 
     func testRetryRecoversFromConnectionError() throws {
