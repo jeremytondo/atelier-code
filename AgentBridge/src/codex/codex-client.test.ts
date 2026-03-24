@@ -109,6 +109,9 @@ describe("CodexClient", () => {
         sandboxPolicy: "workspace-write",
         reasoningEffort: "high",
         summaryMode: "concise",
+        environment: {
+          FOO: "bar",
+        },
       },
     });
     await client.cancelTurn("req-cancel", "thread-1", "turn-1");
@@ -153,6 +156,9 @@ describe("CodexClient", () => {
           },
           effort: "high",
           summary: "concise",
+          env: {
+            FOO: "bar",
+          },
         },
       },
       {
@@ -181,6 +187,34 @@ describe("CodexClient", () => {
         },
       },
     ]);
+  });
+
+  test("maps archive include filter to an omitted Codex archived param", async () => {
+    const transport = new FakeTransport([
+      { userAgent: "Codex/Test" },
+      {
+        data: [],
+        nextCursor: null,
+      },
+    ]);
+    const client = new CodexClient(transport);
+
+    await client.connect();
+    await client.listThreads("req-list", {
+      workspacePath: "/tmp/project",
+      archived: "include",
+    });
+
+    expect(transport.sent[1]).toEqual({
+      id: "req-list",
+      method: "thread/list",
+      params: {
+        cursor: undefined,
+        limit: undefined,
+        archived: undefined,
+        cwd: "/tmp/project",
+      },
+    });
   });
 });
 

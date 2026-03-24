@@ -81,6 +81,100 @@ struct WorkspaceBridgeRuntimeTests {
         #expect(controller.authState == .signedIn(accountDescription: "chatgpt (pro)"))
     }
 
+    @Test func signedOutAuthClearsRateLimitsAndAccountCommandEntries() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-signed-out"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4545)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_in", displayName: "chatgpt (pro)"),
+            rateLimitUpdatedJSON(requestID: "ateliercode-account-read-2"),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = WorkspaceBridgeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        await settle()
+
+        #expect(controller.rateLimitState?.buckets.count == 1)
+        #expect(pendingCommandCount(in: runtime) == 0)
+
+        try await runtime.refreshAccount()
+        #expect(pendingCommandCount(in: runtime) == 1)
+        socketClient.enqueue(authChangedJSON(requestID: "ateliercode-account-read-4", state: "signed_out", displayName: nil))
+        await settle()
+
+        #expect(controller.authState == .signedOut)
+        #expect(controller.rateLimitState == nil)
+        #expect(pendingCommandCount(in: runtime) == 0)
+
+        try await runtime.logout()
+        #expect(pendingCommandCount(in: runtime) == 1)
+        socketClient.enqueue(authChangedJSON(requestID: "ateliercode-account-logout-5", state: "signed_out", displayName: nil))
+        await settle()
+
+        #expect(controller.rateLimitState == nil)
+        #expect(pendingCommandCount(in: runtime) == 0)
+    }
+
+    @Test func successfulCancelAndApprovalFlowsDrainPendingCommands() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-pending-cleanup"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4646)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = WorkspaceBridgeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        await settle()
+
+        let session = controller.openThread(id: "thread-1", title: "Thread")
+        session.enqueueApprovalRequest(
+            ApprovalRequest(
+                id: "approval-1",
+                kind: .generic,
+                title: "Approve",
+                detail: "Please approve"
+            )
+        )
+
+        try await runtime.startTurn(prompt: "Ship it")
+        #expect(pendingCommandCount(in: runtime) == 1)
+        socketClient.enqueue(turnStartedJSON(requestID: "ateliercode-turn-start-4", threadID: "thread-1", turnID: "turn-1"))
+        await settle()
+
+        #expect(pendingCommandCount(in: runtime) == 0)
+
+        try await runtime.cancelTurn()
+        #expect(pendingCommandCount(in: runtime) == 1)
+        socketClient.enqueue(turnCompletedJSON(threadID: "thread-1", turnID: "turn-1", status: "cancelled"))
+        await settle()
+
+        #expect(pendingCommandCount(in: runtime) == 0)
+
+        try await runtime.resolveApproval(id: "approval-1", resolution: .approved)
+        await settle()
+
+        #expect(pendingCommandCount(in: runtime) == 0)
+    }
+
     @Test func unexpectedBridgeExitMarksConnectionErrorAndFailsInFlightTurn() async throws {
         let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-exit"), lastOpenedAt: .now)
         let controller = WorkspaceController(workspace: workspace)
@@ -235,6 +329,26 @@ private func accountLoginResultJSON(requestID: String, authURL: String, loginID:
     """
     {"type":"account.login.result","timestamp":"2026-03-24T10:00:05Z","requestID":"\(requestID)","payload":{"method":"chatgpt","authURL":"\(authURL)","loginID":"\(loginID)"}}
     """
+}
+
+private func turnStartedJSON(requestID: String, threadID: String, turnID: String) -> String {
+    """
+    {"type":"turn.started","timestamp":"2026-03-24T10:00:06Z","requestID":"\(requestID)","threadID":"\(threadID)","turnID":"\(turnID)","payload":{"status":"in_progress"}}
+    """
+}
+
+private func turnCompletedJSON(threadID: String, turnID: String, status: String) -> String {
+    """
+    {"type":"turn.completed","timestamp":"2026-03-24T10:00:07Z","threadID":"\(threadID)","turnID":"\(turnID)","payload":{"status":"\(status)","detail":null}}
+    """
+}
+
+private func pendingCommandCount(in runtime: WorkspaceBridgeRuntime) -> Int {
+    guard let pendingCommands = Mirror(reflecting: runtime).children.first(where: { $0.label == "pendingCommands" })?.value else {
+        return 0
+    }
+
+    return Mirror(reflecting: pendingCommands).children.count
 }
 
 private func sentMessageTypes(from messages: [String]) -> [String] {

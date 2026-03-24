@@ -278,6 +278,7 @@ final class WorkspaceBridgeRuntime {
                 rememberDecision: rememberDecision ? true : nil
             )
         )
+        pendingCommands.removeValue(forKey: requestID)
         session.resolveApprovalRequest(id: id, resolution: resolution)
     }
 
@@ -415,7 +416,7 @@ final class WorkspaceBridgeRuntime {
 
             handleAccountLoginResult(payload)
         case .authChanged(let payload):
-            handleAuthChanged(payload)
+            handleAuthChanged(payload, requestID: event.requestID)
         case .rateLimitUpdated(let payload):
             controller.setRateLimitState(
                 RateLimitState(
@@ -478,6 +479,16 @@ final class WorkspaceBridgeRuntime {
             return
         }
 
+        if payload.status == .cancelled || payload.status == .interrupted {
+            clearPendingCommands { command in
+                if case .turnCancel = command {
+                    return true
+                }
+
+                return false
+            }
+        }
+
         if currentTurnID == event.turnID {
             currentTurnID = nil
         }
@@ -512,13 +523,18 @@ final class WorkspaceBridgeRuntime {
         openURLAction(authURL)
     }
 
-    private func handleAuthChanged(_ payload: BridgeAuthChangedPayload) {
+    private func handleAuthChanged(_ payload: BridgeAuthChangedPayload, requestID: String?) {
+        if let requestID {
+            pendingCommands.removeValue(forKey: requestID)
+        }
+
         switch payload.state {
         case .unknown:
             controller.setAuthState(.unknown)
         case .signedOut:
             controller.setAuthState(.signedOut)
             controller.clearPendingLogin()
+            controller.setRateLimitState(nil)
         case .signedIn:
             controller.setAuthState(.signedIn(accountDescription: payload.account?.displayName ?? "Signed In"))
             controller.clearPendingLogin()
@@ -693,6 +709,12 @@ final class WorkspaceBridgeRuntime {
     private func nextRequestID(prefix: String) -> String {
         requestCounter += 1
         return "ateliercode-\(prefix)-\(requestCounter)"
+    }
+
+    private func clearPendingCommands(where shouldRemove: (PendingCommand) -> Bool) {
+        pendingCommands = pendingCommands.filter { _, command in
+            shouldRemove(command) == false
+        }
     }
 
     private static func timestamp() -> String {

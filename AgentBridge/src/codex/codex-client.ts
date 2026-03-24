@@ -236,6 +236,7 @@ export class CodexClient implements CodexClientAdapter {
         sandboxPolicy: mapSandboxPolicy(configuration.sandboxPolicy, configuration.cwd),
         effort: mapReasoningEffort(configuration.reasoningEffort),
         summary: mapReasoningSummary(configuration.summaryMode),
+        env: configuration.environment,
       },
     });
 
@@ -347,7 +348,7 @@ function mapArchiveFilter(filter: ThreadArchiveFilter | undefined): boolean | un
       return false;
     case "include":
     case undefined:
-      return false;
+      return undefined;
   }
 }
 
