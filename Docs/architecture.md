@@ -36,523 +36,308 @@ The goal is a UI that matches the polish of the Xcode Agent integration but is d
 
 ---
 
-## Architectural Approach: Native SDK Observer Model
+## Architectural Approach
 
-### The Core Decision
+### Two-Process Architecture: Native App + Provider Bridge
 
-Agent UI adopts a **native SDK observer model** rather than an Agent Client Protocol (ACP) host model. This is the same architectural pattern used by T3 Code and similar agent wrapper applications.
+Agent UI is split into two processes with a clear responsibility boundary:
 
-In this model:
+1. **Agent UI (SwiftUI)** — The native macOS application. Owns all product logic, state management, UI presentation, approval decisions, workspace/thread management, and settings.
+2. **Provider Bridge (Bun/TypeScript)** — A thin, versioned translation layer. Owns spawning CLI agent processes, parsing their native event streams, normalizing events into a stable app-facing protocol, and relaying approval requests and responses.
 
-- The AI agent runs as an autonomous process that directly reads files, writes files, and executes terminal commands on its own.
-- Agent UI spawns the agent, subscribes to its structured event stream, and presents the agent's activity in the UI.
-- When the agent needs user approval (e.g., before running a command or editing a file), it emits a structured approval request. Agent UI presents this as a native UI prompt. The user's decision is forwarded back to the agent, and the agent executes (or skips) the action itself.
-- Agent UI never reads files, writes files, or runs terminal commands on behalf of the agent.
+### Why Two Processes
 
-### Why This Approach
+**Protocol volatility.** The Codex App Server, Claude Agent SDK, and Gemini CLI are all actively evolving. When a provider ships a breaking change, updating the bridge is a lightweight operation that does not require rebuilding and redistributing the Mac app. The Swift app speaks a stable contract that we define; the bridge absorbs provider churn.
 
-The alternative — implementing an ACP host — requires the application to build and maintain a full workspace runtime: process management for agent-requested terminals, a file system access layer with workspace sandboxing and path resolution, and a permission-gated execution pipeline. This is substantial infrastructure, and it duplicates functionality that every target CLI tool already implements natively.
+**Remote support.** When Agent UI eventually supports remote codebases, the bridge runs on the remote machine alongside the agent and the code. The Swift app connects to the bridge over the network instead of a local socket. The bridge already knows how to spawn agents and stream normalized events — the only thing that changes is the transport. Without this separation, remote support would require either proxying raw agent stdio over the network or reimplementing the adapter layer twice.
 
-The observer model eliminates that entire layer. The CLI tools already know how to interact with the file system and run commands. Agent UI's responsibility is to present what the agent is doing, give the user control over approval decisions, and provide workspace and session management. This aligns directly with the product vision of being a polished UI layer rather than a code execution engine.
+**Ecosystem alignment.** Every agent SDK and adapter in this space is TypeScript. The Codex App Server generates TypeScript schemas. The Claude Agent SDK is TypeScript. Writing the bridge in TypeScript (via Bun) means protocol updates often involve pulling in updated types directly rather than hand-translating definitions across languages.
 
-### Comparison with ACP Host Model
+### Responsibility Boundary
 
-| Concern | ACP Host Model | Native SDK Observer Model |
-|---|---|---|
-| File reads | App reads files and returns content to agent | Agent reads files directly; app is notified |
-| File writes | App writes files on agent's behalf | Agent writes files directly; app is notified |
-| Terminal execution | App spawns processes and streams output to agent | Agent spawns processes directly; app observes |
-| Permission control | App can deny and prevent execution | App can deny; agent respects the decision and skips execution |
-| Adding a new provider | Automatic if provider speaks ACP | Requires a new adapter |
-| Infrastructure required | Protocol client + workspace runtime | Protocol client only |
-| Remote support | Requires proxying all execution over network | Run agent on remote machine; stream events to app |
+This is the most important architectural decision in the system. The bridge must stay thin. If product logic migrates into the bridge, the app becomes harder to develop, debug, and reason about.
+
+**The Swift app owns:**
+
+- All UI presentation and interaction.
+- Session model and observable state.
+- Transcript history and conversation rendering.
+- Approval decision UI and policy (accept, decline, workspace-scoped saved rules).
+- Thread and workspace selection, listing, and navigation.
+- Settings and preferences.
+- Connection lifecycle to the bridge (spawn, restart, reconnect).
+- All product-level logic and feature behavior.
+
+**The bridge owns:**
+
+- Spawning and managing CLI agent processes.
+- Parsing each provider's native event stream (Codex App Server JSONL, Claude Agent SDK events, etc.).
+- Normalizing provider events into the stable bridge protocol.
+- Relaying approval requests from agents to the app and approval responses from the app to agents.
+- Executable discovery and compatibility checks for each provider.
+- Health and version reporting.
+- Eventually, accepting remote connections instead of only local ones.
+
+**The bridge does NOT own:**
+
+- Approval policy or auto-approval logic. It forwards requests and relays decisions.
+- Thread management state. It relays thread operations to the provider and returns results.
+- Transcript persistence or history beyond what the provider handles natively.
+- Any UI-state assumptions or product behavior.
+- Settings or configuration beyond provider connection details.
+
+### Observer Model
+
+Both processes together implement an observer model for agent interaction:
+
+- The AI agent runs autonomously — it reads files, writes files, and executes terminal commands on its own.
+- The bridge observes the agent's structured event stream and normalizes it for the app.
+- When the agent needs user approval, the bridge relays the request to the app, the app presents it to the user, and the user's decision flows back through the bridge to the agent.
+- Neither the app nor the bridge ever reads files, writes files, or runs terminal commands on behalf of the agent.
+
+---
+
+## Bridge Protocol
+
+The bridge protocol is the stable contract between the Swift app and the provider bridge. It is versioned independently from both the app and the providers.
+
+### Transport
+
+Local: WebSocket or Unix domain socket between the SwiftUI app and the locally-spawned bridge process.
+
+Remote (future): The same WebSocket protocol over a network connection to a bridge running on a remote machine.
+
+### Handshake
+
+On connection, the app and bridge exchange version information:
+
+```json
+// App -> Bridge
+{ "type": "hello", "appVersion": "1.0.0", "protocolVersion": 1 }
+
+// Bridge -> App
+{ "type": "welcome", "bridgeVersion": "1.0.0", "protocolVersion": 1, "providers": ["codex"] }
+```
+
+If protocol versions are incompatible, the app surfaces a clear error with update instructions.
+
+### Message Categories
+
+All messages are JSON, newline-delimited.
+
+**App -> Bridge (commands):**
+
+- `provider.start` — Start a provider session for a workspace.
+- `provider.stop` — Stop a provider session.
+- `thread.start` — Create a new thread.
+- `thread.resume` — Resume an existing thread.
+- `thread.list` — List threads (paginated).
+- `thread.fork` — Fork a thread.
+- `thread.archive` / `thread.unarchive` — Archive management.
+- `thread.rollback` — Undo recent turns.
+- `thread.read` — Read thread data without resuming.
+- `turn.start` — Send a user prompt.
+- `turn.cancel` — Cancel an in-flight turn.
+- `approval.resolve` — Accept or decline an approval request.
+- `account.read` — Check auth state.
+- `account.login` — Initiate login.
+- `account.logout` — Sign out.
+- `skills.list` — List available skills.
+- `review.start` — Start a code review.
+- `command.exec` — Run a standalone command.
+
+**Bridge -> App (events):**
+
+- `message.delta` — Streamed assistant text chunk.
+- `thinking.delta` — Streamed reasoning/thinking text.
+- `tool.started` — A tool call or command execution has begun.
+- `tool.output` — Streamed terminal/command output.
+- `tool.completed` — A tool call or command execution finished.
+- `fileChange.started` — File changes proposed.
+- `fileChange.completed` — File changes applied or declined.
+- `approval.requested` — Agent is requesting user permission (bridge relays, app decides).
+- `diff.updated` — Aggregated diff for the current turn.
+- `plan.updated` — Agent's plan with step statuses.
+- `turn.started` — A new turn has begun.
+- `turn.completed` — A turn has finished (with status).
+- `thread.started` — A thread was created or resumed.
+- `thread.list.result` — Response to a thread list request.
+- `auth.changed` — Authentication state changed.
+- `rateLimit.updated` — Rate limit information updated.
+- `error` — An error occurred.
+- `provider.status` — Provider health/connection status change.
+
+### Approval Flow Through the Bridge
+
+The bridge is a passthrough for approvals. It never makes approval decisions. It never applies policy. It forwards the request with enough structured context (command text, working directory, risk level, file paths, diffs) for the app to render a rich native approval prompt, and it relays the user's decision back to the agent.
 
 ---
 
 ## MVP Integration: Codex App Server
 
-The first provider integration is the **Codex App Server** protocol. This is the same protocol that powers the Codex VS Code extension, the Codex desktop app, and the Codex web app. It is open source, well-documented, and designed specifically for rich client integrations.
+The first provider adapter in the bridge targets the Codex App Server protocol.
 
 ### Why Codex First
 
-- The protocol is mature and explicitly designed for the use case Agent UI targets — embedding Codex into a product with authentication, conversation history, approvals, and streamed agent events.
-- The protocol documentation includes schema generation (`codex app-server generate-ts` / `generate-json-schema`) so our Swift types can be validated against the exact version of Codex being used.
-- Thread management (list, resume, fork, archive, rollback) is built into the protocol, which directly maps to the session management UI goals.
-- The approval flow for command execution and file changes is a first-class protocol feature with structured request/response semantics — exactly what's needed for the native permission prompt UI.
+- The protocol is mature and explicitly designed for rich client integrations.
+- Thread management is built into the protocol (list, resume, fork, archive, rollback).
+- The approval flow is a first-class protocol feature with structured request/response semantics.
+- Schema generation enables type validation against the exact installed version.
 
-### Protocol Overview
+### Codex Protocol Overview
 
-The Codex App Server communicates via **JSONL over stdio** using a JSON-RPC 2.0 variant that omits the `"jsonrpc":"2.0"` header. The server is started with `codex app-server` and waits for messages on stdin, emitting responses and notifications on stdout.
+The Codex App Server communicates via JSONL over stdio using a JSON-RPC 2.0 variant that omits the `"jsonrpc":"2.0"` header. The bridge spawns `codex app-server`, sends requests on stdin, and reads responses and notifications from stdout.
 
-Communication is bidirectional:
+### Codex Core Primitives
 
-- **Requests** (client → server): Include `method`, `params`, and `id`. The server responds with a matching `id` plus `result` or `error`.
-- **Notifications** (server → client): Include `method` and `params` but no `id`. These are the streamed events that drive the UI.
-- **Server-initiated requests** (server → client): Include `method`, `params`, and `id`. The client must respond. Used for approval flows.
+- **Thread**: A conversation. Contains turns. Persisted by the server as JSONL log files.
+- **Turn**: A single user request and the agent work that follows. Contains items. Lifecycle: inProgress -> completed | interrupted | failed.
+- **Item**: A unit of work within a turn. Types include userMessage, agentMessage, reasoning, commandExecution, fileChange, mcpToolCall, webSearch, enteredReviewMode, exitedReviewMode, and compacted.
 
-### Core Primitives
+### Codex Item Types -> Bridge Events
 
-The protocol is organized around three primitives:
-
-- **Thread**: A conversation between the user and the Codex agent. Threads contain turns and are persisted by the server as JSONL log files. Threads can be started, resumed, forked, archived, unarchived, and rolled back.
-- **Turn**: A single user request and the agent work that follows. A turn contains items and streams incremental updates. Turns have a lifecycle: `inProgress` → `completed` | `interrupted` | `failed`.
-- **Item**: A unit of input or output within a turn. Item types include user messages, agent messages, reasoning, command executions, file changes, MCP tool calls, web searches, review mode entries, and more.
-
-### Connection Lifecycle
-
-```
-Client                                  Codex App Server
-  │                                            │
-  ├─ initialize ─────────────────────────────→ │
-  │  { clientInfo: { name, title, version } }  │
-  │                                            │
-  │ ←─────────────────────────── result ──────┤
-  │                                            │
-  ├─ initialized (notification) ─────────────→ │
-  │                                            │
-  │  (server is now ready for thread/turn ops) │
-  │                                            │
-  ├─ thread/start ───────────────────────────→ │
-  │  { model, cwd, approvalPolicy, sandbox }   │
-  │                                            │
-  │ ←──────────── result { thread: { id } } ──┤
-  │ ←──────────── thread/started notification ─┤
-  │                                            │
-  ├─ turn/start ─────────────────────────────→ │
-  │  { threadId, input: [{ type, text }] }     │
-  │                                            │
-  │ ←──────────── result { turn: { id } } ────┤
-  │ ←──────────── turn/started ────────────────┤
-  │ ←──────────── item/started (reasoning) ────┤
-  │ ←──────────── item/reasoning/summary... ───┤
-  │ ←──────────── item/started (commandExec) ──┤
-  │ ←──── item/commandExecution/requestApproval ┤
-  │                                            │
-  ├─ approval response { decision: "accept" } → │
-  │                                            │
-  │ ←──────────── item/commandExecution/output ─┤
-  │ ←──────────── item/completed ──────────────┤
-  │ ←──────────── item/agentMessage/delta ─────┤
-  │ ←──────────── item/agentMessage/delta ─────┤
-  │ ←──────────── turn/diff/updated ───────────┤
-  │ ←──────────── turn/plan/updated ───────────┤
-  │ ←──────────── turn/completed ──────────────┤
-  │                                            │
-  ✓ Turn finished                              │
-```
-
-### Item Types and UI Mapping
-
-Each item type in the Codex protocol maps to a specific UI presentation:
-
-| Item Type | Protocol Shape | UI Presentation |
-|---|---|---|
-| `userMessage` | `{ id, content: [{ type, text }] }` | User message bubble |
-| `agentMessage` | `{ id, text }` | Assistant message bubble with streamed text via `item/agentMessage/delta` |
-| `reasoning` | `{ id, summary, content }` | Collapsible thinking section (Xcode-style); `summary` for collapsed, `content` for expanded |
-| `commandExecution` | `{ id, command, cwd, status, exitCode, durationMs }` | Terminal activity card with command, output stream, exit status |
-| `fileChange` | `{ id, changes: [{ path, kind, diff }], status }` | File diff card with syntax-highlighted unified diff |
-| `mcpToolCall` | `{ id, server, tool, status, arguments, result }` | Tool call activity card |
-| `webSearch` | `{ id, query }` | Search activity indicator |
-| `enteredReviewMode` / `exitedReviewMode` | `{ id, review }` | Review mode banner/section |
-| `compacted` | `{ threadId, turnId }` | Subtle indicator that history was compacted |
-
-### Approval Flow
-
-Approvals are the primary user interaction beyond prompting. The Codex server sends a **server-initiated JSON-RPC request** to the client when it needs permission. The client must respond with `{ "decision": "accept" }` or `{ "decision": "decline" }`.
-
-There are two approval types:
-
-**Command Execution Approval:**
-1. Server emits `item/started` with a `commandExecution` item showing the pending command.
-2. Server sends `item/commandExecution/requestApproval` with `itemId`, `threadId`, `turnId`, optional `reason`/`risk`, and `parsedCmd`.
-3. Client renders a native approval prompt showing the command, working directory, and risk assessment.
-4. Client responds with accept or decline (optionally with `acceptSettings`).
-5. Server emits `item/completed` with final status: `completed`, `failed`, or `declined`.
-
-**File Change Approval:**
-1. Server emits `item/started` with a `fileChange` item showing proposed changes and diffs.
-2. Server sends `item/fileChange/requestApproval` with `itemId`, `threadId`, `turnId`, and optional `reason`.
-3. Client renders a native approval prompt showing the proposed file changes with diff preview.
-4. Client responds with accept or decline.
-5. Server emits `item/completed` with final status.
-
-The `approvalPolicy` set during `thread/start` or `turn/start` controls when approvals are triggered:
-
-- `"never"` — the agent runs autonomously without asking.
-- `"unlessTrusted"` — the agent asks unless the action is in the trusted set.
-
-### Thread Management
-
-The Codex protocol provides rich thread lifecycle operations that map directly to the session management UI:
-
-| Operation | Method | UI Action |
-|---|---|---|
-| Create new conversation | `thread/start` | "New Thread" button |
-| Continue existing conversation | `thread/resume` | Selecting a thread from the sidebar |
-| Branch a conversation | `thread/fork` | "Fork Thread" action |
-| View thread without resuming | `thread/read` | Thread preview / hover |
-| List all threads | `thread/list` | Thread sidebar with pagination |
-| List loaded threads | `thread/loaded/list` | Active thread indicators |
-| Archive a thread | `thread/archive` | Swipe-to-archive or menu action |
-| Restore archived thread | `thread/unarchive` | Archive view restore action |
-| Undo recent turns | `thread/rollback` | "Undo Last Turn" action |
-
-Thread listing supports cursor-based pagination, sorting by `created_at` or `updated_at`, and filtering by `modelProviders`, `sourceKinds`, and `archived` status.
-
-### Turn Features
-
-Each turn supports configuration overrides that persist for the thread:
-
-- **Model selection**: Override per turn with `model` parameter.
-- **Effort level**: Control reasoning depth with `effort` parameter.
-- **Working directory**: Override `cwd` per turn.
-- **Sandbox policy**: Control file system access (`readOnly`, `workspaceWrite`, `dangerFullAccess`, `externalSandbox`).
-- **Summary mode**: Control conversation summarization.
-- **Output schema**: Request structured JSON output for a specific turn.
-
-### Streaming Events During a Turn
-
-During an active turn, the server streams several categories of events:
-
-**Item lifecycle events** (authoritative state):
-- `item/started` — full item when work begins.
-- `item/completed` — final item state when work finishes.
-
-**Incremental deltas** (for real-time UI updates):
-- `item/agentMessage/delta` — streamed text chunks for the assistant reply.
-- `item/reasoning/summaryTextDelta` — streamed reasoning summary text.
-- `item/reasoning/textDelta` — streamed raw reasoning text.
-- `item/commandExecution/outputDelta` — streamed terminal stdout/stderr.
-- `item/fileChange/outputDelta` — tool call response for file changes.
-
-**Turn-level aggregates**:
-- `turn/diff/updated` — aggregated unified diff across all file changes in the turn.
-- `turn/plan/updated` — agent's current plan with step statuses (`pending`, `inProgress`, `completed`).
-- `thread/tokenUsage/updated` — token usage for the thread.
-
-### Authentication
-
-The Codex App Server handles authentication internally with two methods:
-
-**API Key**: Simple key-based auth via `account/login/start` with `type: "apiKey"`.
-
-**ChatGPT Login**: Browser-based OAuth flow:
-1. Client sends `account/login/start` with `type: "chatgpt"`.
-2. Server returns a `loginId` and `authUrl`.
-3. Client opens `authUrl` in the system browser.
-4. Server hosts the OAuth callback locally.
-5. Server emits `account/login/completed` and `account/updated` notifications.
-
-### Skills
-
-Codex supports reusable prompt templates called skills. Agent UI should:
-- List available skills via `skills/list` (scoped by workspace `cwd`).
-- Allow users to invoke skills with `$<skill-name>` syntax in prompts.
-- Include the `skill` input item in `turn/start` for reliable resolution.
-- Support enabling/disabling skills via `skills/config/write`.
-
-### Review Mode
-
-Codex has a built-in code reviewer triggered via `review/start` with targets:
-- `uncommittedChanges` — review current working tree.
-- `baseBranch` — diff against a branch.
-- `commit` — review a specific commit.
-- `custom` — free-form review instructions.
-
-Reviews can be `inline` (on the current thread) or `detached` (forked to a new thread).
-
-### Command Execution (Standalone)
-
-`command/exec` runs a single command under the server sandbox without creating a thread. Useful for utility operations like running linters, formatters, or build commands from the UI.
-
----
-
-## System Architecture
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                        Agent UI App                           │
-│                                                               │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │                  SwiftUI View Layer                       │ │
-│  │  Conversation · Activity · Approvals · Diffs · Threads   │ │
-│  └──────────────────────┬──────────────────────────────────┘ │
-│                         │                                     │
-│  ┌──────────────────────▼──────────────────────────────────┐ │
-│  │              Unified Session Model                       │ │
-│  │  AgentSession · Messages · Activities · Approvals ·      │ │
-│  │  Terminal Output · Diffs · Plans · Thread Management      │ │
-│  └──────────────────────┬──────────────────────────────────┘ │
-│                         │                                     │
-│  ┌──────────────────────▼──────────────────────────────────┐ │
-│  │              Agent Adapter Layer                          │ │
-│  │                                                           │ │
-│  │  ┌──────────────┐  ┌───────────────┐  ┌──────────────┐  │ │
-│  │  │ Codex App    │  │ Claude Code   │  │ Gemini       │  │ │
-│  │  │ Server       │  │ Adapter       │  │ Adapter      │  │ │
-│  │  │ Adapter      │  │ (future)      │  │ (future)     │  │ │
-│  │  └──────┬───────┘  └───────────────┘  └──────────────┘  │ │
-│  └─────────┼───────────────────────────────────────────────┘ │
-│            │                                                  │
-└────────────┼──────────────────────────────────────────────────┘
-             │ stdin/stdout (JSONL)
-     ┌───────▼────────────┐
-     │ codex app-server   │
-     │ (child process)    │
-     └───────┬────────────┘
-             │
-      ┌──────▼──────┐
-      │  Workspace   │
-      │  (files,     │
-      │   terminals, │
-      │   git)       │
-      └─────────────┘
-```
-
-### Layer Responsibilities
-
-**SwiftUI View Layer** — Presentation only. Renders conversation messages, agent reasoning (collapsible), command execution with approval prompts, file change diffs, plan progress, thread sidebar, and workspace management. Driven entirely by the unified session model.
-
-**Unified Session Model** — The single source of truth for all UI state. Provider-agnostic. Holds the conversation transcript, streaming state, activity feed, pending approvals, terminal output, file diffs, plan steps, thread metadata, and connection lifecycle. All mutations happen on `@MainActor` via `@Observable`.
-
-**Agent Adapter Layer** — One adapter per supported agent backend. Each adapter conforms to a shared protocol and is responsible for: spawning the agent process, managing the JSONL communication, parsing provider-specific events, normalizing them into the unified model's event types, and forwarding user input (prompts, approval decisions, cancellations) to the agent.
-
-**Codex App Server** — The actual agent process. Handles all file system access, terminal execution, model communication, and session persistence internally. Agent UI communicates with it exclusively through the JSONL protocol.
-
----
-
-## Codex Adapter Design
-
-### Process Management
-
-The Codex adapter spawns `codex app-server` as a child process using Foundation's `Process` and `Pipe`. Communication is JSONL over stdin/stdout. Stderr is captured for diagnostics.
-
-```swift
-final class CodexProcess {
-    private let process: Process
-    private let stdin: Pipe
-    private let stdout: Pipe
-    private let stderr: Pipe
-    private var framer: JSONLFramer
-
-    func start(codexPath: String) throws { ... }
-    func send(_ message: CodexRequest) throws { ... }
-    func stop() { ... }
-
-    var messages: AsyncStream<CodexMessage> { ... }
-}
-```
-
-### Message Types
-
-The adapter defines Swift types mirroring the Codex protocol. Key distinction from standard JSON-RPC: the `"jsonrpc":"2.0"` header is omitted.
-
-```swift
-// Outbound: client → server
-struct CodexRequest: Encodable {
-    let method: String
-    let id: Int
-    let params: CodexParams
-}
-
-struct CodexNotification: Encodable {
-    let method: String
-    let params: CodexParams
-}
-
-// Inbound: server → client
-enum CodexInbound {
-    case response(id: Int, result: CodexResult?, error: CodexError?)
-    case notification(method: String, params: CodexJSON)
-    case serverRequest(id: CodexRequestID, method: String, params: CodexJSON)
-}
-```
-
-### Approval Response Handling
-
-When the server sends an approval request, the adapter must respond on the same JSON-RPC channel. This is the one place where the client sends a response to a server-initiated request:
-
-```swift
-struct CodexApprovalResponse: Encodable {
-    let id: CodexRequestID
-    let result: ApprovalDecision
-}
-
-struct ApprovalDecision: Encodable {
-    let decision: String  // "accept" or "decline"
-    let acceptSettings: AcceptSettings?  // optional, for command approvals
-}
-```
-
-### Event Normalization
-
-The adapter maps Codex-specific events to the normalized `AgentEvent` model:
-
-| Codex Event | Normalized AgentEvent |
+| Codex Event | Bridge Protocol Event |
 |---|---|
-| `item/agentMessage/delta` | `.messageChunk(text:)` |
-| `item/reasoning/summaryTextDelta` | `.thinking(text:)` |
-| `item/started` (commandExecution) | `.toolActivity(.commandStarted(...))` |
-| `item/commandExecution/outputDelta` | `.terminalOutput(...)` |
-| `item/commandExecution/requestApproval` | `.approvalRequest(.command(...))` |
-| `item/started` (fileChange) | `.toolActivity(.fileChangeStarted(...))` |
-| `item/fileChange/requestApproval` | `.approvalRequest(.fileChange(...))` |
-| `item/completed` | `.toolActivity(.completed(...))` |
-| `turn/diff/updated` | `.diffUpdate(...)` |
-| `turn/plan/updated` | `.planUpdate(...)` |
-| `turn/completed` | `.turnComplete(status:)` |
-| `account/updated` | `.authStateChanged(...)` |
-| `account/rateLimits/updated` | `.rateLimitUpdate(...)` |
+| item/agentMessage/delta | message.delta |
+| item/reasoning/summaryTextDelta | thinking.delta |
+| item/started (commandExecution) | tool.started |
+| item/commandExecution/outputDelta | tool.output |
+| item/commandExecution/requestApproval | approval.requested (type: command) |
+| item/started (fileChange) | fileChange.started |
+| item/fileChange/requestApproval | approval.requested (type: fileChange) |
+| item/completed | tool.completed or fileChange.completed |
+| turn/diff/updated | diff.updated |
+| turn/plan/updated | plan.updated |
+| turn/started | turn.started |
+| turn/completed | turn.completed |
+| account/updated | auth.changed |
+| account/rateLimits/updated | rateLimit.updated |
+
+### Codex Thread Management
+
+Thread operations are relayed through the bridge. The app sends commands, the bridge forwards them to Codex, and returns the results:
+
+| App Command | Codex Method | Purpose |
+|---|---|---|
+| thread.start | thread/start | New conversation |
+| thread.resume | thread/resume | Continue existing |
+| thread.fork | thread/fork | Branch conversation |
+| thread.list | thread/list | Paginated listing |
+| thread.read | thread/read | Read without resuming |
+| thread.archive | thread/archive | Archive |
+| thread.unarchive | thread/unarchive | Restore |
+| thread.rollback | thread/rollback | Undo turns |
+
+### Codex Turn Features
+
+Each turn supports configuration overrides: model selection, effort level, working directory, sandbox policy, approval policy, summary mode, output schema, and skill invocation.
+
+### Codex Authentication
+
+The Codex App Server handles auth internally. The bridge relays auth operations: API key login, ChatGPT browser-based OAuth flow, account state queries, and rate limit notifications.
+
+### Codex Review Mode
+
+review/start triggers the Codex reviewer. Targets: uncommittedChanges, baseBranch, commit, custom. Reviews can be inline or detached.
+
+### Codex Standalone Command Execution
+
+command/exec runs a single command under the server sandbox without creating a thread. Useful for utility operations from the UI.
 
 ---
 
-## Agent Adapter Protocol
+## Swift App Architecture
 
-Each adapter conforms to a shared Swift protocol. The Codex adapter is the MVP implementation; future adapters for Claude Code and Gemini will conform to the same interface.
+### Session Model
 
-```swift
-protocol AgentAdapter: AnyObject {
-    /// Start the agent for a given workspace.
-    func start(workspace: String, configuration: AgentConfiguration) async throws
+The session model is @Observable, provider-agnostic, and drives all SwiftUI views:
 
-    /// Send a user prompt to the agent within an active thread.
-    func sendPrompt(threadID: String, input: [PromptInput]) async throws
+- connectionState: disconnected, connecting, ready, streaming, cancelling
+- provider: codex, claudeCode, gemini
+- workspace: WorkspaceConfiguration
+- activeThreadID
+- threads: [ThreadSummary] for sidebar listing
+- messages: [ConversationMessage] for current thread
+- currentTurn: TurnState with items, plan, aggregatedDiff, and status
+- pendingApprovals: [ApprovalRequest] awaiting user decision
+- authState: AuthState
+- rateLimits: RateLimits
+- lastError: AgentError
 
-    /// Cancel the current in-flight turn.
-    func cancelTurn(threadID: String, turnID: String) async throws
+All mutations happen on @MainActor.
 
-    /// Respond to an approval request from the agent.
-    func resolveApproval(requestID: RequestID, decision: ApprovalDecision) throws
+### Bridge Connection Manager
 
-    /// Stop the agent and clean up resources.
-    func stop() async
+The Swift app manages the bridge process lifecycle:
 
-    /// Stream of normalized events from the agent.
-    var events: AsyncStream<AgentEvent> { get }
-}
+- Local mode: Spawns the bridge as a child process, connects via WebSocket or Unix socket.
+- Remote mode (future): Connects to a bridge already running on a remote machine.
+- Reconnection: If the bridge process crashes, the app restarts it and re-establishes the connection.
+- Version check: On connection, the app verifies protocol version compatibility.
 
-/// Extended protocol for adapters that support thread management.
-protocol ThreadManagingAdapter: AgentAdapter {
-    func startThread(model: String?, cwd: String?) async throws -> ThreadInfo
-    func resumeThread(threadID: String) async throws -> ThreadInfo
-    func forkThread(threadID: String) async throws -> ThreadInfo
-    func listThreads(cursor: String?, limit: Int?) async throws -> ThreadListPage
-    func archiveThread(threadID: String) async throws
-    func unarchiveThread(threadID: String) async throws
-    func rollbackThread(threadID: String, turns: Int) async throws
-    func readThread(threadID: String, includeTurns: Bool) async throws -> ThreadInfo
-}
+### View Layer
 
-/// Extended protocol for adapters that support authentication.
-protocol AuthenticatingAdapter: AgentAdapter {
-    func readAccount() async throws -> AccountInfo?
-    func loginWithAPIKey(_ key: String) async throws
-    func loginWithChatGPT() async throws -> ChatGPTLoginFlow
-    func cancelLogin(loginID: String) async throws
-    func logout() async throws
-    func readRateLimits() async throws -> RateLimits?
-}
-
-/// Extended protocol for adapters that support skills.
-protocol SkillsAdapter: AgentAdapter {
-    func listSkills(cwds: [String]) async throws -> [SkillInfo]
-    func setSkillEnabled(path: String, enabled: Bool) async throws
-}
-```
-
-The Codex adapter conforms to all four protocols. Future adapters implement whichever subset their backend supports.
-
-### Normalized Event Model
-
-```swift
-enum AgentEvent {
-    // Message streaming
-    case messageChunk(text: String)
-    case thinking(ThinkingEvent)
-
-    // Tool activity lifecycle
-    case toolActivity(ToolActivity)
-
-    // Approval requests (server → client, requires response)
-    case approvalRequest(ApprovalRequest)
-
-    // Terminal output streaming
-    case terminalOutput(TerminalEvent)
-
-    // File changes and diffs
-    case diffUpdate(DiffUpdate)
-
-    // Agent plan progress
-    case planUpdate(PlanUpdate)
-
-    // Turn lifecycle
-    case turnStarted(TurnInfo)
-    case turnComplete(TurnResult)
-
-    // Thread lifecycle
-    case threadStarted(ThreadInfo)
-
-    // Auth and account
-    case authStateChanged(AuthState)
-    case rateLimitUpdate(RateLimits)
-
-    // Errors
-    case error(AgentError)
-}
-```
+The SwiftUI views consume only the session model. They never reference provider-specific types or bridge protocol details. Key views: ConversationView, ActivityCard (collapsible, Xcode-style), ApprovalPrompt, DiffView, ThreadSidebar, ComposerView, and SettingsView.
 
 ---
 
-## Unified Session Model
+## Bridge Implementation
 
-The session model is provider-agnostic and represents everything the UI needs:
+### Technology
+
+Bun (TypeScript). Chosen for ecosystem alignment with provider SDKs and generated schemas.
+
+If remote deployment later demands a single-binary deployment story, the bridge can be rewritten in Go once the contract and requirements are well-understood. The stable bridge protocol means the Swift app would not need to change.
+
+### Structure
 
 ```
-AgentSession
-├── connectionState: .disconnected | .connecting | .ready | .streaming | .cancelling
-├── provider: .codex | .claudeCode | .gemini
-├── workspace: WorkspaceConfiguration
-├── activeThreadID: String?
-├── threads: [ThreadSummary]                   // For sidebar listing
-├── messages: [ConversationMessage]             // Current thread messages
-├── currentTurn: TurnState?                     // In-flight turn with items
-│   ├── items: [TurnItem]                       // Reasoning, commands, file changes, etc.
-│   ├── plan: [PlanStep]                        // Agent's current plan
-│   ├── aggregatedDiff: String?                 // Unified diff for all file changes
-│   └── status: .inProgress | .completed | ...
-├── pendingApprovals: [ApprovalRequest]         // Awaiting user decision
-├── authState: AuthState                        // Account info, login state
-├── rateLimits: RateLimits?                     // Usage tracking
-└── lastError: AgentError?
+agent-ui-bridge/
+  src/
+    index.ts                    Entry point, WebSocket server
+    protocol/
+      types.ts                  Bridge protocol type definitions
+      version.ts                Protocol version constants
+    adapters/
+      adapter.ts                Shared adapter interface
+      codex/
+        codexAdapter.ts         Codex App Server adapter
+        codexProcess.ts         Process lifecycle management
+        codexTypes.ts           Codex protocol types
+        codexNormalizer.ts      Codex events -> bridge events
+      claude/                   Future
+      gemini/                   Future
+    discovery/
+      executable.ts             CLI executable discovery
+  package.json
+  tsconfig.json
 ```
 
-The model is `@Observable` and drives SwiftUI views through standard observation. All mutations happen on `@MainActor`.
+### Adapter Interface
+
+Each provider adapter implements a shared interface covering: start/stop, prompt sending, turn cancellation, approval relay, optional thread management, optional authentication, optional skills, and an event stream.
+
+The Codex adapter conforms to the full interface. Future adapters implement whichever subset their backend supports.
 
 ---
 
 ## Workspace and Session Management
 
-Agent UI supports multiple workspaces and sessions:
-
-- A **workspace** is a local directory (typically a git repository) that serves as the root for agent operations.
-- A **thread** is a single conversation with an agent within a workspace. Thread terminology and lifecycle follow the Codex model (start, resume, fork, archive, rollback).
-- Multiple threads can exist per workspace, and multiple workspaces can be open in the app.
-- Thread listing and history are managed through the Codex protocol's `thread/list`, `thread/read`, and related methods. The Codex server persists thread logs as JSONL files — Agent UI does not need to implement its own persistence for conversation history.
-- The workspace picker, thread list, and thread switching are app-level concerns that live above the adapter layer.
+- A workspace is a local directory (typically a git repository) serving as the root for agent operations.
+- A thread is a single conversation within a workspace. Terminology follows the Codex model.
+- Thread persistence is delegated to the provider (Codex persists as JSONL log files). The app does not maintain a separate transcript store.
+- The app owns workspace selection, thread navigation, and any app-level metadata.
 
 ---
 
 ## Remote Support (Future)
 
-The adapter protocol is designed so that the transport between Agent UI and the agent process can change without affecting the session model or views.
+The two-process architecture makes remote support a transport change rather than an architectural change:
 
-For remote support:
+- Local mode: Swift app spawns the bridge locally, connects via Unix socket or local WebSocket.
+- Remote mode: Bridge runs on the remote machine alongside the codebase. Swift app connects via WebSocket over the network. The bridge protocol and event stream are identical.
 
-- A **local adapter** spawns `codex app-server` as a child process on the user's Mac (the current model).
-- A **remote adapter** connects to a `codex app-server` process already running on a remote machine over SSH, WebSocket, or a similar transport.
-
-The agent runs on the remote machine where the codebase lives. Agent UI receives the same JSONL event stream over the network connection. The unified session model and all SwiftUI views remain completely unchanged.
+Additional considerations for remote mode: authentication and trust between app and remote bridge, file path display, network latency for approval flows, and bridge installation on remote machines.
 
 ---
 
@@ -560,92 +345,102 @@ The agent runs on the remote machine where the codebase lives. Agent UI receives
 
 | Component | Technology |
 |---|---|
-| Application framework | SwiftUI (macOS native) |
-| State management | Swift Observation (`@Observable`, `@MainActor`) |
-| Adapter layer | Swift (Foundation `Process`, `Pipe`, async streams) |
-| Agent communication | JSONL over stdio (JSON-RPC 2.0 without `jsonrpc` header) |
-| Thread persistence | Delegated to Codex server (JSONL log files) |
+| Mac application | SwiftUI (native macOS) |
+| App state management | Swift Observation (@Observable, @MainActor) |
+| Bridge | Bun (TypeScript) |
+| App <-> Bridge communication | WebSocket or Unix domain socket (JSON) |
+| Bridge <-> Agent communication | JSONL over stdio |
+| Thread persistence | Delegated to provider |
 | App settings persistence | UserDefaults |
-| Code rendering | Syntax-highlighted views (Splash or custom AttributedString) |
-| Markdown rendering | Native SwiftUI Markdown or rich rendering library |
-| Diff rendering | Unified diff parser with syntax-highlighted split/unified views |
-| Build system | Xcode / Swift Package Manager |
+| Code rendering | Syntax-highlighted views |
+| Markdown rendering | Native SwiftUI or rich rendering library |
+| Diff rendering | Unified diff parser with syntax highlighting |
+| Build system | Xcode (app), Bun (bridge) |
 | Minimum deployment target | macOS 14.0+ |
 
 ---
 
 ## Development Phases
 
-### Phase 1: Codex Foundation
+### Phase 1: Bridge Foundation + Basic Chat
 
-- Implement the `CodexProcess` layer: spawn `codex app-server`, manage JSONL framing over stdin/stdout, handle process lifecycle.
-- Implement the Codex adapter with support for: `initialize` / `initialized` handshake, `thread/start`, `turn/start`, and streaming event parsing for `item/agentMessage/delta`, `item/started`, `item/completed`, and `turn/completed`.
-- Define the `AgentAdapter` protocol and `AgentEvent` model.
-- Build the unified session model.
-- Build the core SwiftUI views: conversation view with user/assistant messages, composer with send/cancel, basic connection status.
-- Goal: send a prompt, see a streamed response, in a usable app.
+Bridge: Set up Bun project, WebSocket server with handshake, Codex adapter with initialize/initialized, thread/start, turn/start, and event normalization for message deltas, item started/completed, and turn lifecycle.
+
+Swift app: BridgeConnection manager (spawn bridge, WebSocket connect, event parsing), session model, core views (conversation, composer, connection status).
+
+Goal: send a prompt, see a streamed response.
 
 ### Phase 2: Approval Flow and Tool Activity
 
-- Implement approval handling: parse `item/commandExecution/requestApproval` and `item/fileChange/requestApproval`, present native approval prompts, send accept/decline responses.
-- Render command execution activity cards with streamed output via `item/commandExecution/outputDelta`.
-- Render file change cards with diff preview.
-- Render reasoning/thinking sections (collapsible, Xcode-style) from `item/reasoning/summaryTextDelta`.
-- Render plan progress from `turn/plan/updated`.
-- Goal: a full turn with tool use is visible and controllable.
+Bridge: Parse and relay command execution and file change approval requests. Normalize output deltas, reasoning events, plan updates, and diff updates.
+
+Swift app: Native approval prompts, command execution cards with streamed output, file change cards with diffs, collapsible thinking sections, plan progress.
+
+Goal: a full turn with tool use is visible and controllable.
 
 ### Phase 3: Thread Management
 
-- Implement thread listing via `thread/list` with pagination.
-- Build thread sidebar UI.
-- Implement `thread/resume`, `thread/fork`, `thread/archive`, `thread/unarchive`, `thread/rollback`.
-- Add workspace selection and persistence.
-- Goal: multi-thread, multi-workspace session management.
+Bridge: Thread operation relay (list, resume, fork, archive, unarchive, rollback, read).
 
-### Phase 4: Authentication and Account
+Swift app: Thread sidebar with pagination, thread selection and navigation, workspace selection and persistence.
 
-- Implement `account/read`, API key login, ChatGPT browser-based login flow.
-- Render auth state and rate limit information in the UI.
-- Handle auth-related errors gracefully with recovery prompts.
-- Goal: first-launch experience works without pre-configuring Codex externally.
+Goal: multi-thread, multi-workspace session management.
+
+### Phase 4: Authentication
+
+Bridge: Auth operation relay (account read, login, logout, rate limits).
+
+Swift app: Auth state rendering, login flows, rate limit display, error recovery.
+
+Goal: first-launch experience works without external Codex setup.
 
 ### Phase 5: UI Polish
 
-- Collapsible, Xcode-style activity presentation for all item types.
-- Rich syntax-highlighted code and diff rendering.
-- Beautifully rendered Markdown for assistant messages.
-- Keyboard shortcuts and navigation.
-- Skills browser and invocation UI.
-- Review mode UI.
-- Goal: the UI matches the quality bar of the Xcode Agent integration.
+Swift app: Xcode-style collapsible activity, syntax-highlighted code/diffs, Markdown rendering, keyboard shortcuts, skills UI, review mode UI.
+
+Goal: matches the quality bar of the Xcode Agent integration.
 
 ### Phase 6: Additional Providers
 
-- Implement Claude Code adapter (via Claude Agent SDK or claude-agent-acp).
-- Implement Gemini adapter (investigate native SDK vs. ACP approach).
-- Provider selection in the UI.
-- Validate unified session model works across all providers.
+Bridge: Claude Code adapter (via Claude Agent SDK), Gemini adapter (investigate approach).
+
+Swift app: Provider selection UI, validate session model across providers.
 
 ### Phase 7: Remote Support
 
-- Define remote adapter transport.
-- Implement remote adapter variant.
-- Remote workspace configuration UI.
+Bridge: Accept remote connections with authentication, package for remote deployment. Consider Go rewrite if needed.
+
+Swift app: Remote connection configuration, remote workspace UI.
 
 ### Phase 8: Extended Integrations
 
-- Markdown editor integration.
-- Project/issue tracker integration.
-- Additional agent backends.
+Markdown editor, project/issue tracker, additional agent backends.
+
+---
+
+## Versioning and Compatibility
+
+The bridge protocol is versioned independently from both the app and the providers. The handshake includes version negotiation. When a provider ships a protocol change, only the bridge needs updating — the app continues to speak the stable bridge protocol.
+
+For the MVP, keep app and bridge versions in lockstep. As the protocol stabilizes, they can drift more freely.
+
+---
+
+## Packaging and Distribution
+
+Swift app: Standard macOS app bundle (DMG or direct download).
+
+Bridge: Bundled with the app for the initial release using `bun build --compile` to produce a standalone executable inside the app bundle. No Bun runtime required on the user's machine for local mode. For remote mode, the bridge will also be independently installable.
 
 ---
 
 ## Open Questions
 
-- **Codex executable discovery.** Determine the best approach for locating the `codex` binary on the user's system. Consider common install paths (npm global, Homebrew, Cargo/crates.io since codex-rs is Rust), PATH resolution, and a settings override for custom paths.
-- **Schema validation.** The Codex App Server can generate TypeScript and JSON Schema bundles specific to the installed version. Investigate whether to use these for compile-time Swift type generation or runtime validation.
-- **Sandbox policy defaults.** Determine sensible defaults for `approvalPolicy` and `sandboxPolicy` in the UI. The Xcode-style UX suggests `unlessTrusted` as the default approval policy, but this needs user testing.
-- **Claude Code adapter: SDK vs. ACP.** The Claude Agent SDK and the Zed ACP adapter are both options. Evaluate both during Phase 6. The native SDK likely provides richer events; the ACP adapter may be simpler.
-- **Gemini adapter model.** Gemini CLI in ACP mode expects the host to handle execution. Investigate whether Gemini has or will have a native SDK mode. If not, the Gemini adapter may require a thin execution shim or the existing ACP host implementation could be repurposed specifically for Gemini.
-- **Diff rendering.** Determine the best approach for rendering unified diffs in SwiftUI with syntax highlighting. The `turn/diff/updated` event provides aggregated diffs per turn, and `fileChange` items provide per-file diffs.
-- **Thread persistence ownership.** Codex persists threads as JSONL log files. Determine whether Agent UI should maintain any additional metadata (tags, notes, workspace associations) or rely entirely on Codex's storage.
+- Local socket vs. WebSocket for local communication. Unix domain sockets have lower overhead; WebSocket is more natural for eventual remote use. Evaluate starting with WebSocket everywhere for simplicity.
+- Bridge crash recovery behavior. Define exact restart and reconnection semantics.
+- Codex executable discovery strategy in the bridge.
+- Schema validation approach using Codex-generated JSON Schema bundles.
+- Claude Code adapter: Claude Agent SDK vs. Zed ACP adapter. Evaluate during Phase 6.
+- Gemini adapter: investigate whether Gemini has a native SDK mode or requires ACP host behavior.
+- Thread metadata: determine if the app needs metadata beyond what Codex persists.
+- Go rewrite criteria: define when remote deployment requirements justify rewriting the bridge.
