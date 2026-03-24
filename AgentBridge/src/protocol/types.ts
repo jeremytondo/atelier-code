@@ -32,6 +32,7 @@ export type BridgeEventType =
   | "fileChange.started"
   | "fileChange.completed"
   | "approval.requested"
+  | "approval.resolved"
   | "diff.updated"
   | "plan.updated"
   | "turn.completed"
@@ -315,6 +316,11 @@ export interface ApprovalRequestedPayload {
   riskLevel?: RiskLevel;
 }
 
+export interface ApprovalResolvedPayload {
+  approvalID: string;
+  resolution: ApprovalResolution;
+}
+
 export interface DiffUpdatedPayload {
   summary: string;
   files: DiffFileSummary[];
@@ -423,6 +429,13 @@ export interface ApprovalRequestedEvent
   turnID: string;
 }
 
+export interface ApprovalResolvedEvent
+  extends BridgeEventEnvelope<"approval.resolved", ApprovalResolvedPayload> {
+  requestID: string;
+  threadID: string;
+  turnID?: string;
+}
+
 export interface DiffUpdatedEvent extends BridgeEventEnvelope<"diff.updated", DiffUpdatedPayload> {
   threadID: string;
   turnID: string;
@@ -468,6 +481,7 @@ export type BridgeEvent =
   | FileChangeStartedEvent
   | FileChangeCompletedEvent
   | ApprovalRequestedEvent
+  | ApprovalResolvedEvent
   | DiffUpdatedEvent
   | PlanUpdatedEvent
   | TurnCompletedEvent

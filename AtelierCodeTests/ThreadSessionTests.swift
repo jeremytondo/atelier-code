@@ -63,6 +63,12 @@ struct ThreadSessionTests {
         session.enqueueApprovalRequest(request)
 
         #expect(session.pendingApprovals == [request])
+        #expect(session.beginApprovalResolution(id: "approval-1", resolution: .approved))
+        #expect(session.pendingApprovals.first?.pendingResolution == .approved)
+        #expect(session.beginApprovalResolution(id: "approval-1", resolution: .declined) == false)
+
+        session.clearApprovalResolution(id: "approval-1")
+        #expect(session.pendingApprovals.first?.pendingResolution == nil)
 
         session.resolveApprovalRequest(id: "approval-1", resolution: .approved)
         session.resolveApprovalRequest(id: "approval-1", resolution: .stale)

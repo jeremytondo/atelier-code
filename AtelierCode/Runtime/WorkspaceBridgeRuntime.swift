@@ -49,7 +49,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         case threadList
         case turnStart(prompt: String)
         case turnCancel
-        case approvalResolve
+        case approvalResolve(id: String)
         case accountRead
         case accountLogin
         case accountLogout
@@ -73,6 +73,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     private var receiveTask: Task<Void, Never>?
     private var pendingCommands: [String: PendingCommand] = [:]
     private var pendingThreadStarts: [String: CheckedContinuation<ThreadSession, Error>] = [:]
+    private var pendingApprovalResolutions: [String: CheckedContinuation<Void, Error>] = [:]
     private var abandonedThreadRequestIDs: Set<String> = []
     private var requestCounter = 0
     private var currentTurnID: String?
@@ -162,11 +163,17 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         pendingCommands.removeAll()
         let pendingThreadStarts = self.pendingThreadStarts
         self.pendingThreadStarts.removeAll()
+        let pendingApprovalResolutions = self.pendingApprovalResolutions
+        self.pendingApprovalResolutions.removeAll()
         abandonedThreadRequestIDs.removeAll()
         currentTurnID = nil
         controller.setAwaitingTurnStart(false)
 
         for continuation in pendingThreadStarts.values {
+            continuation.resume(throwing: CancellationError())
+        }
+
+        for continuation in pendingApprovalResolutions.values {
             continuation.resume(throwing: CancellationError())
         }
 
@@ -326,24 +333,34 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         }
 
         let requestID = nextRequestID(prefix: "approval-resolve")
-        pendingCommands[requestID] = .approvalResolve
-        do {
-            try await sendCommand(
-                id: requestID,
-                type: .approvalResolve,
-                threadID: session.threadID,
-                turnID: currentTurnID,
-                payload: BridgeApprovalResolvePayload(
-                    approvalID: id,
-                    resolution: resolution.bridgeValue,
-                    rememberDecision: rememberDecision ? true : nil
-                )
-            )
-            pendingCommands.removeValue(forKey: requestID)
-            session.resolveApprovalRequest(id: id, resolution: resolution)
-        } catch {
-            pendingCommands.removeValue(forKey: requestID)
-            throw error
+        pendingCommands[requestID] = .approvalResolve(id: id)
+
+        try await withCheckedThrowingContinuation { continuation in
+            pendingApprovalResolutions[requestID] = continuation
+
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+
+                do {
+                    try await self.sendCommand(
+                        id: requestID,
+                        type: .approvalResolve,
+                        threadID: session.threadID,
+                        turnID: currentTurnID,
+                        payload: BridgeApprovalResolvePayload(
+                            approvalID: id,
+                            resolution: resolution.bridgeValue,
+                            rememberDecision: rememberDecision ? true : nil
+                        )
+                    )
+                } catch {
+                    self.pendingCommands.removeValue(forKey: requestID)
+                    self.pendingApprovalResolutions.removeValue(forKey: requestID)?.resume(throwing: error)
+                }
+            }
         }
     }
 
@@ -449,6 +466,20 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             }
 
             session.enqueueApprovalRequest(payload.toApprovalRequest())
+        case .approvalResolved(let payload):
+            if let requestID = event.requestID {
+                pendingCommands.removeValue(forKey: requestID)
+                pendingApprovalResolutions.removeValue(forKey: requestID)?.resume()
+            }
+
+            guard let session = session(for: event.threadID) else {
+                return
+            }
+
+            session.resolveApprovalRequest(
+                id: payload.approvalID,
+                resolution: payload.resolution.approvalResolution
+            )
         case .diffUpdated(let payload):
             guard let session = session(for: event.threadID) else {
                 return
@@ -638,6 +669,11 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 controller.setAwaitingTurnStart(false)
                 controller.activeThreadSession?.failTurn(payload.message)
                 currentTurnID = nil
+            case .approvalResolve(let approvalID):
+                controller.activeThreadSession?.clearApprovalResolution(id: approvalID)
+                pendingApprovalResolutions.removeValue(forKey: requestID)?.resume(
+                    throwing: RuntimeBridgeError.requestFailed(message: payload.message)
+                )
             case .accountLogin:
                 controller.clearPendingLogin()
             default:
@@ -791,6 +827,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         pendingCommands.removeAll()
         let pendingThreadStarts = self.pendingThreadStarts
         self.pendingThreadStarts.removeAll()
+        let pendingApprovalResolutions = self.pendingApprovalResolutions
+        self.pendingApprovalResolutions.removeAll()
         abandonedThreadRequestIDs.removeAll()
         currentTurnID = nil
         controller.setBridgeLifecycleState(.idle)
@@ -798,6 +836,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         controller.setConnectionStatus(.error(message: message))
 
         for continuation in pendingThreadStarts.values {
+            continuation.resume(throwing: RuntimeBridgeError.requestFailed(message: message))
+        }
+
+        for continuation in pendingApprovalResolutions.values {
             continuation.resume(throwing: RuntimeBridgeError.requestFailed(message: message))
         }
 

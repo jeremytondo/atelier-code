@@ -28,6 +28,7 @@ enum BridgeEventType: String, Decodable, Sendable {
     case fileChangeStarted = "fileChange.started"
     case fileChangeCompleted = "fileChange.completed"
     case approvalRequested = "approval.requested"
+    case approvalResolved = "approval.resolved"
     case diffUpdated = "diff.updated"
     case planUpdated = "plan.updated"
     case turnCompleted = "turn.completed"
@@ -73,7 +74,7 @@ enum BridgeApprovalKindValue: String, Decodable, Sendable {
     case generic
 }
 
-enum BridgeApprovalResolutionValue: String, Encodable, Sendable {
+enum BridgeApprovalResolutionValue: String, Codable, Sendable {
     case approved
     case declined
     case cancelled
@@ -290,6 +291,11 @@ struct BridgeApprovalRequestedPayload: Decodable, Equatable, Sendable {
     let riskLevel: String?
 }
 
+struct BridgeApprovalResolvedPayload: Decodable, Equatable, Sendable {
+    let approvalID: String
+    let resolution: BridgeApprovalResolutionValue
+}
+
 struct BridgeDiffUpdatedPayload: Decodable, Equatable, Sendable {
     let summary: String
     let files: [BridgeDiffFileSummaryDTO]
@@ -421,6 +427,7 @@ enum BridgeEventPayload: Equatable, Sendable {
     case fileChangeStarted(BridgeFileChangeStartedPayload)
     case fileChangeCompleted(BridgeFileChangeCompletedPayload)
     case approvalRequested(BridgeApprovalRequestedPayload)
+    case approvalResolved(BridgeApprovalResolvedPayload)
     case diffUpdated(BridgeDiffUpdatedPayload)
     case planUpdated(BridgePlanUpdatedPayload)
     case turnCompleted(BridgeTurnCompletedPayload)
@@ -489,6 +496,8 @@ struct BridgeEventEnvelope: Decodable, Equatable, Sendable {
             payload = .fileChangeCompleted(try container.decode(BridgeFileChangeCompletedPayload.self, forKey: .payload))
         case .approvalRequested:
             payload = .approvalRequested(try container.decode(BridgeApprovalRequestedPayload.self, forKey: .payload))
+        case .approvalResolved:
+            payload = .approvalResolved(try container.decode(BridgeApprovalResolvedPayload.self, forKey: .payload))
         case .diffUpdated:
             payload = .diffUpdated(try container.decode(BridgeDiffUpdatedPayload.self, forKey: .payload))
         case .planUpdated:
@@ -598,6 +607,21 @@ extension BridgeApprovalCommandContextDTO {
             command: command,
             workingDirectory: workingDirectory
         )
+    }
+}
+
+extension BridgeApprovalResolutionValue {
+    var approvalResolution: ApprovalResolution {
+        switch self {
+        case .approved:
+            return .approved
+        case .declined:
+            return .declined
+        case .cancelled:
+            return .cancelled
+        case .stale:
+            return .stale
+        }
     }
 }
 

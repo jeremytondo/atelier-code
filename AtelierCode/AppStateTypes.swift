@@ -270,6 +270,7 @@ struct ApprovalRequest: Equatable, Sendable, Identifiable {
     var command: ApprovalCommandContext?
     var files: [DiffFileChange]
     var riskLevel: ApprovalRiskLevel?
+    var pendingResolution: ApprovalResolution? = nil
 }
 
 enum PlanStepStatus: String, Equatable, Sendable {

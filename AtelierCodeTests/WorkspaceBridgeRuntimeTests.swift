@@ -177,7 +177,20 @@ struct WorkspaceBridgeRuntimeTests {
 
         #expect(pendingCommandCount(in: runtime) == 0)
 
-        try await runtime.resolveApproval(id: "approval-1", resolution: .approved)
+        let resolveTask = Task {
+            try await runtime.resolveApproval(id: "approval-1", resolution: .approved)
+        }
+        try await waitUntil { pendingCommandCount(in: runtime) == 1 }
+        socketClient.enqueue(
+            approvalResolvedJSON(
+                requestID: "ateliercode-approval-resolve-6",
+                threadID: "thread-1",
+                turnID: "turn-1",
+                approvalID: "approval-1",
+                resolution: "approved"
+            )
+        )
+        try await resolveTask.value
         try await waitUntil { pendingCommandCount(in: runtime) == 0 && session.pendingApprovals.isEmpty }
 
         #expect(pendingCommandCount(in: runtime) == 0)
@@ -643,6 +656,18 @@ private func fileChangeCompletedJSON(
 private func approvalRequestedJSON(threadID: String, turnID: String, approvalID: String, workspacePath: String) -> String {
     """
     {"type":"approval.requested","timestamp":"2026-03-24T10:00:06Z","threadID":"\(threadID)","turnID":"\(turnID)","payload":{"approvalID":"\(approvalID)","kind":"command","title":"Approve command execution","detail":"The command needs confirmation.","command":{"command":"xcodebuild test -scheme AtelierCode","workingDirectory":"\(jsonEscaped(workspacePath))"},"files":[{"id":"AtelierCode/ContentView.swift","path":"AtelierCode/ContentView.swift","additions":4,"deletions":1}],"riskLevel":"medium"}}
+    """
+}
+
+private func approvalResolvedJSON(
+    requestID: String,
+    threadID: String,
+    turnID: String,
+    approvalID: String,
+    resolution: String
+) -> String {
+    """
+    {"type":"approval.resolved","timestamp":"2026-03-24T10:00:06Z","requestID":"\(requestID)","threadID":"\(threadID)","turnID":"\(turnID)","payload":{"approvalID":"\(approvalID)","resolution":"\(resolution)"}}
     """
 }
 

@@ -474,6 +474,10 @@ private struct ApprovalCard: View {
     let appModel: AppModel
     let approval: ApprovalRequest
 
+    private var isResolving: Bool {
+        approval.pendingResolution != nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
@@ -511,6 +515,7 @@ private struct ApprovalCard: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(isResolving)
                 .accessibilityIdentifier("approval-\(approval.id)-approve-button")
 
                 Button("Decline") {
@@ -519,7 +524,14 @@ private struct ApprovalCard: View {
                     }
                 }
                 .buttonStyle(.bordered)
+                .disabled(isResolving)
                 .accessibilityIdentifier("approval-\(approval.id)-decline-button")
+            }
+
+            if let pendingResolution = approval.pendingResolution {
+                Text(pendingResolution == .approved ? "Sending approval..." : "Sending decline...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(14)

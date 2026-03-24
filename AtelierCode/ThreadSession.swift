@@ -187,6 +187,24 @@ final class ThreadSession {
         pendingApprovals.append(request)
     }
 
+    func beginApprovalResolution(id: String, resolution: ApprovalResolution) -> Bool {
+        guard let index = pendingApprovals.firstIndex(where: { $0.id == id }),
+              pendingApprovals[index].pendingResolution == nil else {
+            return false
+        }
+
+        pendingApprovals[index].pendingResolution = resolution
+        return true
+    }
+
+    func clearApprovalResolution(id: String) {
+        guard let index = pendingApprovals.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        pendingApprovals[index].pendingResolution = nil
+    }
+
     func resolveApprovalRequest(id: String, resolution _: ApprovalResolution) {
         guard let index = pendingApprovals.firstIndex(where: { $0.id == id }) else {
             return

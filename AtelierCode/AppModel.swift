@@ -226,7 +226,7 @@ final class AppModel {
     func resolveApproval(id: String, resolution: ApprovalResolution) async -> Bool {
         guard let controller = activeWorkspaceController,
               let session = controller.activeThreadSession,
-              session.pendingApprovals.contains(where: { $0.id == id }),
+              session.beginApprovalResolution(id: id, resolution: resolution),
               let runtime = activeWorkspaceRuntime else {
             return false
         }
@@ -235,8 +235,10 @@ final class AppModel {
             try await runtime.resolveApproval(id: id, resolution: resolution)
             return true
         } catch is CancellationError {
+            session.clearApprovalResolution(id: id)
             return false
         } catch {
+            session.clearApprovalResolution(id: id)
             controller.setConnectionStatus(.error(message: error.localizedDescription))
             if controller.activeThreadSession?.turnState.phase == .inProgress {
                 controller.activeThreadSession?.failTurn(error.localizedDescription)
