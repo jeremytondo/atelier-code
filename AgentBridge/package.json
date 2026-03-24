@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "bun build --compile ./src/index.ts --outfile ./dist/ateliercode-agent-bridge",
+    "test": "bun test",
+    "test:bridge": "bun test",
     "typecheck": "tsc --noEmit",
     "healthcheck": "bun run ./src/index.ts --healthcheck"
   },

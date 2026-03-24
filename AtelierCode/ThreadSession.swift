@@ -33,6 +33,11 @@ final class ThreadSession {
         self.aggregatedDiff = aggregatedDiff
     }
 
+    func updateThreadIdentity(id: String, title: String) {
+        threadID = id
+        self.title = title
+    }
+
     func startThread(id: String, title: String) {
         threadID = id
         self.title = title
@@ -118,6 +123,19 @@ final class ThreadSession {
         }
 
         activityItems[index].detail = detail
+    }
+
+    func appendActivityOutput(id: String, delta: String) {
+        guard delta.isEmpty == false,
+              let index = activityItems.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        if activityItems[index].detail.isEmpty {
+            activityItems[index].detail = delta
+        } else {
+            activityItems[index].detail += delta
+        }
     }
 
     func completeActivity(id: String, status: ActivityStatus = .completed, detail: String? = nil) {

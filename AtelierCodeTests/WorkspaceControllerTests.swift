@@ -12,6 +12,28 @@ struct WorkspaceControllerTests {
         controller.setBridgeLifecycleState(.starting)
         controller.setConnectionStatus(.ready)
         controller.setAuthState(.signedIn(accountDescription: "Preview"))
+        controller.setPendingLogin(
+            PendingLogin(
+                method: .chatgpt,
+                authURL: URL(string: "https://example.com/login")!,
+                loginID: "login-1"
+            )
+        )
+        controller.setRateLimitState(
+            RateLimitState(
+                accountID: "account-1",
+                buckets: [
+                    RateLimitBucketState(
+                        id: "bucket-1",
+                        kind: .requests,
+                        limit: nil,
+                        remaining: nil,
+                        resetAt: nil,
+                        detail: nil
+                    )
+                ]
+            )
+        )
         controller.replaceThreadList([
             ThreadSummary(id: "thread-1", title: "One", previewText: "Preview", updatedAt: .now)
         ])
@@ -24,6 +46,8 @@ struct WorkspaceControllerTests {
         #expect(controller.connectionStatus == .disconnected)
         #expect(controller.threadSummaries.isEmpty)
         #expect(controller.authState == .unknown)
+        #expect(controller.pendingLogin == nil)
+        #expect(controller.rateLimitState == nil)
         #expect(controller.activeThreadSession == nil)
     }
 
@@ -53,5 +77,21 @@ struct WorkspaceControllerTests {
 
         #expect(controller.connectionStatus == .streaming)
         #expect(controller.authState == .signedOut)
+    }
+
+    @Test func upsertingThreadSummaryKeepsNewestThreadsSorted() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "workspace-sort"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let older = ThreadSummary(id: "thread-1", title: "Older", previewText: "One", updatedAt: .distantPast)
+        let newer = ThreadSummary(id: "thread-2", title: "Newer", previewText: "Two", updatedAt: .now)
+
+        controller.upsertThreadSummary(older)
+        controller.upsertThreadSummary(newer)
+        controller.upsertThreadSummary(
+            ThreadSummary(id: "thread-1", title: "Updated", previewText: "Latest", updatedAt: .now.addingTimeInterval(10))
+        )
+
+        #expect(controller.threadSummaries.map(\.id) == ["thread-1", "thread-2"])
+        #expect(controller.threadSummaries.first?.title == "Updated")
     }
 }
