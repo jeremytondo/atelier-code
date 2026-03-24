@@ -278,12 +278,16 @@ private struct ConversationTranscript: View {
 
 private struct TranscriptBody: View {
     let session: ThreadSession
+    @State private var transcriptWidth: CGFloat = 720
 
     var body: some View {
         ScrollViewReader { proxy in
             VStack(alignment: .leading, spacing: 16) {
                 ForEach(session.messages) { message in
-                    ConversationMessageBubble(message: message)
+                    ConversationMessageBubble(
+                        message: message,
+                        maxWidth: min(transcriptWidth * 0.72, 720)
+                    )
                         .id(message.id)
                 }
 
@@ -312,13 +316,29 @@ private struct TranscriptBody: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .onChange(of: session.messages.count) { _, _ in
+            .background {
+                GeometryReader { geometry in
+                    Color.clear
+                        .preference(key: TranscriptWidthPreferenceKey.self, value: geometry.size.width)
+                }
+            }
+            .onPreferenceChange(TranscriptWidthPreferenceKey.self) { transcriptWidth = $0 }
+            .onAppear {
                 scrollToLatest(using: proxy)
             }
-            .onChange(of: session.turnState.thinkingText) { _, _ in
+            .onChange(of: scrollAnchor) { _, _ in
                 scrollToLatest(using: proxy)
             }
         }
+    }
+
+    private var scrollAnchor: TranscriptScrollAnchor {
+        TranscriptScrollAnchor(
+            lastMessageID: session.messages.last?.id,
+            lastMessageText: session.messages.last?.text,
+            thinkingText: session.turnState.thinkingText,
+            failureDescription: session.turnState.failureDescription
+        )
     }
 
     private func scrollToLatest(using proxy: ScrollViewProxy) {
@@ -336,6 +356,7 @@ private struct TranscriptBody: View {
 
 private struct ConversationMessageBubble: View {
     let message: ConversationMessage
+    let maxWidth: CGFloat
 
     var body: some View {
         HStack {
@@ -352,7 +373,7 @@ private struct ConversationMessageBubble: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(16)
-            .frame(maxWidth: 620, alignment: .leading)
+            .frame(maxWidth: maxWidth, alignment: .leading)
             .background(message.role.backgroundColor, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 
             if message.role != .user {
@@ -429,7 +450,9 @@ private struct ComposerBar: View {
 
         switch controller.connectionStatus {
         case .ready:
-            return "Press Enter to send. Press Shift-Enter for a new line."
+            return controller.isAwaitingTurnStart
+                ? "Waiting for the bridge to acknowledge the new turn."
+                : "Press Enter to send. Press Shift-Enter for a new line."
         case .streaming:
             return "A turn is streaming. Cancel if you need to stop it."
         case .cancelling:
@@ -669,23 +692,46 @@ private final class PreviewWorkspaceRuntime: WorkspaceConversationRuntime {
 
     func start() async throws {}
 
-    func stop() async {}
+    func stop() async {
+        controller.setAwaitingTurnStart(false)
+    }
 
     func startThreadAndWait(title: String?) async throws -> ThreadSession {
         controller.openThread(id: UUID().uuidString, title: title ?? "Preview Thread")
     }
 
+    func resumeThreadAndWait(id: String) async throws -> ThreadSession {
+        controller.resumeThread(id: id, title: "Preview Thread")
+    }
+
     func startTurn(prompt: String, configuration: BridgeTurnStartConfiguration?) async throws {
         let session = controller.activeThreadSession ?? controller.openThread(id: UUID().uuidString, title: "Preview Thread")
         session.beginTurn(userPrompt: prompt)
+        controller.setAwaitingTurnStart(false)
         session.appendAssistantTextDelta("Preview assistant response.")
         session.completeTurn()
         controller.setConnectionStatus(.ready)
     }
 
     func cancelTurn(reason: String?) async throws {
+        controller.setAwaitingTurnStart(false)
         controller.activeThreadSession?.cancelTurn()
         controller.setConnectionStatus(.ready)
+    }
+}
+
+private struct TranscriptScrollAnchor: Equatable {
+    let lastMessageID: String?
+    let lastMessageText: String?
+    let thinkingText: String
+    let failureDescription: String?
+}
+
+private struct TranscriptWidthPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 720
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

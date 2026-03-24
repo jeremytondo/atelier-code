@@ -119,6 +119,7 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
 
     func stop() async {
         controller.setBridgeLifecycleState(.idle)
+        controller.setAwaitingTurnStart(false)
         controller.setConnectionStatus(.disconnected)
     }
 
@@ -126,10 +127,15 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
         controller.openThread(id: "ui-test-thread", title: title ?? "New Conversation")
     }
 
+    func resumeThreadAndWait(id: String) async throws -> ThreadSession {
+        controller.resumeThread(id: id, title: "Recovered Conversation")
+    }
+
     func startTurn(prompt: String, configuration: BridgeTurnStartConfiguration?) async throws {
         let session = controller.activeThreadSession ?? controller.openThread(id: "ui-test-thread", title: "New Conversation")
 
         session.beginTurn(userPrompt: prompt)
+        controller.setAwaitingTurnStart(false)
         controller.setConnectionStatus(.streaming)
 
         try await Task.sleep(nanoseconds: 40_000_000)
@@ -142,6 +148,7 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
 
     func cancelTurn(reason: String?) async throws {
         controller.setConnectionStatus(.cancelling)
+        controller.setAwaitingTurnStart(false)
         controller.activeThreadSession?.cancelTurn()
         controller.setConnectionStatus(.ready)
     }

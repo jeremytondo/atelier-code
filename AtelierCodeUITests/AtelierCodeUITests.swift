@@ -22,7 +22,6 @@ final class AtelierCodeUITests: XCTestCase {
         // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
-    @MainActor
     func testSelectingRecentWorkspaceShowsConversationShell() throws {
         let app = try makeApp(scenario: "recent-selection", workspaceName: "RecentSelection")
         app.launch()
@@ -36,12 +35,11 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Start the First Turn"].exists)
     }
 
-    @MainActor
     func testSendingPromptRendersTranscript() throws {
         let app = try makeApp(scenario: "ready", workspaceName: "TranscriptWorkspace")
         app.launch()
 
-        let composer = app.textFields["conversation-composer"]
+        let composer = app.textViews["conversation-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.click()
         composer.typeText("Build the conversation MVP")
@@ -52,7 +50,6 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Working through the request in the UI test harness."].waitForExistence(timeout: 5))
     }
 
-    @MainActor
     func testRetryRecoversFromConnectionError() throws {
         let app = try makeApp(scenario: "retry", workspaceName: "RetryWorkspace")
         app.launch()
@@ -63,12 +60,11 @@ final class AtelierCodeUITests: XCTestCase {
 
         retryButton.click()
 
-        let composer = app.textFields["conversation-composer"]
+        let composer = app.textViews["conversation-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Ready"].waitForExistence(timeout: 5))
     }
 
-    @MainActor
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {

@@ -1,9 +1,12 @@
 import Foundation
 import Observation
+import OSLog
 
 @MainActor
 @Observable
 final class AppModel {
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AtelierCode", category: "AppModel")
+
     private(set) var recentWorkspaces: [WorkspaceRecord]
     private(set) var lastSelectedWorkspacePath: String?
     private(set) var codexPathOverride: String?
@@ -17,6 +20,7 @@ final class AppModel {
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let runtimeFactory: @MainActor (WorkspaceController) -> any WorkspaceConversationRuntime
     @ObservationIgnored private var activeWorkspaceRuntime: (any WorkspaceConversationRuntime)?
+    @ObservationIgnored private var runtimeLifecycleTask: Task<Void, Never>?
 
     init(
         preferencesStore: any AppPreferencesStore = UserDefaultsAppPreferencesStore(),
@@ -106,14 +110,13 @@ final class AppModel {
 
     func clearSelectedWorkspace() {
         let previousRuntime = activeWorkspaceRuntime
+        runtimeLifecycleTask?.cancel()
         activeWorkspaceRuntime = nil
         activeWorkspaceController = nil
         lastSelectedWorkspacePath = nil
         persistPreferences()
 
-        Task {
-            await previousRuntime?.stop()
-        }
+        scheduleRuntimeLifecycle(previousRuntime: previousRuntime, nextRuntime: nil)
     }
 
     func setCodexPathOverride(_ path: String?) {
@@ -135,10 +138,7 @@ final class AppModel {
         let runtime = runtimeFactory(controller)
         activeWorkspaceRuntime = runtime
 
-        Task {
-            await previousRuntime?.stop()
-            await startRuntime(runtime)
-        }
+        scheduleRuntimeLifecycle(previousRuntime: previousRuntime, nextRuntime: runtime)
     }
 
     func canSendPrompt(_ prompt: String) -> Bool {
@@ -147,19 +147,7 @@ final class AppModel {
         }
 
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedPrompt.isEmpty == false else {
-            return false
-        }
-
-        guard controller.bridgeLifecycleState == .idle else {
-            return false
-        }
-
-        guard controller.connectionStatus == .ready else {
-            return false
-        }
-
-        return controller.activeThreadSession?.turnState.phase != .inProgress
+        return canSendNormalizedPrompt(trimmedPrompt, with: controller)
     }
 
     var canCancelTurn: Bool {
@@ -182,11 +170,13 @@ final class AppModel {
     @discardableResult
     func sendPrompt(_ prompt: String) async -> Bool {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard canSendPrompt(trimmedPrompt),
-              let controller = activeWorkspaceController,
+        guard let controller = activeWorkspaceController,
+              canSendNormalizedPrompt(trimmedPrompt, with: controller),
               let runtime = activeWorkspaceRuntime else {
             return false
         }
+
+        controller.setAwaitingTurnStart(true)
 
         do {
             if controller.activeThreadSession == nil {
@@ -199,8 +189,10 @@ final class AppModel {
             )
             return true
         } catch is CancellationError {
+            controller.setAwaitingTurnStart(false)
             return false
         } catch {
+            controller.setAwaitingTurnStart(false)
             controller.setConnectionStatus(.error(message: error.localizedDescription))
             if controller.activeThreadSession?.turnState.phase == .inProgress {
                 controller.activeThreadSession?.failTurn(error.localizedDescription)
@@ -238,10 +230,7 @@ final class AppModel {
         activeWorkspaceController = controller
         activeWorkspaceRuntime = runtime
 
-        Task {
-            await previousRuntime?.stop()
-            await startRuntime(runtime)
-        }
+        scheduleRuntimeLifecycle(previousRuntime: previousRuntime, nextRuntime: runtime)
     }
 
     private func startActiveWorkspaceRuntime() {
@@ -249,18 +238,26 @@ final class AppModel {
             return
         }
 
-        Task {
-            await startRuntime(runtime)
-        }
+        scheduleRuntimeLifecycle(previousRuntime: nil, nextRuntime: runtime)
     }
 
     private func startRuntime(_ runtime: any WorkspaceConversationRuntime) async {
+        guard isActiveRuntime(runtime) else {
+            await runtime.stop()
+            return
+        }
+
         do {
             try await runtime.start()
         } catch is CancellationError {
             return
         } catch {
-            // Runtime state is already updated by the concrete implementation.
+            Self.logger.error("Workspace runtime start failed: \(error.localizedDescription, privacy: .public)")
+        }
+
+        guard isActiveRuntime(runtime) else {
+            await runtime.stop()
+            return
         }
     }
 
@@ -269,11 +266,59 @@ final class AppModel {
             cwd: controller.workspace.canonicalPath,
             model: nil,
             reasoningEffort: nil,
-            sandboxPolicy: "workspace-write",
-            approvalPolicy: "on-request",
-            summaryMode: "concise",
+            sandboxPolicy: SandboxPolicy.workspaceWrite.rawValue,
+            approvalPolicy: ApprovalPolicy.onRequest.rawValue,
+            summaryMode: SummaryMode.concise.rawValue,
             environment: nil
         )
+    }
+
+    private func canSendNormalizedPrompt(_ prompt: String, with controller: WorkspaceController) -> Bool {
+        guard prompt.isEmpty == false else {
+            return false
+        }
+
+        guard controller.bridgeLifecycleState == .idle else {
+            return false
+        }
+
+        guard controller.connectionStatus == .ready else {
+            return false
+        }
+
+        guard controller.isAwaitingTurnStart == false else {
+            return false
+        }
+
+        return controller.activeThreadSession?.turnState.phase != .inProgress
+    }
+
+    private func scheduleRuntimeLifecycle(
+        previousRuntime: (any WorkspaceConversationRuntime)?,
+        nextRuntime: (any WorkspaceConversationRuntime)?
+    ) {
+        runtimeLifecycleTask?.cancel()
+        runtimeLifecycleTask = Task { [weak self] in
+            await previousRuntime?.stop()
+
+            guard let self, Task.isCancelled == false else {
+                return
+            }
+
+            guard let nextRuntime else {
+                return
+            }
+
+            await self.startRuntime(nextRuntime)
+        }
+    }
+
+    private func isActiveRuntime(_ runtime: any WorkspaceConversationRuntime) -> Bool {
+        guard let activeWorkspaceRuntime else {
+            return false
+        }
+
+        return ObjectIdentifier(activeWorkspaceRuntime as AnyObject) == ObjectIdentifier(runtime as AnyObject)
     }
 
     private static func normalizeRecentWorkspaces(_ workspaces: [WorkspaceRecord]) -> [WorkspaceRecord] {
@@ -330,6 +375,18 @@ private extension String {
     var nilIfEmpty: String? {
         isEmpty ? nil : self
     }
+}
+
+private enum SandboxPolicy: String {
+    case workspaceWrite = "workspace-write"
+}
+
+private enum ApprovalPolicy: String {
+    case onRequest = "on-request"
+}
+
+private enum SummaryMode: String {
+    case concise
 }
 
 private extension ConnectionStatus {
