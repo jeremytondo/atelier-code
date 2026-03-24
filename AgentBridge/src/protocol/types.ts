@@ -22,6 +22,7 @@ export type BridgeCommandType =
   | "account.login"
   | "account.logout";
 export type BridgeEventType =
+  | "thread.started"
   | "turn.started"
   | "message.delta"
   | "thinking.delta"
@@ -259,6 +260,10 @@ export interface TurnStartedPayload {
   startedAt?: ISO8601Timestamp;
 }
 
+export interface ThreadStartedPayload {
+  thread: ThreadSummary;
+}
+
 export interface MessageDeltaPayload {
   messageID: string;
   delta: string;
@@ -357,6 +362,10 @@ export interface TurnStartedEvent extends BridgeEventEnvelope<"turn.started", Tu
   turnID: string;
 }
 
+export interface ThreadStartedEvent extends BridgeEventEnvelope<"thread.started", ThreadStartedPayload> {
+  threadID: string;
+}
+
 export interface MessageDeltaEvent extends BridgeEventEnvelope<"message.delta", MessageDeltaPayload> {
   threadID: string;
   turnID: string;
@@ -437,6 +446,7 @@ export interface ErrorEvent extends BridgeEventEnvelope<"error", ErrorPayload> {
 export interface ProviderStatusEvent extends BridgeEventEnvelope<"provider.status", ProviderStatusPayload> {}
 
 export type BridgeEvent =
+  | ThreadStartedEvent
   | TurnStartedEvent
   | MessageDeltaEvent
   | ThinkingDeltaEvent

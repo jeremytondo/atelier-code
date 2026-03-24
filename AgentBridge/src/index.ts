@@ -5,16 +5,28 @@ import {
   CodexTransportError,
   type CodexTransportDisconnectReason,
 } from "./codex/codex-transport";
+import { CodexClient, type CodexClientAdapter } from "./codex/codex-client";
+import {
+  DefaultCodexEventMapper,
+  buildThreadStartedEvent,
+  buildThreadSummary,
+} from "./codex/codex-event-mapper";
 import { discoverCodexExecutable } from "./discovery/executable";
 import type {
+  AuthChangedEvent,
+  BridgeCommand,
+  BridgeEvent,
   BridgeHealthReport,
   BridgeRuntimeStartupRecord,
   BridgeStartupError,
   ErrorEvent,
   HelloEnvelope,
+  RateLimitUpdatedEvent,
   ProviderHealth,
   ProviderStatusEvent,
   ProviderSummary,
+  ThreadListResultEvent,
+  ThreadStartedEvent,
   WelcomeEnvelope,
 } from "./protocol/types";
 import {
@@ -31,10 +43,14 @@ interface BridgeSocketData {
   sessionID: string;
   handshakeComplete: boolean;
   transport: CodexAppServerTransport | null;
+  client: CodexClientAdapter | null;
+  eventMapper: DefaultCodexEventMapper | null;
   unsubscribeTransport: (() => void) | null;
 }
 
-await main();
+if (import.meta.main) {
+  await main();
+}
 
 async function main(): Promise<void> {
   const argumentsList = process.argv.slice(2);
@@ -62,6 +78,8 @@ async function startRuntimeServer(port: number): Promise<void> {
           sessionID: crypto.randomUUID(),
           handshakeComplete: false,
           transport: null,
+          client: null,
+          eventMapper: null,
           unsubscribeTransport: null,
         },
       });
@@ -201,18 +219,8 @@ async function handleSocketMessage(
     return;
   }
 
-  sendBridgeMessage(
-    socket,
-    buildErrorEvent(
-      "command_not_implemented",
-      `Bridge command ${parsedMessage.type} is not implemented until phase 3 lands.`,
-      parsedMessage.id,
-      "codex",
-      {
-        bridgePhase: 2,
-      },
-    ),
-  );
+  const events = await executeBridgeCommand(socket.data.client, parsedMessage as BridgeCommand);
+  sendBridgeEvents(socket, events);
 }
 
 async function completeHandshake(
@@ -295,13 +303,25 @@ async function connectTransportForSocket(
   }
 
   const transport = new CodexAppServerTransport();
+  const client = new CodexClient(transport);
+  const eventMapper = new DefaultCodexEventMapper();
   socket.data.transport = transport;
+  socket.data.client = client;
+  socket.data.eventMapper = eventMapper;
   socket.data.unsubscribeTransport = transport.subscribe((event) => {
-    if (event.type !== "disconnect") {
+    if (event.type === "notification") {
+      sendBridgeEvents(socket, eventMapper.mapNotification(event.notification));
+      return;
+    }
+
+    if (event.type === "serverRequest") {
+      sendBridgeEvents(socket, eventMapper.mapServerRequest(event.request));
       return;
     }
 
     socket.data.transport = null;
+    socket.data.client = null;
+    socket.data.eventMapper = null;
     socket.data.unsubscribeTransport = null;
 
     if (!socket.data.handshakeComplete) {
@@ -331,7 +351,7 @@ async function connectTransportForSocket(
   );
 
   try {
-    await transport.connect();
+    await client.connect();
     sendBridgeMessage(
       socket,
       buildProviderStatusEvent("ready", "Codex transport is connected and ready for phase 3 command mapping."),
@@ -370,6 +390,8 @@ async function disconnectSocketTransport(
 ): Promise<void> {
   const { transport, unsubscribeTransport } = socket.data;
   socket.data.transport = null;
+  socket.data.client = null;
+  socket.data.eventMapper = null;
   socket.data.unsubscribeTransport = null;
 
   unsubscribeTransport?.();
@@ -448,9 +470,18 @@ function buildErrorEvent(
 
 function sendBridgeMessage(
   socket: Bun.ServerWebSocket<BridgeSocketData>,
-  message: ErrorEvent | ProviderStatusEvent | WelcomeEnvelope,
+  message: ErrorEvent | ProviderStatusEvent | WelcomeEnvelope | BridgeEvent,
 ): void {
   socket.send(JSON.stringify(message));
+}
+
+function sendBridgeEvents(
+  socket: Bun.ServerWebSocket<BridgeSocketData>,
+  events: BridgeEvent[],
+): void {
+  for (const event of events) {
+    sendBridgeMessage(socket, event);
+  }
 }
 
 function mapDisconnectReasonToProviderStatus(
@@ -567,4 +598,179 @@ function isBridgeCommandEnvelope(
 
 function extractRequestID(candidateMessage: Record<string, unknown>): string | undefined {
   return typeof candidateMessage.id === "string" ? candidateMessage.id : undefined;
+}
+
+export async function executeBridgeCommand(
+  client: CodexClientAdapter | null,
+  command: BridgeCommand,
+): Promise<BridgeEvent[]> {
+  if (client === null) {
+    return [
+      buildErrorEvent(
+        "provider_not_ready",
+        "Codex transport is not connected yet.",
+        command.id,
+        "codex",
+      ),
+    ];
+  }
+
+  try {
+    switch (command.type) {
+      case "thread.start": {
+        const result = await client.startThread(command.id, command.payload);
+        return [buildThreadStartedEvent(command.id, result.thread)];
+      }
+      case "thread.resume": {
+        const result = await client.resumeThread(command.id, command.threadID, command.payload);
+        return [buildThreadStartedEvent(command.id, result.thread)];
+      }
+      case "thread.list": {
+        const result = await client.listThreads(command.id, command.payload);
+        const event: ThreadListResultEvent = {
+          type: "thread.list.result",
+          timestamp: new Date().toISOString(),
+          provider: "codex",
+          requestID: command.id,
+          payload: {
+            threads: result.threads.map((thread) => buildThreadSummary(thread)),
+            nextCursor: result.nextCursor,
+          },
+        };
+        return [event];
+      }
+      case "turn.start":
+        await client.startTurn(command.id, command.threadID, command.payload);
+        return [];
+      case "turn.cancel":
+        await client.cancelTurn(command.id, command.threadID, command.turnID);
+        return [];
+      case "approval.resolve":
+        await client.resolveApproval(command.payload.approvalID, command.payload);
+        return [];
+      case "account.read": {
+        const result = await client.readAccount(command.id, command.payload);
+        return buildAccountEvents(command.id, result);
+      }
+      case "account.login": {
+        await client.login(command.id, command.payload);
+        const account = await client.readAccount(`${command.id}:account`, {});
+        return buildAccountEvents(command.id, account);
+      }
+      case "account.logout":
+        await client.logout(command.id);
+        return [
+          {
+            type: "auth.changed",
+            timestamp: new Date().toISOString(),
+            provider: "codex",
+            requestID: command.id,
+            payload: {
+              state: "signed_out",
+              account: null,
+            },
+          },
+        ];
+    }
+  } catch (error) {
+    const detail =
+      error instanceof CodexTransportError
+        ? error.detail
+        : {
+            error: error instanceof Error ? error.message : String(error),
+          };
+
+    return [
+      buildErrorEvent(
+        error instanceof CodexTransportError ? error.code : "provider_command_failed",
+        error instanceof Error ? error.message : "Bridge command failed against Codex.",
+        command.id,
+        "codex",
+        detail,
+      ),
+    ];
+  }
+}
+
+function buildAccountEvents(
+  requestID: string,
+  result: {
+    account: {
+      type: "apiKey" | "chatgpt";
+      email?: string;
+      planType?: string;
+    } | null;
+    requiresOpenAIAuth: boolean;
+    rateLimits: {
+      limitId: string | null;
+      limitName: string | null;
+      primary: { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null } | null;
+      secondary: { usedPercent: number; windowDurationMins: number | null; resetsAt: number | null } | null;
+      planType: string | null;
+    } | null;
+  },
+): BridgeEvent[] {
+  const authEvent: AuthChangedEvent = {
+    type: "auth.changed",
+    timestamp: new Date().toISOString(),
+    provider: "codex",
+    requestID,
+    payload: result.account
+      ? {
+          state: "signed_in",
+          account: {
+            displayName:
+              result.account.type === "chatgpt"
+                ? result.account.email ?? `chatgpt${result.account.planType ? ` (${result.account.planType})` : ""}`
+                : "API Key",
+            email: result.account.email,
+          },
+        }
+      : {
+          state: result.requiresOpenAIAuth ? "signed_out" : "unknown",
+          account: null,
+        },
+  };
+
+  if (result.rateLimits === null) {
+    return [authEvent];
+  }
+
+  const buckets: RateLimitUpdatedEvent["payload"]["buckets"] = [];
+
+  if (result.rateLimits.primary !== null) {
+    buckets.push({
+      id: `${result.rateLimits.limitId ?? "primary"}:primary`,
+      kind: "requests",
+      resetAt:
+        result.rateLimits.primary.resetsAt !== null
+          ? new Date(result.rateLimits.primary.resetsAt * 1_000).toISOString()
+          : undefined,
+      detail: `${result.rateLimits.limitName ?? "primary"}: ${result.rateLimits.primary.usedPercent}% used`,
+    });
+  }
+
+  if (result.rateLimits.secondary !== null) {
+    buckets.push({
+      id: `${result.rateLimits.limitId ?? "secondary"}:secondary`,
+      kind: "tokens",
+      resetAt:
+        result.rateLimits.secondary.resetsAt !== null
+          ? new Date(result.rateLimits.secondary.resetsAt * 1_000).toISOString()
+          : undefined,
+      detail: `${result.rateLimits.limitName ?? "secondary"}: ${result.rateLimits.secondary.usedPercent}% used`,
+    });
+  }
+
+  const rateLimitEvent: RateLimitUpdatedEvent = {
+    type: "rateLimit.updated",
+    timestamp: new Date().toISOString(),
+    provider: "codex",
+    requestID,
+    payload: {
+      buckets,
+    },
+  };
+
+  return buckets.length > 0 ? [authEvent, rateLimitEvent] : [authEvent];
 }
