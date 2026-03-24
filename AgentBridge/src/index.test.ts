@@ -91,6 +91,56 @@ describe("executeBridgeCommand", () => {
     ]);
   });
 
+  test("emits a correlated turn started event for turn start commands", async () => {
+    const client = new FakeCodexClient();
+
+    const events = await executeBridgeCommand(client, {
+      id: "req-turn",
+      type: "turn.start",
+      timestamp: new Date().toISOString(),
+      provider: "codex",
+      threadID: "thread-1",
+      payload: {
+        prompt: "Ship it",
+      },
+    });
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "turn.started",
+        requestID: "req-turn",
+        threadID: "thread-1",
+        turnID: "turn-1",
+      }),
+    ]);
+  });
+
+  test("preserves browser login handoff details in account login result events", async () => {
+    const client = new FakeCodexClient();
+
+    const loginEvents = await executeBridgeCommand(client, {
+      id: "req-login",
+      type: "account.login",
+      timestamp: new Date().toISOString(),
+      provider: "codex",
+      payload: {
+        method: "chatgpt",
+      },
+    });
+
+    expect(loginEvents).toEqual([
+      expect.objectContaining({
+        type: "account.login.result",
+        requestID: "req-login",
+        payload: {
+          method: "chatgpt",
+          authURL: "https://example.com",
+          loginID: "login-1",
+        },
+      }),
+    ]);
+  });
+
   test("surfaces client failures as bridge errors", async () => {
     const client = new FailingCodexClient();
 

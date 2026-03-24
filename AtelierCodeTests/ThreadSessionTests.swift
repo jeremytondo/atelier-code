@@ -22,12 +22,13 @@ struct ThreadSessionTests {
 
         session.startActivity(id: "tool-1", kind: .tool, title: "xcodebuild", detail: "Launching")
         session.updateActivity(id: "tool-1", detail: "Streaming output")
+        session.appendActivityOutput(id: "tool-1", delta: "\nSecond chunk")
         session.completeActivity(id: "tool-1")
         session.startActivity(id: "file-1", kind: .fileChange, title: "ContentView.swift", detail: "Editing")
         session.completeActivity(id: "file-1", status: .completed, detail: "Applied patch")
 
         #expect(session.activityItems.count == 2)
-        #expect(session.activityItems[0].detail == "Streaming output")
+        #expect(session.activityItems[0].detail == "Streaming output\nSecond chunk")
         #expect(session.activityItems[0].status == .completed)
         #expect(session.activityItems[1].kind == .fileChange)
         #expect(session.activityItems[1].status == .completed)

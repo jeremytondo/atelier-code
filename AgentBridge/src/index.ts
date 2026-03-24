@@ -13,6 +13,7 @@ import {
 } from "./codex/codex-event-mapper";
 import { discoverCodexExecutable } from "./discovery/executable";
 import type {
+  AccountLoginResultEvent,
   AuthChangedEvent,
   BridgeCommand,
   BridgeEvent,
@@ -639,9 +640,22 @@ export async function executeBridgeCommand(
         };
         return [event];
       }
-      case "turn.start":
-        await client.startTurn(command.id, command.threadID, command.payload);
-        return [];
+      case "turn.start": {
+        const result = await client.startTurn(command.id, command.threadID, command.payload);
+        return [
+          {
+            type: "turn.started",
+            timestamp: new Date().toISOString(),
+            provider: "codex",
+            requestID: command.id,
+            threadID: command.threadID,
+            turnID: result.turnID,
+            payload: {
+              status: "in_progress",
+            },
+          },
+        ];
+      }
       case "turn.cancel":
         await client.cancelTurn(command.id, command.threadID, command.turnID);
         return [];
@@ -653,9 +667,25 @@ export async function executeBridgeCommand(
         return buildAccountEvents(command.id, result);
       }
       case "account.login": {
-        await client.login(command.id, command.payload);
+        const result = await client.login(command.id, command.payload);
+        const loginEvent: AccountLoginResultEvent = {
+          type: "account.login.result",
+          timestamp: new Date().toISOString(),
+          provider: "codex",
+          requestID: command.id,
+          payload: {
+            method: result.type,
+            authURL: result.authURL,
+            loginID: result.loginID,
+          },
+        };
+
+        if (result.authURL) {
+          return [loginEvent];
+        }
+
         const account = await client.readAccount(`${command.id}:account`, {});
-        return buildAccountEvents(command.id, account);
+        return [loginEvent, ...buildAccountEvents(command.id, account)];
       }
       case "account.logout":
         await client.logout(command.id);

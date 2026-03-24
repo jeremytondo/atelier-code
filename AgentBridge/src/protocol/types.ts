@@ -36,6 +36,7 @@ export type BridgeEventType =
   | "plan.updated"
   | "turn.completed"
   | "thread.list.result"
+  | "account.login.result"
   | "auth.changed"
   | "rateLimit.updated"
   | "error"
@@ -334,6 +335,12 @@ export interface ThreadListResultPayload {
   nextCursor?: string | null;
 }
 
+export interface AccountLoginResultPayload {
+  method: "apiKey" | "chatgpt" | "chatgptAuthTokens";
+  authURL?: string;
+  loginID?: string;
+}
+
 export interface AuthChangedPayload {
   state: AuthState;
   account?: AccountSummary | null;
@@ -436,6 +443,11 @@ export interface ThreadListResultEvent
   requestID: string;
 }
 
+export interface AccountLoginResultEvent
+  extends BridgeEventEnvelope<"account.login.result", AccountLoginResultPayload> {
+  requestID: string;
+}
+
 export interface AuthChangedEvent extends BridgeEventEnvelope<"auth.changed", AuthChangedPayload> {}
 
 export interface RateLimitUpdatedEvent
@@ -460,6 +472,7 @@ export type BridgeEvent =
   | PlanUpdatedEvent
   | TurnCompletedEvent
   | ThreadListResultEvent
+  | AccountLoginResultEvent
   | AuthChangedEvent
   | RateLimitUpdatedEvent
   | ErrorEvent

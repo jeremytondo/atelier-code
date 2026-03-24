@@ -146,6 +146,38 @@ enum AuthState: Equatable, Sendable {
     case signedIn(accountDescription: String)
 }
 
+enum AccountLoginMethod: String, Equatable, Sendable {
+    case apiKey
+    case chatgpt
+    case chatgptAuthTokens
+}
+
+struct PendingLogin: Equatable, Sendable {
+    var method: AccountLoginMethod
+    var authURL: URL
+    var loginID: String?
+}
+
+enum RateLimitBucketKind: String, Equatable, Sendable {
+    case requests
+    case tokens
+    case other
+}
+
+struct RateLimitBucketState: Equatable, Sendable, Identifiable {
+    let id: String
+    var kind: RateLimitBucketKind
+    var limit: Int?
+    var remaining: Int?
+    var resetAt: Date?
+    var detail: String?
+}
+
+struct RateLimitState: Equatable, Sendable {
+    var accountID: String?
+    var buckets: [RateLimitBucketState]
+}
+
 struct ThreadSummary: Equatable, Sendable, Identifiable {
     let id: String
     var title: String
