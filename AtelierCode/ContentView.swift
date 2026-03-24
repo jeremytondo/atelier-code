@@ -251,7 +251,11 @@ private struct ConversationSurface: View {
             return false
         }
 
-        return session.messages.isEmpty == false
+        return session.messages.isEmpty == false ||
+            session.turnItems.isEmpty == false ||
+            session.pendingApprovals.isEmpty == false ||
+            session.planState != nil ||
+            session.aggregatedDiff != nil
     }
 }
 
@@ -286,12 +290,12 @@ private struct TranscriptBody: View {
     var body: some View {
         ScrollViewReader { proxy in
             VStack(alignment: .leading, spacing: 16) {
-                ForEach(session.messages) { message in
+                ForEach(visibleMessages) { message in
                     ConversationMessageBubble(
                         message: message,
                         maxWidth: min(transcriptWidth * 0.72, 720)
                     )
-                        .id(message.id)
+                    .id(message.id)
                 }
 
                 TurnDetailsStack(
@@ -331,13 +335,24 @@ private struct TranscriptBody: View {
 
     private var scrollAnchor: TranscriptScrollAnchor {
         TranscriptScrollAnchor(
-            messages: session.messages,
+            messages: visibleMessages,
             turnState: session.turnState,
+            turnItems: session.turnItems,
             pendingApprovals: session.pendingApprovals,
-            activityItems: session.activityItems,
             planState: session.planState,
             aggregatedDiff: session.aggregatedDiff
         )
+    }
+
+    private var visibleMessages: [ConversationMessage] {
+        guard session.turnState.phase == .completed,
+              session.turnItems.contains(where: { $0.kind == .assistant }),
+              let lastMessage = session.messages.last,
+              lastMessage.role == .assistant else {
+            return session.messages
+        }
+
+        return Array(session.messages.dropLast())
     }
 
     private func scrollToLatest(using proxy: ScrollViewProxy) {
@@ -373,6 +388,8 @@ private struct ConversationMessageBubble: View {
                 Spacer(minLength: 48)
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("conversation-message-\(message.id)")
     }
 }
 
@@ -381,23 +398,12 @@ private struct TurnDetailsStack: View {
     let session: ThreadSession
     let maxWidth: CGFloat
 
-    @State private var isReasoningExpanded: Bool
-
-    init(appModel: AppModel, session: ThreadSession, maxWidth: CGFloat) {
-        self.appModel = appModel
-        self.session = session
-        self.maxWidth = maxWidth
-        _isReasoningExpanded = State(initialValue: session.turnState.phase == .inProgress)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if session.turnState.thinkingText.isEmpty == false {
-                ReasoningSection(
-                    text: session.turnState.thinkingText,
-                    isExpanded: $isReasoningExpanded,
-                    maxWidth: maxWidth
-                )
+            if session.turnItems.isEmpty == false {
+                ForEach(session.turnItems) { item in
+                    TurnItemRow(item: item, maxWidth: maxWidth)
+                }
             }
 
             if session.pendingApprovals.isEmpty == false {
@@ -410,21 +416,6 @@ private struct TurnDetailsStack: View {
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach(session.pendingApprovals) { approval in
                             ApprovalCard(appModel: appModel, approval: approval)
-                        }
-                    }
-                }
-            }
-
-            if session.activityItems.isEmpty == false {
-                TurnSectionCard(
-                    title: "Activity",
-                    systemImage: "waveform.path.ecg",
-                    maxWidth: maxWidth,
-                    accessibilityIdentifier: "turn-activity-section"
-                ) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        ForEach(session.activityItems) { activity in
-                            ActivityCard(activity: activity)
                         }
                     }
                 }
@@ -443,9 +434,58 @@ private struct TurnDetailsStack: View {
     }
 }
 
-private struct ReasoningSection: View {
-    let text: String
-    @Binding var isExpanded: Bool
+private struct TurnItemRow: View {
+    let item: TurnItem
+    let maxWidth: CGFloat
+
+    var body: some View {
+        Group {
+            switch item.kind {
+            case .assistant:
+                AssistantTurnItemRow(item: item, maxWidth: maxWidth)
+            case .reasoning:
+                ReasoningTurnItemRow(item: item, maxWidth: maxWidth)
+            case .tool, .fileChange:
+                ActivityTurnItemRow(item: item, maxWidth: maxWidth)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("turn-item-\(item.id)")
+    }
+}
+
+private struct AssistantTurnItemRow: View {
+    let item: TurnItem
+    let maxWidth: CGFloat
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 12) {
+                    Text("Assistant")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.blue)
+
+                    Spacer(minLength: 0)
+
+                    ActivityStatusBadge(status: item.status)
+                }
+
+                Text(item.text)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(16)
+            .frame(maxWidth: maxWidth, alignment: .leading)
+            .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            Spacer(minLength: 48)
+        }
+    }
+}
+
+private struct ReasoningTurnItemRow: View {
+    let item: TurnItem
     let maxWidth: CGFloat
 
     var body: some View {
@@ -455,16 +495,22 @@ private struct ReasoningSection: View {
             maxWidth: maxWidth,
             accessibilityIdentifier: "turn-reasoning-section"
         ) {
-            DisclosureGroup(isExpanded: $isExpanded) {
-                Text(text)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 12) {
+                    Text(item.status.label)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+
+                    Spacer(minLength: 0)
+
+                    ActivityStatusBadge(status: item.status)
+                }
+
+                Text(item.text)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                    .padding(.top, 4)
-            } label: {
-                Text(isExpanded ? "Hide details" : "Show details")
-                    .font(.subheadline.weight(.medium))
             }
         }
     }
@@ -540,17 +586,18 @@ private struct ApprovalCard: View {
     }
 }
 
-private struct ActivityCard: View {
-    let activity: ActivityItem
+private struct ActivityTurnItemRow: View {
+    let item: TurnItem
+    let maxWidth: CGFloat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(activity.title)
+                    Text(item.title)
                         .font(.headline)
 
-                    if let detail = activity.detail, detail.isEmpty == false {
+                    if let detail = item.detail, detail.isEmpty == false {
                         Text(detail)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -560,15 +607,15 @@ private struct ActivityCard: View {
 
                 Spacer(minLength: 0)
 
-                ActivityStatusBadge(status: activity.status)
+                ActivityStatusBadge(status: item.status)
             }
 
-            if activity.command?.isEmpty == false || activity.workingDirectory != nil {
-                CommandContextView(command: activity.command ?? "", workingDirectory: activity.workingDirectory)
+            if item.command?.isEmpty == false || item.workingDirectory != nil {
+                CommandContextView(command: item.command ?? "", workingDirectory: item.workingDirectory)
             }
 
-            if activity.output.isEmpty == false {
-                Text(activity.output)
+            if item.output.isEmpty == false {
+                Text(item.output)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -577,11 +624,11 @@ private struct ActivityCard: View {
                     .background(Color.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
 
-            if activity.files.isEmpty == false {
-                FileSummaryList(files: activity.files)
+            if item.files.isEmpty == false {
+                FileSummaryList(files: item.files)
             }
 
-            if let exitCode = activity.exitCode {
+            if let exitCode = item.exitCode {
                 Text("Exit code: \(exitCode)")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(exitCode == 0 ? .green : .secondary)
@@ -589,7 +636,7 @@ private struct ActivityCard: View {
             }
         }
         .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: maxWidth, alignment: .leading)
         .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
@@ -1190,8 +1237,8 @@ private final class PreviewWorkspaceRuntime: WorkspaceConversationRuntime {
 private struct TranscriptScrollAnchor: Equatable {
     let messages: [ConversationMessage]
     let turnState: TurnState
+    let turnItems: [TurnItem]
     let pendingApprovals: [ApprovalRequest]
-    let activityItems: [ActivityItem]
     let planState: PlanState?
     let aggregatedDiff: AggregatedDiff?
 }

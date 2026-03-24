@@ -397,13 +397,19 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 return
             }
 
-            session.appendAssistantTextDelta(payload.delta)
+            session.appendAssistantTextDelta(
+                payload.delta,
+                itemID: event.itemID ?? payload.messageID
+            )
         case .thinkingDelta(let payload):
             guard let session = session(for: event.threadID) else {
                 return
             }
 
-            session.appendThinkingDelta(payload.delta)
+            session.appendThinkingDelta(
+                payload.delta,
+                itemID: event.itemID ?? "reasoning-\(event.turnID ?? "active")"
+            )
         case .toolStarted(let payload):
             guard let session = session(for: event.threadID) else {
                 return

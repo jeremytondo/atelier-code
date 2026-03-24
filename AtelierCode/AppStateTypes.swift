@@ -208,8 +208,6 @@ struct TurnState: Equatable, Sendable {
     }
 
     var phase: Phase = .idle
-    var assistantMessageID: String?
-    var thinkingText = ""
     var failureDescription: String?
 }
 
@@ -228,6 +226,27 @@ enum ActivityStatus: String, Equatable, Sendable {
 struct ApprovalCommandContext: Equatable, Sendable {
     var command: String
     var workingDirectory: String?
+}
+
+enum TurnItemKind: String, Equatable, Sendable {
+    case assistant
+    case reasoning
+    case tool
+    case fileChange
+}
+
+struct TurnItem: Equatable, Sendable, Identifiable {
+    let id: String
+    let kind: TurnItemKind
+    var title: String
+    var text: String
+    var detail: String?
+    var command: String?
+    var workingDirectory: String?
+    var output: String
+    var files: [DiffFileChange]
+    var status: ActivityStatus
+    var exitCode: Int?
 }
 
 struct ActivityItem: Equatable, Sendable, Identifiable {

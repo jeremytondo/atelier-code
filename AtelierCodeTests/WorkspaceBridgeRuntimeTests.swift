@@ -222,6 +222,7 @@ struct WorkspaceBridgeRuntimeTests {
 
         try await runtime.startTurn(prompt: "Inspect the current turn")
         socketClient.enqueue(turnStartedJSON(requestID: "ateliercode-turn-start-4", threadID: "thread-1", turnID: "turn-1"))
+        socketClient.enqueue(messageDeltaJSON(threadID: "thread-1", turnID: "turn-1", itemID: "assistant-1", delta: "Checking the transcript."))
         socketClient.enqueue(thinkingDeltaJSON(threadID: "thread-1", turnID: "turn-1", delta: "Checking the streamed reasoning."))
         socketClient.enqueue(toolStartedJSON(
             threadID: "thread-1",
@@ -241,6 +242,7 @@ struct WorkspaceBridgeRuntimeTests {
             detail: "All tests passed.",
             exitCode: 0
         ))
+        socketClient.enqueue(messageDeltaJSON(threadID: "thread-1", turnID: "turn-1", itemID: "assistant-2", delta: "I have the tool result."))
         socketClient.enqueue(fileChangeStartedJSON(
             threadID: "thread-1",
             turnID: "turn-1",
@@ -260,19 +262,23 @@ struct WorkspaceBridgeRuntimeTests {
         socketClient.enqueue(diffUpdatedJSON(threadID: "thread-1", turnID: "turn-1"))
 
         try await waitUntil {
-            session.turnState.thinkingText.isEmpty == false &&
-            session.activityItems.count == 2 &&
+            session.turnItems.count == 5 &&
             session.pendingApprovals.count == 1 &&
             session.planState != nil &&
             session.aggregatedDiff != nil
         }
 
-        #expect(session.turnState.thinkingText == "Checking the streamed reasoning.")
-        #expect(session.activityItems[0].command == "swift test")
-        #expect(session.activityItems[0].workingDirectory == workspace.canonicalPath)
-        #expect(session.activityItems[0].output == "Compiling...\n")
-        #expect(session.activityItems[0].exitCode == 0)
-        #expect(session.activityItems[1].files == [
+        #expect(session.messages.map(\.text) == ["Inspect the current turn"])
+        #expect(session.turnItems.map(\.id) == ["assistant-1", "reasoning-turn-1", "tool-1", "assistant-2", "file-1"])
+        #expect(session.turnItems.map(\.kind) == [.assistant, .reasoning, .tool, .assistant, .fileChange])
+        #expect(session.turnItems[0].text == "Checking the transcript.")
+        #expect(session.turnItems[1].text == "Checking the streamed reasoning.")
+        #expect(session.turnItems[2].command == "swift test")
+        #expect(session.turnItems[2].workingDirectory == workspace.canonicalPath)
+        #expect(session.turnItems[2].output == "Compiling...\n")
+        #expect(session.turnItems[2].exitCode == 0)
+        #expect(session.turnItems[3].text == "I have the tool result.")
+        #expect(session.turnItems[4].files == [
             DiffFileChange(id: "AtelierCode/ContentView.swift", path: "AtelierCode/ContentView.swift", additions: 4, deletions: 1)
         ])
         #expect(session.pendingApprovals[0].command == ApprovalCommandContext(command: "xcodebuild test -scheme AtelierCode", workingDirectory: workspace.canonicalPath))
@@ -291,6 +297,77 @@ struct WorkspaceBridgeRuntimeTests {
             summary: "1 file changed",
             files: [DiffFileChange(id: "AtelierCode/ContentView.swift", path: "AtelierCode/ContentView.swift", additions: 4, deletions: 1)]
         ))
+    }
+
+    @Test func completedTurnArchivesAssistantTranscriptAndCancelledTurnKeepsInlineRows() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-inline-turn-terminal"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4667)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = WorkspaceBridgeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        let session = controller.openThread(id: "thread-1", title: "Thread")
+
+        try await runtime.startTurn(prompt: "Ship it")
+        socketClient.enqueue(turnStartedJSON(requestID: "ateliercode-turn-start-4", threadID: "thread-1", turnID: "turn-1"))
+        socketClient.enqueue(messageDeltaJSON(threadID: "thread-1", turnID: "turn-1", itemID: "assistant-1", delta: "First"))
+        socketClient.enqueue(toolStartedJSON(
+            threadID: "thread-1",
+            turnID: "turn-1",
+            activityID: "tool-1",
+            title: "Run tests",
+            detail: "Preparing",
+            command: "swift test",
+            workingDirectory: workspace.canonicalPath
+        ))
+        socketClient.enqueue(messageDeltaJSON(threadID: "thread-1", turnID: "turn-1", itemID: "assistant-2", delta: " reply"))
+        socketClient.enqueue(turnCompletedJSON(threadID: "thread-1", turnID: "turn-1", status: "completed"))
+
+        try await waitUntil {
+            session.turnState.phase == .completed &&
+            session.messages.map(\.text) == ["Ship it", "First reply"]
+        }
+
+        #expect(session.messages.map(\.text) == ["Ship it", "First reply"])
+        #expect(session.turnItems.map(\.kind) == [.assistant, .tool, .assistant])
+        #expect(session.turnItems.map(\.status) == [.completed, .completed, .completed])
+
+        try await runtime.startTurn(prompt: "Cancel it")
+        socketClient.enqueue(turnStartedJSON(requestID: "ateliercode-turn-start-5", threadID: "thread-1", turnID: "turn-2"))
+        socketClient.enqueue(messageDeltaJSON(threadID: "thread-1", turnID: "turn-2", itemID: "assistant-3", delta: "Partial"))
+        socketClient.enqueue(toolStartedJSON(
+            threadID: "thread-1",
+            turnID: "turn-2",
+            activityID: "tool-2",
+            title: "Patch files",
+            detail: "Applying changes",
+            command: "apply_patch",
+            workingDirectory: workspace.canonicalPath
+        ))
+        socketClient.enqueue(turnCompletedJSON(threadID: "thread-1", turnID: "turn-2", status: "cancelled"))
+
+        try await waitUntil {
+            session.turnState.phase == .cancelled &&
+            session.turnItems.count == 2
+        }
+
+        #expect(session.messages.map(\.text) == ["Ship it", "First reply", "Cancel it"])
+        #expect(session.turnItems.map(\.status) == [.cancelled, .cancelled])
+        #expect(session.turnItems.map(\.kind) == [.assistant, .tool])
     }
 
     @Test func startThreadAndWaitReturnsCreatedSession() async throws {
@@ -584,9 +661,11 @@ private func threadStartedJSON(requestID: String, threadID: String, threadTitle:
     """
 }
 
-private func messageDeltaJSON(threadID: String, turnID: String, delta: String) -> String {
-    """
-    {"type":"message.delta","timestamp":"2026-03-24T10:00:06Z","threadID":"\(threadID)","turnID":"\(turnID)","payload":{"messageID":"assistant-1","delta":"\(delta)"}}
+private func messageDeltaJSON(threadID: String, turnID: String, itemID: String? = nil, delta: String) -> String {
+    let itemFragment = itemID.map { "\"itemID\":\"\($0)\"," } ?? ""
+    let messageID = itemID ?? "assistant-1"
+    return """
+    {"type":"message.delta","timestamp":"2026-03-24T10:00:06Z","threadID":"\(threadID)","turnID":"\(turnID)",\(itemFragment)"payload":{"messageID":"\(messageID)","delta":"\(jsonEscaped(delta))"}}
     """
 }
 
