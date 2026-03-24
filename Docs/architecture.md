@@ -16,6 +16,10 @@ The user should be able to:
 - Use slash commands, skills, and other CLI-native features the underlying agent supports.
 - Manage multiple workspaces and sessions, similar to the Codex Desktop app.
 
+### Packaging Note
+
+AtelierCode is intended to ship as a direct-download macOS app outside the Mac App Store. The app is therefore planned around bundling and launching a local helper executable without depending on the macOS App Sandbox, while the separate "sandbox policy" references in this document continue to describe agent execution behavior instead of App Sandbox entitlements.
+
 ### UI Inspiration
 
 The primary UI inspirations are the Xcode Agent integration and the Codex Desktop app.
@@ -431,6 +435,19 @@ For the MVP, keep app and bridge versions in lockstep. As the protocol stabilize
 Swift app: Standard macOS app bundle (DMG or direct download).
 
 Bridge: Bundled with the app for the initial release using `bun build --compile` to produce a standalone executable inside the app bundle. No Bun runtime required on the user's machine for local mode. For remote mode, the bridge will also be independently installable.
+
+### Remote Bridge Installation Model
+
+Remote deployment should use a different packaging path than the local macOS app bundle.
+
+- Local mode: the bridge is embedded inside the signed macOS app bundle and updates when the app updates.
+- Remote mode: the app installs a prebuilt standalone bridge binary onto the remote machine instead of relying on the app bundle or requiring Bun to be installed remotely.
+- Preferred bootstrap flow: the app connects over SSH, detects remote OS and architecture, checks for a compatible bridge version in a user-scoped install directory, uploads or downloads the correct binary if needed, runs a healthcheck, and then launches the bridge.
+- Preferred remote install location: a versioned path inside the remote user's home directory such as `~/.ateliercode/bridge/<version>/ateliercode-agent-bridge`, with a `current` symlink or equivalent pointer for the active version.
+- The app and bridge should negotiate protocol compatibility on connect. If the remote bridge is missing or incompatible, the app should install or switch to a compatible version before starting a session.
+- Remote installation should avoid root privileges and should treat the bridge as a disposable runtime dependency that can be replaced or rolled back per host.
+- Remote binaries should be distributed as prebuilt artifacts for supported targets such as Linux and macOS. Independent remote installation does not require the remote machine to have Bun installed.
+- Before launching a remote bridge, the app should verify artifact integrity and trust, such as checksum validation and whatever signing/notarization story is appropriate for the distribution channel.
 
 ---
 

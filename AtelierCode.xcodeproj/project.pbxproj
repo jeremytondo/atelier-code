@@ -124,6 +124,8 @@
 				DEB6E8BC2F71D853004B8E3E /* Sources */,
 				DEB6E8BD2F71D853004B8E3E /* Frameworks */,
 				DEB6E8BE2F71D853004B8E3E /* Resources */,
+				DEF8A4D72F722F4A00B14211 /* Build AgentBridge */,
+				DEF8A4D82F722F7300B14211 /* Embed AgentBridge */,
 			);
 			buildRules = (
 			);
@@ -252,6 +254,59 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		DEF8A4D72F722F4A00B14211 /* Build AgentBridge */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/AgentBridge/package.json",
+				"$(SRCROOT)/AgentBridge/tsconfig.json",
+				"$(SRCROOT)/AgentBridge/src/index.ts",
+				"$(SRCROOT)/AgentBridge/src/protocol/types.ts",
+				"$(SRCROOT)/AgentBridge/src/protocol/version.ts",
+				"$(SRCROOT)/AgentBridge/src/discovery/executable.ts",
+				"$(SRCROOT)/AgentBridge/src/codex/codex-client.ts",
+				"$(SRCROOT)/AgentBridge/src/codex/codex-event-mapper.ts",
+				"$(SRCROOT)/AgentBridge/src/codex/codex-transport.ts",
+			);
+			name = "Build AgentBridge";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/ateliercode-agent-bridge",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nBUN_BIN=\"\"\nif [ -n \"${HOME:-}\" ]; then\n  for candidate in \"$HOME\"/.local/share/mise/installs/bun/*/bin/bun; do\n    if [ -x \"$candidate\" ]; then\n      BUN_BIN=\"$candidate\"\n    fi\n  done\nfi\nif [ -z \"$BUN_BIN\" ] && command -v bun >/dev/null 2>&1; then\n  BUN_BIN=\"$(command -v bun)\"\nfi\nif [ -z \"$BUN_BIN\" ]; then\n  echo \"error: bun is required to build AgentBridge. Install Bun and retry the app build.\" >&2\n  exit 1\nfi\ncd \"$SRCROOT/AgentBridge\"\n\"$BUN_BIN\" build --compile ./src/index.ts --outfile \"$DERIVED_FILE_DIR/ateliercode-agent-bridge\"\n";
+			showEnvVarsInLog = 0;
+		};
+		DEF8A4D82F722F7300B14211 /* Embed AgentBridge */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(DERIVED_FILE_DIR)/ateliercode-agent-bridge",
+			);
+			name = "Embed AgentBridge";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/MacOS/ateliercode-agent-bridge",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nSOURCE_PATH=\"$DERIVED_FILE_DIR/ateliercode-agent-bridge\"\nDESTINATION_PATH=\"$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/MacOS/ateliercode-agent-bridge\"\nif [ ! -f \"$SOURCE_PATH\" ]; then\n  echo \"error: AgentBridge executable was not produced at $SOURCE_PATH.\" >&2\n  exit 1\nfi\ncp \"$SOURCE_PATH\" \"$DESTINATION_PATH\"\nchmod 755 \"$DESTINATION_PATH\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		DEB6E8BC2F71D853004B8E3E /* Sources */ = {
@@ -420,7 +475,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 337D6CNU4E;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
@@ -452,7 +507,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 337D6CNU4E;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
