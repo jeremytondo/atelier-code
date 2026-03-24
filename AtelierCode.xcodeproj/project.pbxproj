@@ -106,10 +106,18 @@
 			path = Docs;
 			sourceTree = "<group>";
 		};
-		DEF1AA0F2F72290000E68955 /* plans */ = {
+		DEF0FEDC2F723E2600E68955 /* completed */ = {
 			isa = PBXGroup;
 			children = (
 				DEF1AA102F72290000E68955 /* runtime-foundation.md */,
+			);
+			path = completed;
+			sourceTree = "<group>";
+		};
+		DEF1AA0F2F72290000E68955 /* plans */ = {
+			isa = PBXGroup;
+			children = (
+				DEF0FEDC2F723E2600E68955 /* completed */,
 			);
 			path = plans;
 			sourceTree = "<group>";
