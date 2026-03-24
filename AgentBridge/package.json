@@ -1,0 +1,15 @@
+{
+  "name": "ateliercode-agent-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build --compile ./src/index.ts --outfile ./dist/ateliercode-agent-bridge",
+    "typecheck": "tsc --noEmit",
+    "healthcheck": "bun run ./src/index.ts --healthcheck"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.11",
+    "typescript": "^5.9.2"
+  }
+}

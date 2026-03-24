@@ -22,6 +22,7 @@ Implementation should follow the refined structure introduced during planning: s
   - `src/codex/codex-event-mapper.ts`
   - `src/discovery/executable.ts`
 - Bundle the compiled bridge executable inside the macOS app for local use
+- Disable App Sandbox in the app target configuration before bridge-launch work begins
 - Keep the bridge responsibility narrow: process lifecycle, protocol translation, approval relay, executable discovery, and health reporting
 
 ### 2. Build the app state architecture
