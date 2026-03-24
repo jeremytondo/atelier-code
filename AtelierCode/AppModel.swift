@@ -15,17 +15,21 @@ final class AppModel {
     @ObservationIgnored private let fileManager: FileManager
     @ObservationIgnored private let bridgeDiagnosticProvider: () -> StartupDiagnostic
     @ObservationIgnored private let now: () -> Date
+    @ObservationIgnored private let runtimeFactory: @MainActor (WorkspaceController) -> any WorkspaceConversationRuntime
+    @ObservationIgnored private var activeWorkspaceRuntime: (any WorkspaceConversationRuntime)?
 
     init(
         preferencesStore: any AppPreferencesStore = UserDefaultsAppPreferencesStore(),
         fileManager: FileManager = .default,
         bridgeDiagnosticProvider: @escaping () -> StartupDiagnostic = { StartupDiagnostic.defaultBridgeDiagnostic() },
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        runtimeFactory: @escaping @MainActor (WorkspaceController) -> any WorkspaceConversationRuntime = { WorkspaceBridgeRuntime(controller: $0) }
     ) {
         self.preferencesStore = preferencesStore
         self.fileManager = fileManager
         self.bridgeDiagnosticProvider = bridgeDiagnosticProvider
         self.now = now
+        self.runtimeFactory = runtimeFactory
 
         let loadedSnapshot = try? preferencesStore.loadSnapshot()
         let normalizedRecentWorkspaces = Self.normalizeRecentWorkspaces(loadedSnapshot?.recentWorkspaces ?? [])
@@ -52,7 +56,9 @@ final class AppModel {
                         displayName: URL(fileURLWithPath: selectedPath).lastPathComponent,
                         lastOpenedAt: now()
                     )
-                activeWorkspaceController = WorkspaceController(workspace: restoredWorkspace)
+                let controller = WorkspaceController(workspace: restoredWorkspace)
+                activeWorkspaceController = controller
+                activeWorkspaceRuntime = runtimeFactory(controller)
                 startupDiagnostics.append(.restoredWorkspacePresent(restoredWorkspace))
             } else {
                 lastSelectedWorkspacePath = nil
@@ -62,6 +68,10 @@ final class AppModel {
 
         if let loadedSnapshot, loadedSnapshot != snapshot {
             persistPreferences()
+        }
+
+        if activeWorkspaceRuntime != nil {
+            startActiveWorkspaceRuntime()
         }
     }
 
@@ -76,7 +86,15 @@ final class AppModel {
 
     func activateWorkspace(at url: URL) {
         let workspace = WorkspaceRecord(url: url, lastOpenedAt: now())
-        activeWorkspaceController = WorkspaceController(workspace: workspace)
+
+        if activeWorkspaceController?.workspace.canonicalPath == workspace.canonicalPath {
+            lastSelectedWorkspacePath = workspace.canonicalPath
+            recentWorkspaces = Self.upsertingRecentWorkspace(workspace, into: recentWorkspaces)
+            persistPreferences()
+            return
+        }
+
+        replaceActiveWorkspace(with: workspace)
         lastSelectedWorkspacePath = workspace.canonicalPath
         recentWorkspaces = Self.upsertingRecentWorkspace(workspace, into: recentWorkspaces)
         persistPreferences()
@@ -87,9 +105,15 @@ final class AppModel {
     }
 
     func clearSelectedWorkspace() {
+        let previousRuntime = activeWorkspaceRuntime
+        activeWorkspaceRuntime = nil
         activeWorkspaceController = nil
         lastSelectedWorkspacePath = nil
         persistPreferences()
+
+        Task {
+            await previousRuntime?.stop()
+        }
     }
 
     func setCodexPathOverride(_ path: String?) {
@@ -102,8 +126,154 @@ final class AppModel {
         persistPreferences()
     }
 
+    func retryActiveWorkspaceConnection() {
+        guard let controller = activeWorkspaceController else {
+            return
+        }
+
+        let previousRuntime = activeWorkspaceRuntime
+        let runtime = runtimeFactory(controller)
+        activeWorkspaceRuntime = runtime
+
+        Task {
+            await previousRuntime?.stop()
+            await startRuntime(runtime)
+        }
+    }
+
+    func canSendPrompt(_ prompt: String) -> Bool {
+        guard let controller = activeWorkspaceController else {
+            return false
+        }
+
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedPrompt.isEmpty == false else {
+            return false
+        }
+
+        guard controller.bridgeLifecycleState == .idle else {
+            return false
+        }
+
+        guard controller.connectionStatus == .ready else {
+            return false
+        }
+
+        return controller.activeThreadSession?.turnState.phase != .inProgress
+    }
+
+    var canCancelTurn: Bool {
+        guard let controller = activeWorkspaceController,
+              controller.activeThreadSession?.turnState.phase == .inProgress else {
+            return false
+        }
+
+        return controller.connectionStatus == .streaming
+    }
+
+    var canRetryActiveWorkspace: Bool {
+        guard let controller = activeWorkspaceController else {
+            return false
+        }
+
+        return controller.connectionStatus.isRetryable
+    }
+
+    @discardableResult
+    func sendPrompt(_ prompt: String) async -> Bool {
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canSendPrompt(trimmedPrompt),
+              let controller = activeWorkspaceController,
+              let runtime = activeWorkspaceRuntime else {
+            return false
+        }
+
+        do {
+            if controller.activeThreadSession == nil {
+                _ = try await runtime.startThreadAndWait(title: nil)
+            }
+
+            try await runtime.startTurn(
+                prompt: trimmedPrompt,
+                configuration: defaultTurnConfiguration(for: controller)
+            )
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            controller.setConnectionStatus(.error(message: error.localizedDescription))
+            if controller.activeThreadSession?.turnState.phase == .inProgress {
+                controller.activeThreadSession?.failTurn(error.localizedDescription)
+            }
+            return false
+        }
+    }
+
+    func cancelActiveTurn() async {
+        guard canCancelTurn,
+              let controller = activeWorkspaceController,
+              let runtime = activeWorkspaceRuntime else {
+            return
+        }
+
+        do {
+            try await runtime.cancelTurn(reason: "User cancelled the current turn.")
+        } catch is CancellationError {
+            return
+        } catch {
+            controller.setConnectionStatus(.error(message: error.localizedDescription))
+            controller.activeThreadSession?.failTurn(error.localizedDescription)
+        }
+    }
+
     private func persistPreferences() {
         try? preferencesStore.saveSnapshot(snapshot)
+    }
+
+    private func replaceActiveWorkspace(with workspace: WorkspaceRecord) {
+        let previousRuntime = activeWorkspaceRuntime
+        let controller = WorkspaceController(workspace: workspace)
+        let runtime = runtimeFactory(controller)
+
+        activeWorkspaceController = controller
+        activeWorkspaceRuntime = runtime
+
+        Task {
+            await previousRuntime?.stop()
+            await startRuntime(runtime)
+        }
+    }
+
+    private func startActiveWorkspaceRuntime() {
+        guard let runtime = activeWorkspaceRuntime else {
+            return
+        }
+
+        Task {
+            await startRuntime(runtime)
+        }
+    }
+
+    private func startRuntime(_ runtime: any WorkspaceConversationRuntime) async {
+        do {
+            try await runtime.start()
+        } catch is CancellationError {
+            return
+        } catch {
+            // Runtime state is already updated by the concrete implementation.
+        }
+    }
+
+    private func defaultTurnConfiguration(for controller: WorkspaceController) -> BridgeTurnStartConfiguration {
+        BridgeTurnStartConfiguration(
+            cwd: controller.workspace.canonicalPath,
+            model: nil,
+            reasoningEffort: nil,
+            sandboxPolicy: "workspace-write",
+            approvalPolicy: "on-request",
+            summaryMode: "concise",
+            environment: nil
+        )
     }
 
     private static func normalizeRecentWorkspaces(_ workspaces: [WorkspaceRecord]) -> [WorkspaceRecord] {
@@ -159,5 +329,16 @@ final class AppModel {
 private extension String {
     var nilIfEmpty: String? {
         isEmpty ? nil : self
+    }
+}
+
+private extension ConnectionStatus {
+    var isRetryable: Bool {
+        switch self {
+        case .disconnected, .error:
+            return true
+        case .connecting, .ready, .streaming, .cancelling:
+            return false
+        }
     }
 }

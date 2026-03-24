@@ -38,7 +38,7 @@ protocol BridgeSocketClient: AnyObject {
 }
 
 @MainActor
-final class WorkspaceBridgeRuntime {
+final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     typealias ProcessLauncher = (URL) throws -> any BridgeProcessHandle
     typealias SocketFactory = (URL) -> any BridgeSocketClient
     typealias OpenURLAction = (URL) -> Void
@@ -72,6 +72,7 @@ final class WorkspaceBridgeRuntime {
     private var socketClient: (any BridgeSocketClient)?
     private var receiveTask: Task<Void, Never>?
     private var pendingCommands: [String: PendingCommand] = [:]
+    private var pendingThreadStarts: [String: CheckedContinuation<ThreadSession, Error>] = [:]
     private var requestCounter = 0
     private var currentTurnID: String?
     private var isStopping = false
@@ -151,7 +152,13 @@ final class WorkspaceBridgeRuntime {
         processHandle?.terminate()
         processHandle = nil
         pendingCommands.removeAll()
+        let pendingThreadStarts = self.pendingThreadStarts
+        self.pendingThreadStarts.removeAll()
         currentTurnID = nil
+
+        for continuation in pendingThreadStarts.values {
+            continuation.resume(throwing: CancellationError())
+        }
 
         controller.setBridgeLifecycleState(.idle)
         controller.setConnectionStatus(.disconnected)
@@ -214,6 +221,36 @@ final class WorkspaceBridgeRuntime {
                 title: title
             )
         )
+    }
+
+    func startThreadAndWait(title: String? = nil) async throws -> ThreadSession {
+        let requestID = nextRequestID(prefix: "thread-start")
+        pendingCommands[requestID] = .threadStart
+
+        return try await withCheckedThrowingContinuation { continuation in
+            pendingThreadStarts[requestID] = continuation
+
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+
+                do {
+                    try await self.sendCommand(
+                        id: requestID,
+                        type: .threadStart,
+                        payload: BridgeThreadStartPayload(
+                            workspacePath: self.controller.workspace.canonicalPath,
+                            title: title
+                        )
+                    )
+                } catch {
+                    self.pendingCommands.removeValue(forKey: requestID)
+                    self.pendingThreadStarts.removeValue(forKey: requestID)?.resume(throwing: error)
+                }
+            }
+        }
     }
 
     func resumeThread(id: String) async throws {
@@ -437,13 +474,18 @@ final class WorkspaceBridgeRuntime {
 
         if let requestID,
            let pendingCommand = pendingCommands.removeValue(forKey: requestID) {
+            let session: ThreadSession
             switch pendingCommand {
             case .threadResume:
-                controller.resumeThread(id: summary.id, title: summary.title)
+                session = controller.resumeThread(id: summary.id, title: summary.title)
             case .threadStart:
-                controller.openThread(id: summary.id, title: summary.title)
+                session = controller.openThread(id: summary.id, title: summary.title)
             default:
-                controller.ensureActiveThreadSession(id: summary.id, title: summary.title)
+                session = controller.ensureActiveThreadSession(id: summary.id, title: summary.title)
+            }
+
+            if let continuation = pendingThreadStarts.removeValue(forKey: requestID) {
+                continuation.resume(returning: session)
             }
             return
         }
@@ -545,6 +587,8 @@ final class WorkspaceBridgeRuntime {
         if let requestID,
            let pendingCommand = pendingCommands.removeValue(forKey: requestID) {
             switch pendingCommand {
+            case .threadStart:
+                pendingThreadStarts.removeValue(forKey: requestID)?.resume(throwing: RuntimeBridgeError.requestFailed(message: payload.message))
             case .turnStart:
                 controller.activeThreadSession?.failTurn(payload.message)
                 currentTurnID = nil
@@ -697,9 +741,15 @@ final class WorkspaceBridgeRuntime {
         processHandle?.terminate()
         processHandle = nil
         pendingCommands.removeAll()
+        let pendingThreadStarts = self.pendingThreadStarts
+        self.pendingThreadStarts.removeAll()
         currentTurnID = nil
         controller.setBridgeLifecycleState(.idle)
         controller.setConnectionStatus(.error(message: message))
+
+        for continuation in pendingThreadStarts.values {
+            continuation.resume(throwing: RuntimeBridgeError.requestFailed(message: message))
+        }
 
         if controller.activeThreadSession?.turnState.phase == .inProgress {
             controller.activeThreadSession?.failTurn(message)
@@ -719,6 +769,17 @@ final class WorkspaceBridgeRuntime {
 
     private static func timestamp() -> String {
         ISO8601DateFormatter().string(from: .now)
+    }
+}
+
+private enum RuntimeBridgeError: LocalizedError {
+    case requestFailed(message: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .requestFailed(let message):
+            return message
+        }
     }
 }
 

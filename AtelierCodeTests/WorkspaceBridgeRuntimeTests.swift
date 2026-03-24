@@ -175,6 +175,80 @@ struct WorkspaceBridgeRuntimeTests {
         #expect(pendingCommandCount(in: runtime) == 0)
     }
 
+    @Test func startThreadAndWaitReturnsCreatedSession() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-thread-start"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4747)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = WorkspaceBridgeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        await settle()
+
+        async let session = runtime.startThreadAndWait()
+        await settle()
+
+        socketClient.enqueue(threadStartedJSON(
+            requestID: "ateliercode-thread-start-4",
+            threadID: "thread-42",
+            threadTitle: "Fresh Thread"
+        ))
+
+        let startedSession = try await session
+
+        #expect(startedSession.threadID == "thread-42")
+        #expect(startedSession.title == "Fresh Thread")
+        #expect(controller.activeThreadSession?.threadID == "thread-42")
+    }
+
+    @Test func streamedMessageDeltasCollapseIntoSingleAssistantTranscriptMessage() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-stream"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4848)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = WorkspaceBridgeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        await settle()
+
+        let session = controller.openThread(id: "thread-1", title: "Thread")
+
+        try await runtime.startTurn(prompt: "Show the transcript")
+        socketClient.enqueue(turnStartedJSON(requestID: "ateliercode-turn-start-4", threadID: "thread-1", turnID: "turn-1"))
+        socketClient.enqueue(messageDeltaJSON(threadID: "thread-1", turnID: "turn-1", delta: "First chunk"))
+        socketClient.enqueue(messageDeltaJSON(threadID: "thread-1", turnID: "turn-1", delta: " and second chunk"))
+        socketClient.enqueue(turnCompletedJSON(threadID: "thread-1", turnID: "turn-1", status: "completed"))
+        await settle()
+
+        #expect(session.messages.count == 2)
+        #expect(session.messages[0].text == "Show the transcript")
+        #expect(session.messages[1].text == "First chunk and second chunk")
+        #expect(session.turnState.phase == .completed)
+        #expect(controller.connectionStatus == .ready)
+    }
+
     @Test func unexpectedBridgeExitMarksConnectionErrorAndFailsInFlightTurn() async throws {
         let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-exit"), lastOpenedAt: .now)
         let controller = WorkspaceController(workspace: workspace)
@@ -334,6 +408,18 @@ private func accountLoginResultJSON(requestID: String, authURL: String, loginID:
 private func turnStartedJSON(requestID: String, threadID: String, turnID: String) -> String {
     """
     {"type":"turn.started","timestamp":"2026-03-24T10:00:06Z","requestID":"\(requestID)","threadID":"\(threadID)","turnID":"\(turnID)","payload":{"status":"in_progress"}}
+    """
+}
+
+private func threadStartedJSON(requestID: String, threadID: String, threadTitle: String) -> String {
+    """
+    {"type":"thread.started","timestamp":"2026-03-24T10:00:05Z","requestID":"\(requestID)","threadID":"\(threadID)","payload":{"thread":{"id":"\(threadID)","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:05Z"}}}
+    """
+}
+
+private func messageDeltaJSON(threadID: String, turnID: String, delta: String) -> String {
+    """
+    {"type":"message.delta","timestamp":"2026-03-24T10:00:06Z","threadID":"\(threadID)","turnID":"\(turnID)","payload":{"messageID":"assistant-1","delta":"\(delta)"}}
     """
 }
 

@@ -47,7 +47,9 @@ describe("CodexClient", () => {
             name: "AtelierCode AgentBridge",
             version: "0.1.0",
           },
-          capabilities: null,
+          capabilities: {
+            experimentalApi: true,
+          },
         },
       },
       {
