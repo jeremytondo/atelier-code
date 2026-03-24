@@ -9,7 +9,11 @@ import SwiftUI
 
 @main
 struct AtelierCodeApp: App {
-    @State private var appModel = AppModel()
+    @State private var appModel: AppModel
+
+    init() {
+        _appModel = State(initialValue: AppBootstrap.makeAppModel())
+    }
 
     var body: some Scene {
         WindowGroup {

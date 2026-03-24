@@ -129,7 +129,9 @@ export class CodexClient implements CodexClientAdapter {
           name: CODEX_CLIENT_NAME,
           version: CODEX_CLIENT_VERSION,
         },
-        capabilities: null,
+        capabilities: {
+          experimentalApi: true,
+        },
       },
     });
     this.initialized = true;

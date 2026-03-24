@@ -12,6 +12,7 @@ final class WorkspaceController {
     private(set) var pendingLogin: PendingLogin?
     private(set) var rateLimitState: RateLimitState?
     private(set) var activeThreadSession: ThreadSession?
+    private(set) var isAwaitingTurnStart: Bool
 
     init(workspace: WorkspaceRecord) {
         self.workspace = workspace
@@ -22,6 +23,7 @@ final class WorkspaceController {
         self.pendingLogin = nil
         self.rateLimitState = nil
         self.activeThreadSession = nil
+        self.isAwaitingTurnStart = false
     }
 
     func activate(workspace: WorkspaceRecord) {
@@ -37,6 +39,7 @@ final class WorkspaceController {
         pendingLogin = nil
         rateLimitState = nil
         activeThreadSession = nil
+        isAwaitingTurnStart = false
     }
 
     func setBridgeLifecycleState(_ state: BridgeLifecycleState) {
@@ -109,5 +112,9 @@ final class WorkspaceController {
 
     func clearActiveThreadSession() {
         activeThreadSession = nil
+    }
+
+    func setAwaitingTurnStart(_ isAwaitingTurnStart: Bool) {
+        self.isAwaitingTurnStart = isAwaitingTurnStart
     }
 }

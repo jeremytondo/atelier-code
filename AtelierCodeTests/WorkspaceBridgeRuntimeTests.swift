@@ -27,7 +27,7 @@ struct WorkspaceBridgeRuntimeTests {
         )
 
         try await runtime.start()
-        await settle()
+        try await waitUntil { controller.threadSummaries.count == 1 }
 
         #expect(controller.bridgeLifecycleState == .idle)
         #expect(controller.connectionStatus == .ready)
@@ -65,7 +65,7 @@ struct WorkspaceBridgeRuntimeTests {
                 loginID: "login-42"
             )
         )
-        await settle()
+        try await waitUntil { controller.pendingLogin != nil }
 
         #expect(openedURLs == [URL(string: "https://example.com/login")!])
         #expect(controller.pendingLogin == PendingLogin(
@@ -75,7 +75,7 @@ struct WorkspaceBridgeRuntimeTests {
         ))
 
         socketClient.enqueue(authChangedJSON(requestID: nil, state: "signed_in", displayName: "chatgpt (pro)"))
-        await settle()
+        try await waitUntil { controller.pendingLogin == nil && controller.authState == .signedIn(accountDescription: "chatgpt (pro)") }
 
         #expect(controller.pendingLogin == nil)
         #expect(controller.authState == .signedIn(accountDescription: "chatgpt (pro)"))
@@ -101,7 +101,7 @@ struct WorkspaceBridgeRuntimeTests {
         )
 
         try await runtime.start()
-        await settle()
+        try await waitUntil { controller.rateLimitState?.buckets.count == 1 }
 
         #expect(controller.rateLimitState?.buckets.count == 1)
         #expect(pendingCommandCount(in: runtime) == 0)
@@ -109,7 +109,7 @@ struct WorkspaceBridgeRuntimeTests {
         try await runtime.refreshAccount()
         #expect(pendingCommandCount(in: runtime) == 1)
         socketClient.enqueue(authChangedJSON(requestID: "ateliercode-account-read-4", state: "signed_out", displayName: nil))
-        await settle()
+        try await waitUntil { controller.authState == .signedOut && pendingCommandCount(in: runtime) == 0 }
 
         #expect(controller.authState == .signedOut)
         #expect(controller.rateLimitState == nil)
@@ -118,7 +118,7 @@ struct WorkspaceBridgeRuntimeTests {
         try await runtime.logout()
         #expect(pendingCommandCount(in: runtime) == 1)
         socketClient.enqueue(authChangedJSON(requestID: "ateliercode-account-logout-5", state: "signed_out", displayName: nil))
-        await settle()
+        try await waitUntil { pendingCommandCount(in: runtime) == 0 }
 
         #expect(controller.rateLimitState == nil)
         #expect(pendingCommandCount(in: runtime) == 0)
@@ -143,7 +143,7 @@ struct WorkspaceBridgeRuntimeTests {
         )
 
         try await runtime.start()
-        await settle()
+        try await waitUntil { controller.connectionStatus == .ready && pendingCommandCount(in: runtime) == 0 }
 
         let session = controller.openThread(id: "thread-1", title: "Thread")
         session.enqueueApprovalRequest(
@@ -158,21 +158,141 @@ struct WorkspaceBridgeRuntimeTests {
         try await runtime.startTurn(prompt: "Ship it")
         #expect(pendingCommandCount(in: runtime) == 1)
         socketClient.enqueue(turnStartedJSON(requestID: "ateliercode-turn-start-4", threadID: "thread-1", turnID: "turn-1"))
-        await settle()
+        try await waitUntil { pendingCommandCount(in: runtime) == 0 && controller.connectionStatus == .streaming }
 
         #expect(pendingCommandCount(in: runtime) == 0)
 
         try await runtime.cancelTurn()
         #expect(pendingCommandCount(in: runtime) == 1)
         socketClient.enqueue(turnCompletedJSON(threadID: "thread-1", turnID: "turn-1", status: "cancelled"))
-        await settle()
+        try await waitUntil { pendingCommandCount(in: runtime) == 0 && session.turnState.phase == .cancelled }
 
         #expect(pendingCommandCount(in: runtime) == 0)
 
         try await runtime.resolveApproval(id: "approval-1", resolution: .approved)
-        await settle()
+        try await waitUntil { pendingCommandCount(in: runtime) == 0 && session.pendingApprovals.isEmpty }
 
         #expect(pendingCommandCount(in: runtime) == 0)
+    }
+
+    @Test func startThreadAndWaitReturnsCreatedSession() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-thread-start"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4747)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = WorkspaceBridgeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        async let session = runtime.startThreadAndWait()
+        try await waitUntil { pendingThreadStartCount(in: runtime) == 1 }
+
+        socketClient.enqueue(threadStartedJSON(
+            requestID: "ateliercode-thread-start-4",
+            threadID: "thread-42",
+            threadTitle: "Fresh Thread"
+        ))
+
+        let startedSession = try await session
+
+        #expect(startedSession.threadID == "thread-42")
+        #expect(startedSession.title == "Fresh Thread")
+        #expect(controller.activeThreadSession?.threadID == "thread-42")
+    }
+
+    @Test func cancelledStartThreadAndWaitIgnoresLateThreadStartedEvent() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-thread-cancel"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4748)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = WorkspaceBridgeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        let sessionTask = Task { try await runtime.startThreadAndWait() }
+        try await waitUntil { pendingThreadStartCount(in: runtime) == 1 }
+
+        sessionTask.cancel()
+
+        do {
+            _ = try await sessionTask.value
+            Issue.record("Expected startThreadAndWait cancellation.")
+        } catch is CancellationError {
+        }
+
+        try await waitUntil { pendingThreadStartCount(in: runtime) == 0 && abandonedThreadRequestCount(in: runtime) == 1 }
+
+        socketClient.enqueue(threadStartedJSON(
+            requestID: "ateliercode-thread-start-4",
+            threadID: "thread-late",
+            threadTitle: "Late Thread"
+        ))
+
+        try await waitUntil { controller.threadSummaries.contains(where: { $0.id == "thread-late" }) }
+
+        #expect(controller.activeThreadSession == nil)
+        #expect(abandonedThreadRequestCount(in: runtime) == 0)
+    }
+
+    @Test func streamedMessageDeltasCollapseIntoSingleAssistantTranscriptMessage() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-stream"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4848)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = WorkspaceBridgeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        let session = controller.openThread(id: "thread-1", title: "Thread")
+
+        try await runtime.startTurn(prompt: "Show the transcript")
+        socketClient.enqueue(turnStartedJSON(requestID: "ateliercode-turn-start-4", threadID: "thread-1", turnID: "turn-1"))
+        socketClient.enqueue(messageDeltaJSON(threadID: "thread-1", turnID: "turn-1", delta: "First chunk"))
+        socketClient.enqueue(messageDeltaJSON(threadID: "thread-1", turnID: "turn-1", delta: " and second chunk"))
+        socketClient.enqueue(turnCompletedJSON(threadID: "thread-1", turnID: "turn-1", status: "completed"))
+        try await waitUntil { session.turnState.phase == .completed }
+
+        #expect(session.messages.count == 2)
+        #expect(session.messages[0].text == "Show the transcript")
+        #expect(session.messages[1].text == "First chunk and second chunk")
+        #expect(session.turnState.phase == .completed)
+        #expect(controller.connectionStatus == .ready)
     }
 
     @Test func unexpectedBridgeExitMarksConnectionErrorAndFailsInFlightTurn() async throws {
@@ -199,7 +319,10 @@ struct WorkspaceBridgeRuntimeTests {
         controller.setConnectionStatus(.streaming)
 
         processHandle.exit(code: 9)
-        await settle()
+        try await waitUntil {
+            controller.connectionStatus == .error(message: "The embedded bridge exited unexpectedly with status 9.") &&
+            session.turnState.phase == .failed
+        }
 
         #expect(controller.connectionStatus == .error(message: "The embedded bridge exited unexpectedly with status 9."))
         #expect(session.turnState.phase == .failed)
@@ -337,6 +460,18 @@ private func turnStartedJSON(requestID: String, threadID: String, turnID: String
     """
 }
 
+private func threadStartedJSON(requestID: String, threadID: String, threadTitle: String) -> String {
+    """
+    {"type":"thread.started","timestamp":"2026-03-24T10:00:05Z","requestID":"\(requestID)","threadID":"\(threadID)","payload":{"thread":{"id":"\(threadID)","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:05Z"}}}
+    """
+}
+
+private func messageDeltaJSON(threadID: String, turnID: String, delta: String) -> String {
+    """
+    {"type":"message.delta","timestamp":"2026-03-24T10:00:06Z","threadID":"\(threadID)","turnID":"\(turnID)","payload":{"messageID":"assistant-1","delta":"\(delta)"}}
+    """
+}
+
 private func turnCompletedJSON(threadID: String, turnID: String, status: String) -> String {
     """
     {"type":"turn.completed","timestamp":"2026-03-24T10:00:07Z","threadID":"\(threadID)","turnID":"\(turnID)","payload":{"status":"\(status)","detail":null}}
@@ -351,6 +486,22 @@ private func pendingCommandCount(in runtime: WorkspaceBridgeRuntime) -> Int {
     return Mirror(reflecting: pendingCommands).children.count
 }
 
+private func pendingThreadStartCount(in runtime: WorkspaceBridgeRuntime) -> Int {
+    guard let pendingThreadStarts = Mirror(reflecting: runtime).children.first(where: { $0.label == "pendingThreadStarts" })?.value else {
+        return 0
+    }
+
+    return Mirror(reflecting: pendingThreadStarts).children.count
+}
+
+private func abandonedThreadRequestCount(in runtime: WorkspaceBridgeRuntime) -> Int {
+    guard let abandonedThreadRequests = Mirror(reflecting: runtime).children.first(where: { $0.label == "abandonedThreadRequestIDs" })?.value else {
+        return 0
+    }
+
+    return Mirror(reflecting: abandonedThreadRequests).children.count
+}
+
 private func sentMessageTypes(from messages: [String]) -> [String] {
     messages.compactMap { message in
         guard let data = message.data(using: .utf8),
@@ -362,8 +513,20 @@ private func sentMessageTypes(from messages: [String]) -> [String] {
     }
 }
 
-private func settle() async {
-    for _ in 0..<10 {
-        await Task.yield()
+private func waitUntil(
+    timeoutNanoseconds: UInt64 = 1_000_000_000,
+    pollNanoseconds: UInt64 = 10_000_000,
+    _ condition: @escaping @MainActor () -> Bool
+) async throws {
+    let deadline = ContinuousClock.now + .nanoseconds(Int64(timeoutNanoseconds))
+
+    while ContinuousClock.now < deadline {
+        if await condition() {
+            return
+        }
+
+        try await Task.sleep(nanoseconds: pollNanoseconds)
     }
+
+    Issue.record("Timed out waiting for test condition.")
 }
