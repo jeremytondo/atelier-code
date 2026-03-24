@@ -487,3 +487,14 @@ export interface BridgeHealthReport {
   providers: ProviderHealth[];
   errors: BridgeStartupError[];
 }
+
+export interface BridgeRuntimeStartupRecord {
+  recordType: "bridge.startup";
+  bridgeVersion: string;
+  protocolVersion: number;
+  transport: BridgeTransport;
+  host: string;
+  port: number;
+  pid: number;
+  startedAt: ISO8601Timestamp;
+}
