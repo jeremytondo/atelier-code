@@ -166,6 +166,7 @@ All messages are JSON, newline-delimited.
 - `turn.completed` — A turn has finished (with status).
 - `thread.started` — A thread was created or resumed.
 - `thread.list.result` — Response to a thread list request.
+- `account.login.result` — Response to a login request, including browser-login handoff data such as auth URL and login identifier when needed.
 - `auth.changed` — Authentication state changed.
 - `rateLimit.updated` — Rate limit information updated.
 - `error` — An error occurred.
@@ -239,6 +240,14 @@ Each turn supports configuration overrides: model selection, effort level, worki
 ### Codex Authentication
 
 The Codex App Server handles auth internally. The bridge relays auth operations: API key login, ChatGPT browser-based OAuth flow, account state queries, and rate limit notifications.
+
+Browser-based ChatGPT login should be treated as the default user-facing path rather than an edge case. The bridge protocol must therefore include a dedicated login result event so the app can receive and act on structured login-initiation data such as:
+
+- the browser auth URL to open
+- a login identifier or session identifier for correlating completion/cancellation updates
+- provider-specific mode details needed to render the right UX without exposing raw Codex protocol details above the bridge boundary
+
+This keeps API-key login optional instead of making it the only fully supported path.
 
 ### Codex Review Mode
 
@@ -396,7 +405,14 @@ Bridge: Auth operation relay (account read, login, logout, rate limits).
 
 Swift app: Auth state rendering, login flows, rate limit display, error recovery.
 
-Goal: first-launch experience works without external Codex setup.
+Authentication phase work explicitly includes browser-based ChatGPT login end to end:
+
+- app sends `account.login`
+- bridge returns `account.login.result` with login-initiation data when browser handoff is required
+- app opens the auth URL and tracks the pending login session
+- bridge relays completion, cancellation, refreshed account state, and rate-limit updates back into the session model
+
+Goal: first-launch experience works without requiring the user to provide an API key.
 
 ### Phase 5: UI Polish
 

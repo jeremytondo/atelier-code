@@ -44,9 +44,10 @@ Implementation should follow the refined structure introduced during planning: s
 - Implement a versioned bridge protocol with:
   - handshake messages: `hello`, `welcome`
   - command messages: `thread.start`, `thread.resume`, `thread.list`, `turn.start`, `turn.cancel`, `approval.resolve`, `account.read`, `account.login`, `account.logout`
-  - event messages: `turn.started`, `message.delta`, `thinking.delta`, `tool.started`, `tool.output`, `tool.completed`, `fileChange.started`, `fileChange.completed`, `approval.requested`, `diff.updated`, `plan.updated`, `turn.completed`, `thread.list.result`, `auth.changed`, `rateLimit.updated`, `error`, `provider.status`
+  - event messages: `turn.started`, `message.delta`, `thinking.delta`, `tool.started`, `tool.output`, `tool.completed`, `fileChange.started`, `fileChange.completed`, `approval.requested`, `diff.updated`, `plan.updated`, `turn.completed`, `thread.list.result`, `account.login.result`, `auth.changed`, `rateLimit.updated`, `error`, `provider.status`
 - Spawn `codex app-server` over stdio and map Codex JSONL notifications into the bridge protocol
 - Include request/response correlation, partial-frame assembly, malformed-message handling, version mismatch handling, and bridge restart/reconnect behavior
+- Treat browser-based ChatGPT login as a first-class flow: the bridge must surface login initiation data such as auth URL and login/session identifiers so the app can complete sign-in without requiring an API key
 
 ### 4. Deliver the UI in phases
 
@@ -68,6 +69,7 @@ Implementation should follow the refined structure introduced during planning: s
 - Phase 4: account and readiness
   - codex binary discovery through PATH lookup, known install-path probing, and manual override
   - login, logout, account state, and rate-limit display
+  - browser-based ChatGPT login flow, including opening the provider auth URL from bridge-provided login result data and reacting to completion/cancellation updates
 - Phase 5: polish
   - richer Markdown rendering
   - syntax-highlighted code and diffs
@@ -97,6 +99,7 @@ Implementation should follow the refined structure introduced during planning: s
   - request/response correlation with interleaved notifications
   - delta assembly for assistant text, reasoning, tool output, and turn completion
   - approval request relay and resolution
+  - browser-login initiation relay with auth URL handoff to the app
   - malformed payload and protocol mismatch handling
 - App state handling:
   - new thread start
@@ -121,6 +124,7 @@ Implementation should follow the refined structure introduced during planning: s
 - Initial local transport is WebSocket
 - V1 supports one active workspace per window
 - The app may perform app-owned actions such as workspace selection, binary discovery, auth URL opening, and preference storage
+- Browser-based provider login is a required first-party flow and must not depend on the user supplying an API key
 - The app does not read files, write files, or run commands on behalf of the agent
 - Codex remains the source of truth for thread persistence
 - Remote support, Claude/Gemini adapters, and broader capability extraction are deferred until the Codex implementation is stable
