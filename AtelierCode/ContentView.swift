@@ -131,23 +131,58 @@ private struct ActiveWorkspaceConversationView: View {
     let appModel: AppModel
     let controller: WorkspaceController
     @Binding var composerText: String
+    @State private var composerHeight: CGFloat = 260
+
+    private let floatingComposerMaxWidth: CGFloat = 740
+    private let contentPadding: CGFloat = 24
+    private let floatingComposerBottomPadding: CGFloat = 20
+    private let transcriptComposerSpacing: CGFloat = 20
+
+    private var composerClearance: CGFloat {
+        composerHeight + floatingComposerBottomPadding + transcriptComposerSpacing
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .bottom) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    ConversationSurface(appModel: appModel, controller: controller)
+                    ConversationSurface(
+                        appModel: appModel,
+                        controller: controller,
+                        bottomInset: composerClearance
+                    )
+                    .frame(maxWidth: floatingComposerMaxWidth, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
                 }
-                .padding(24)
+                .padding(.horizontal, contentPadding)
+                .padding(.top, contentPadding)
+                .padding(.bottom, composerClearance)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Divider()
-
             ComposerBar(appModel: appModel, composerText: $composerText)
-                .padding(20)
-                .background(.regularMaterial)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 16)
+                .frame(maxWidth: floatingComposerMaxWidth)
+                .background(
+                    Color(nsColor: .windowBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .stroke(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+                }
+                .shadow(color: Color.black.opacity(0.16), radius: 24, y: 10)
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear
+                            .preference(key: ComposerHeightPreferenceKey.self, value: geometry.size.height)
+                    }
+                }
+                .padding(.horizontal, contentPadding)
+                .padding(.bottom, floatingComposerBottomPadding)
         }
+        .onPreferenceChange(ComposerHeightPreferenceKey.self) { composerHeight = $0 }
         .toolbar {
             ToolbarItemGroup {
                 ConnectionBadge(status: controller.connectionStatus)
@@ -172,6 +207,7 @@ private struct ActiveWorkspaceConversationView: View {
 private struct ConversationSurface: View {
     let appModel: AppModel
     let controller: WorkspaceController
+    let bottomInset: CGFloat
 
     var body: some View {
         Group {
@@ -181,15 +217,21 @@ private struct ConversationSurface: View {
                     title: "Connecting to the Bridge",
                     message: "The selected workspace has been restored and the runtime is starting."
                 )
+                .padding(.bottom, bottomInset)
                 .accessibilityIdentifier("conversation-connecting-state")
             case .error(let message):
                 StateCard(
                     title: "Connection Error",
                     message: message
                 )
+                .padding(.bottom, bottomInset)
                 .accessibilityIdentifier("workspace-error-state")
             case .ready:
-                ConversationTranscript(appModel: appModel, session: controller.activeThreadSession)
+                ConversationTranscript(
+                    appModel: appModel,
+                    session: controller.activeThreadSession,
+                    bottomInset: bottomInset
+                )
             }
         }
     }
@@ -225,16 +267,18 @@ private enum ConversationSurfaceState {
 private struct ConversationTranscript: View {
     let appModel: AppModel
     let session: ThreadSession?
+    let bottomInset: CGFloat
 
     var body: some View {
         if let session {
-            TranscriptBody(appModel: appModel, session: session)
+            TranscriptBody(appModel: appModel, session: session, bottomInset: bottomInset)
         } else {
             ContentUnavailableView {
                 Label("Start a Thread", systemImage: "square.and.pencil")
             } description: {
                 Text("Send your first prompt below to create a new thread for this workspace.")
             }
+            .padding(.bottom, bottomInset)
             .frame(maxWidth: .infinity, minHeight: 420)
             .accessibilityIdentifier("conversation-ready-empty-state")
         }
@@ -244,6 +288,7 @@ private struct ConversationTranscript: View {
 private struct TranscriptBody: View {
     let appModel: AppModel
     let session: ThreadSession
+    let bottomInset: CGFloat
     @State private var transcriptWidth: CGFloat = 720
 
     var body: some View {
@@ -272,7 +317,7 @@ private struct TranscriptBody: View {
                 }
 
                 Color.clear
-                    .frame(height: 1)
+                    .frame(height: bottomInset)
                     .id("transcript-end")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -287,6 +332,9 @@ private struct TranscriptBody: View {
                 scrollToLatest(using: proxy)
             }
             .onChange(of: scrollAnchor) { _, _ in
+                scrollToLatest(using: proxy)
+            }
+            .onChange(of: bottomInset) { _, _ in
                 scrollToLatest(using: proxy)
             }
         }
@@ -315,8 +363,10 @@ private struct TranscriptBody: View {
     }
 
     private func scrollToLatest(using proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: 0.2)) {
-            proxy.scrollTo("transcript-end", anchor: .bottom)
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo("transcript-end", anchor: .bottom)
+            }
         }
     }
 }
@@ -1445,6 +1495,14 @@ private struct TranscriptScrollAnchor: Equatable {
 
 private struct TranscriptWidthPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = 720
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct ComposerHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 260
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
