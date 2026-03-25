@@ -131,12 +131,12 @@ private struct WorkspaceTreeRow: View {
             if controller.isExpanded {
                 VStack(alignment: .leading, spacing: 8) {
                     if controller.visibleThreadSummaries.isEmpty {
-                        Text(controller.isShowingArchivedThreads ? "No threads match this view yet." : "No active threads yet.")
+                        Text("No active threads yet.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(.leading, 34)
                     } else {
-                        ForEach(controller.visibleThreadSummaries) { threadSummary in
+                        ForEach(controller.displayedThreadSummaries) { threadSummary in
                             WorkspaceThreadRow(
                                 appModel: appModel,
                                 workspacePath: controller.workspace.canonicalPath,
@@ -145,16 +145,28 @@ private struct WorkspaceTreeRow: View {
                         }
                     }
 
-                    HStack {
-                        Button(controller.isShowingArchivedThreads ? "Hide Archived" : "Show Archived") {
-                            Task {
-                                await appModel.toggleArchivedThreads(for: controller.workspace.canonicalPath)
+                    HStack(spacing: 12) {
+                        if controller.canShowMoreVisibleThreads {
+                            Button("Show More") {
+                                withAnimation(.easeInOut(duration: 0.16)) {
+                                    controller.setShowingAllVisibleThreads(true)
+                                }
                             }
+                            .buttonStyle(.plain)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("show-more-threads-\(controller.workspace.displayName)")
+                        } else if controller.canShowLessVisibleThreads {
+                            Button("Show Less") {
+                                withAnimation(.easeInOut(duration: 0.16)) {
+                                    controller.setShowingAllVisibleThreads(false)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("show-less-threads-\(controller.workspace.displayName)")
                         }
-                        .buttonStyle(.plain)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .accessibilityIdentifier("archived-toggle-\(controller.workspace.displayName)")
 
                         Spacer(minLength: 0)
                     }
@@ -251,12 +263,6 @@ private struct WorkspaceHeaderRow: View {
                 appModel.selectWorkspace(path: controller.workspace.canonicalPath)
                 Task {
                     _ = await appModel.createThread()
-                }
-            }
-
-            Button(controller.isShowingArchivedThreads ? "Hide Archived" : "Show Archived") {
-                Task {
-                    await appModel.toggleArchivedThreads(for: controller.workspace.canonicalPath)
                 }
             }
 

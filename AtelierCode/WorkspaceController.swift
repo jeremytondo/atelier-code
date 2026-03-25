@@ -4,6 +4,8 @@ import Observation
 @MainActor
 @Observable
 final class WorkspaceController {
+    static let collapsedVisibleThreadLimit = 5
+
     private(set) var workspace: WorkspaceRecord
     private(set) var bridgeLifecycleState: BridgeLifecycleState
     private(set) var connectionStatus: ConnectionStatus
@@ -15,6 +17,7 @@ final class WorkspaceController {
     private(set) var lastActiveThreadID: String?
     private(set) var isShowingArchivedThreads: Bool
     private(set) var isExpanded: Bool
+    private(set) var isShowingAllVisibleThreads: Bool
 
     @ObservationIgnored private var awaitingTurnStartThreadIDs: Set<String>
     @ObservationIgnored private var currentTurnIDsByThreadID: [String: String]
@@ -31,6 +34,7 @@ final class WorkspaceController {
         self.lastActiveThreadID = nil
         self.isShowingArchivedThreads = false
         self.isExpanded = true
+        self.isShowingAllVisibleThreads = false
         self.awaitingTurnStartThreadIDs = []
         self.currentTurnIDsByThreadID = [:]
     }
@@ -57,6 +61,22 @@ final class WorkspaceController {
         }
     }
 
+    var displayedThreadSummaries: [ThreadSummary] {
+        guard isShowingAllVisibleThreads else {
+            return Array(visibleThreadSummaries.prefix(Self.collapsedVisibleThreadLimit))
+        }
+
+        return visibleThreadSummaries
+    }
+
+    var canShowMoreVisibleThreads: Bool {
+        visibleThreadSummaries.count > displayedThreadSummaries.count
+    }
+
+    var canShowLessVisibleThreads: Bool {
+        isShowingAllVisibleThreads && visibleThreadSummaries.count > Self.collapsedVisibleThreadLimit
+    }
+
     var hasRunningThreads: Bool {
         threadSummaries.contains(where: \.isRunning)
     }
@@ -77,6 +97,7 @@ final class WorkspaceController {
         lastActiveThreadID = nil
         isShowingArchivedThreads = false
         isExpanded = true
+        isShowingAllVisibleThreads = false
         awaitingTurnStartThreadIDs.removeAll()
         currentTurnIDsByThreadID.removeAll()
     }
@@ -111,6 +132,10 @@ final class WorkspaceController {
 
     func setExpanded(_ isExpanded: Bool) {
         self.isExpanded = isExpanded
+    }
+
+    func setShowingAllVisibleThreads(_ isShowingAllVisibleThreads: Bool) {
+        self.isShowingAllVisibleThreads = isShowingAllVisibleThreads
     }
 
     func replaceThreadList(_ threadSummaries: [ThreadSummary], archived: Bool = false) {
