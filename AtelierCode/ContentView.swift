@@ -103,24 +103,27 @@ private struct ConversationDetailView: View {
     @Binding var isShowingWorkspacePicker: Bool
 
     var body: some View {
-        if let controller = appModel.activeWorkspaceController {
-            ActiveWorkspaceConversationView(
-                appModel: appModel,
-                controller: controller,
-                composerText: $composerText
-            )
-        } else {
-            ContentUnavailableView {
-                Label("Pick a Workspace", systemImage: "folder.badge.plus")
-            } description: {
-                Text("Select a recent workspace or open a new one to start the bridge runtime.")
-            } actions: {
-                Button("Open Workspace...") {
-                    isShowingWorkspacePicker = true
+        Group {
+            if let controller = appModel.activeWorkspaceController {
+                ActiveWorkspaceConversationView(
+                    appModel: appModel,
+                    controller: controller,
+                    composerText: $composerText
+                )
+            } else {
+                ContentUnavailableView {
+                    Label("Pick a Workspace", systemImage: "folder.badge.plus")
+                } description: {
+                    Text("Select a recent workspace or open a new one to start the bridge runtime.")
+                } actions: {
+                    Button("Open Workspace...") {
+                        isShowingWorkspacePicker = true
+                    }
                 }
+                .accessibilityIdentifier("conversation-empty-state")
             }
-            .accessibilityIdentifier("conversation-empty-state")
         }
+        .navigationTitle(appModel.activeWorkspaceController?.workspace.displayName ?? "AtelierCode")
     }
 }
 
@@ -133,7 +136,6 @@ private struct ActiveWorkspaceConversationView: View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    WorkspaceHeader(appModel: appModel, controller: controller)
                     ConversationSurface(appModel: appModel, controller: controller)
                 }
                 .padding(24)
@@ -146,39 +148,11 @@ private struct ActiveWorkspaceConversationView: View {
                 .padding(20)
                 .background(.regularMaterial)
         }
-    }
-}
-
-private struct WorkspaceHeader: View {
-    let appModel: AppModel
-    let controller: WorkspaceController
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(controller.workspace.displayName)
-                        .font(.largeTitle.weight(.semibold))
-                    Text(controller.workspace.canonicalPath)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-
-                Spacer(minLength: 0)
-
+        .toolbar {
+            ToolbarItemGroup {
                 ConnectionBadge(status: controller.connectionStatus)
                     .accessibilityIdentifier("workspace-connection-status")
-            }
 
-            HStack(spacing: 12) {
-                Label(controller.bridgeLifecycleState.label, systemImage: "bolt.horizontal.circle")
-                Label(controller.authState.label, systemImage: "person.crop.circle")
-            }
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-
-            HStack(spacing: 12) {
                 if appModel.canRetryActiveWorkspace {
                     Button("Retry Connection") {
                         appModel.retryActiveWorkspaceConnection()
@@ -192,16 +166,6 @@ private struct WorkspaceHeader: View {
                 .accessibilityIdentifier("clear-selection-button")
             }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            LinearGradient(
-                colors: [Color.accentColor.opacity(0.18), Color.accentColor.opacity(0.05)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
-        )
     }
 }
 
@@ -232,8 +196,6 @@ private struct ConversationSurface: View {
 
     private var conversationState: ConversationSurfaceState {
         switch controller.connectionStatus {
-        case .connecting where hasTranscript == false:
-            return .connecting
         case .error(let message) where hasTranscript == false:
             return .error(message)
         default:
@@ -268,10 +230,12 @@ private struct ConversationTranscript: View {
         if let session {
             TranscriptBody(appModel: appModel, session: session)
         } else {
-            StateCard(
-                title: "Start the First Turn",
-                message: "Send a prompt to create a new thread for this workspace. Existing threads stay hidden for now."
-            )
+            ContentUnavailableView {
+                Label("Start a Thread", systemImage: "square.and.pencil")
+            } description: {
+                Text("Send your first prompt below to create a new thread for this workspace.")
+            }
+            .frame(maxWidth: .infinity, minHeight: 420)
             .accessibilityIdentifier("conversation-ready-empty-state")
         }
     }

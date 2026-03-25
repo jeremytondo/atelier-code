@@ -46,11 +46,11 @@ final class AppModel {
         recentWorkspaces = normalizedRecentWorkspaces
         lastSelectedWorkspacePath = selectedPath
         codexPathOverride = codexOverridePath
-        startupDiagnostics = [resolvedBridgeDiagnosticProvider()]
+        startupDiagnostics = []
         activeWorkspaceController = nil
 
         if let codexOverridePath {
-            startupDiagnostics.append(Self.codexOverrideDiagnostic(path: codexOverridePath, fileManager: fileManager))
+            appendStartupDiagnostic(Self.codexOverrideDiagnostic(path: codexOverridePath, fileManager: fileManager))
         }
 
         if let selectedPath {
@@ -60,16 +60,18 @@ final class AppModel {
                         canonicalPath: selectedPath,
                         displayName: URL(fileURLWithPath: selectedPath).lastPathComponent,
                         lastOpenedAt: now()
-                    )
+                )
                 let controller = WorkspaceController(workspace: restoredWorkspace)
                 activeWorkspaceController = controller
                 activeWorkspaceRuntime = resolvedRuntimeFactory(controller)
-                startupDiagnostics.append(.restoredWorkspacePresent(restoredWorkspace))
+                appendStartupDiagnostic(.restoredWorkspacePresent(restoredWorkspace))
             } else {
                 lastSelectedWorkspacePath = nil
-                startupDiagnostics.append(.restoredWorkspaceMissing(path: selectedPath))
+                appendStartupDiagnostic(.restoredWorkspaceMissing(path: selectedPath))
             }
         }
+
+        appendStartupDiagnostic(resolvedBridgeDiagnosticProvider())
 
         if let loadedSnapshot, loadedSnapshot != snapshot {
             persistPreferences()
@@ -240,6 +242,14 @@ final class AppModel {
 
     private func persistPreferences() {
         try? preferencesStore.saveSnapshot(snapshot)
+    }
+
+    private func appendStartupDiagnostic(_ diagnostic: StartupDiagnostic) {
+        guard diagnostic.severity != .info else {
+            return
+        }
+
+        startupDiagnostics.append(diagnostic)
     }
 
     private func replaceActiveWorkspace(with workspace: WorkspaceRecord) {

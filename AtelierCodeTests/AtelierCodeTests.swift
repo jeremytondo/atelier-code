@@ -32,8 +32,7 @@ struct AppModelTests {
 
         #expect(appModel.recentWorkspaces == snapshot.recentWorkspaces)
         #expect(appModel.codexPathOverride == codexURL.path)
-        #expect(appModel.startupDiagnostics.contains(where: { $0.source == .embeddedBridge }))
-        #expect(appModel.startupDiagnostics.contains(where: { $0.source == .codexOverridePath }))
+        #expect(appModel.startupDiagnostics.isEmpty)
     }
 
     @Test func restoresValidLastSelectedWorkspace() async throws {
@@ -56,7 +55,7 @@ struct AppModelTests {
         #expect(appModel.lastSelectedWorkspacePath == workspaceURL.path)
         #expect(appModel.activeWorkspaceController?.workspace.canonicalPath == workspaceURL.path)
         #expect(appModel.activeWorkspaceController?.connectionStatus == .ready)
-        #expect(appModel.startupDiagnostics.contains(where: { $0.source == .restoredWorkspace && $0.severity == .info }))
+        #expect(appModel.startupDiagnostics.isEmpty)
         #expect(runtimeCoordinator.startCount == 1)
     }
 
