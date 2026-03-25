@@ -48,15 +48,18 @@ private struct WorkspaceSidebar: View {
     @Binding var isShowingWorkspacePicker: Bool
 
     var body: some View {
-        List {
-            Section {
-                HStack(spacing: 12) {
-                    Button("Open Workspace...") {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(spacing: 10) {
+                    Button {
                         isShowingWorkspacePicker = true
+                    } label: {
+                        Label("Open Workspace", systemImage: "folder.badge.plus")
+                            .frame(maxWidth: .infinity)
                     }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
                     .accessibilityIdentifier("open-workspace-button")
-
-                    Spacer(minLength: 0)
 
                     if appModel.selectedWorkspaceController != nil {
                         Button {
@@ -65,24 +68,44 @@ private struct WorkspaceSidebar: View {
                             }
                         } label: {
                             Label("New Thread", systemImage: "square.and.pencil")
+                                .frame(maxWidth: .infinity)
                         }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
                         .accessibilityIdentifier("sidebar-new-thread-button")
                     }
                 }
-            }
 
-            Section("Workspaces") {
-                if appModel.workspaceControllers.isEmpty {
-                    Text("No workspaces yet.")
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Workspaces")
+                        .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                        .tracking(0.6)
+
+                    if appModel.workspaceControllers.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("No workspaces yet.")
+                                .font(.subheadline.weight(.semibold))
+
+                            Text("Open a folder to start a workspace.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .accessibilityIdentifier("recent-workspaces-empty-state")
-                } else {
-                    ForEach(appModel.workspaceControllers, id: \.workspace.canonicalPath) { controller in
-                        WorkspaceTreeRow(appModel: appModel, controller: controller)
-                            .listRowInsets(EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8))
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(appModel.workspaceControllers, id: \.workspace.canonicalPath) { controller in
+                                WorkspaceTreeRow(appModel: appModel, controller: controller)
+                            }
+                        }
                     }
                 }
             }
+            .padding(16)
         }
         .navigationTitle("Workspaces")
         .frame(minWidth: 340)
@@ -140,11 +163,18 @@ private struct WorkspaceTreeRow: View {
                 }
             }
         }
-        .padding(10)
+        .padding(12)
         .background(
-            isSelectedWorkspace ? Color.accentColor.opacity(0.06) : Color.secondary.opacity(0.03),
+            isSelectedWorkspace ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.04),
             in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(
+                    isSelectedWorkspace ? Color.accentColor.opacity(0.22) : Color(nsColor: .separatorColor).opacity(0.14),
+                    lineWidth: 1
+                )
+        }
     }
 }
 
@@ -167,50 +197,51 @@ private struct WorkspaceHeaderRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Button {
-                controller.setExpanded(controller.isExpanded == false)
-            } label: {
-                Image(systemName: controller.isExpanded ? "chevron.down" : "chevron.right")
+        Button {
+            toggleExpansion()
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "chevron.right")
+                    .rotationEffect(.degrees(controller.isExpanded ? 90 : 0))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 16, height: 16)
-            }
-            .buttonStyle(.plain)
+                    .frame(width: 18, height: 18)
+                    .frame(width: 24, height: 24)
+                    .animation(.easeInOut(duration: 0.16), value: controller.isExpanded)
 
-            Button {
-                appModel.selectWorkspace(path: controller.workspace.canonicalPath)
-            } label: {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "folder.fill")
-                        .foregroundStyle(isSelectedWorkspace ? Color.accentColor : Color.secondary)
-                        .padding(.top, 2)
+                Image(systemName: "folder.fill")
+                    .foregroundStyle(isSelectedWorkspace ? Color.accentColor : Color.secondary)
+                    .padding(.top, 2)
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(controller.workspace.displayName)
-                            .font(.headline)
-                            .foregroundStyle(.primary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(controller.workspace.displayName)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
 
-                        Text(controller.workspace.canonicalPath)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                    Text(controller.workspace.canonicalPath)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                Spacer(minLength: 0)
+
+                VStack(alignment: .trailing, spacing: 8) {
+                    ConnectionBadge(status: controller.connectionStatus)
+
+                    if runningCount > 0 {
+                        SidebarThreadBadge(text: runningCount == 1 ? "1 running" : "\(runningCount) running", color: .blue)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("recent-workspace-\(controller.workspace.displayName)")
-
-            VStack(alignment: .trailing, spacing: 8) {
-                ConnectionBadge(status: controller.connectionStatus)
-
-                if runningCount > 0 {
-                    SidebarThreadBadge(text: runningCount == 1 ? "1 running" : "\(runningCount) running", color: .blue)
-                }
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("recent-workspace-\(controller.workspace.displayName)")
+        .accessibilityLabel(controller.workspace.displayName)
+        .accessibilityValue(controller.isExpanded ? "Expanded" : "Collapsed")
+        .accessibilityHint("Shows or hides the threads for this workspace")
         .contextMenu {
             Button("Select Workspace") {
                 appModel.selectWorkspace(path: controller.workspace.canonicalPath)
@@ -241,6 +272,18 @@ private struct WorkspaceHeaderRow: View {
             Button("Remove Workspace") {
                 appModel.removeWorkspace(path: controller.workspace.canonicalPath)
             }
+        }
+    }
+
+    private func toggleExpansion() {
+        let shouldExpand = controller.isExpanded == false
+
+        guard controller.isExpanded != shouldExpand else {
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.16)) {
+            controller.setExpanded(shouldExpand)
         }
     }
 }
