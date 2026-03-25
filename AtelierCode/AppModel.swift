@@ -10,7 +10,6 @@ final class AppModel {
     private(set) var recentWorkspaces: [WorkspaceRecord]
     private(set) var lastSelectedWorkspacePath: String?
     private(set) var codexPathOverride: String?
-    private(set) var uiPreferences: UIPreferences
     private(set) var startupDiagnostics: [StartupDiagnostic]
     private(set) var activeWorkspaceController: WorkspaceController?
 
@@ -43,17 +42,15 @@ final class AppModel {
         let normalizedRecentWorkspaces = Self.normalizeRecentWorkspaces(loadedSnapshot?.recentWorkspaces ?? [])
         let selectedPath = loadedSnapshot?.lastSelectedWorkspacePath.map(WorkspaceRecord.canonicalizedPath(for:))
         let codexOverridePath = loadedSnapshot?.codexPathOverride
-        let preferences = loadedSnapshot?.uiPreferences ?? UIPreferences()
 
         recentWorkspaces = normalizedRecentWorkspaces
         lastSelectedWorkspacePath = selectedPath
         codexPathOverride = codexOverridePath
-        uiPreferences = preferences
-        startupDiagnostics = [resolvedBridgeDiagnosticProvider()]
+        startupDiagnostics = []
         activeWorkspaceController = nil
 
         if let codexOverridePath {
-            startupDiagnostics.append(Self.codexOverrideDiagnostic(path: codexOverridePath, fileManager: fileManager))
+            appendStartupDiagnostic(Self.codexOverrideDiagnostic(path: codexOverridePath, fileManager: fileManager))
         }
 
         if let selectedPath {
@@ -63,16 +60,18 @@ final class AppModel {
                         canonicalPath: selectedPath,
                         displayName: URL(fileURLWithPath: selectedPath).lastPathComponent,
                         lastOpenedAt: now()
-                    )
+                )
                 let controller = WorkspaceController(workspace: restoredWorkspace)
                 activeWorkspaceController = controller
                 activeWorkspaceRuntime = resolvedRuntimeFactory(controller)
-                startupDiagnostics.append(.restoredWorkspacePresent(restoredWorkspace))
+                appendStartupDiagnostic(.restoredWorkspacePresent(restoredWorkspace))
             } else {
                 lastSelectedWorkspacePath = nil
-                startupDiagnostics.append(.restoredWorkspaceMissing(path: selectedPath))
+                appendStartupDiagnostic(.restoredWorkspaceMissing(path: selectedPath))
             }
         }
+
+        appendStartupDiagnostic(resolvedBridgeDiagnosticProvider())
 
         if let loadedSnapshot, loadedSnapshot != snapshot {
             persistPreferences()
@@ -87,8 +86,7 @@ final class AppModel {
         AppPreferencesSnapshot(
             recentWorkspaces: recentWorkspaces,
             lastSelectedWorkspacePath: lastSelectedWorkspacePath,
-            codexPathOverride: codexPathOverride,
-            uiPreferences: uiPreferences
+            codexPathOverride: codexPathOverride
         )
     }
 
@@ -125,11 +123,6 @@ final class AppModel {
 
     func setCodexPathOverride(_ path: String?) {
         codexPathOverride = path?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-        persistPreferences()
-    }
-
-    func updateUIPreferences(_ update: (inout UIPreferences) -> Void) {
-        update(&uiPreferences)
         persistPreferences()
     }
 
@@ -249,6 +242,14 @@ final class AppModel {
 
     private func persistPreferences() {
         try? preferencesStore.saveSnapshot(snapshot)
+    }
+
+    private func appendStartupDiagnostic(_ diagnostic: StartupDiagnostic) {
+        guard diagnostic.severity != .info else {
+            return
+        }
+
+        startupDiagnostics.append(diagnostic)
     }
 
     private func replaceActiveWorkspace(with workspace: WorkspaceRecord) {

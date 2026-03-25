@@ -18,7 +18,7 @@ struct WorkspaceBridgeRuntimeTests {
             rateLimitUpdatedJSON(requestID: "ateliercode-account-read-2"),
             threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Bootstrap Thread")
         ])
-        let runtime = WorkspaceBridgeRuntime(
+        let runtime = makeRuntime(
             controller: controller,
             executableLocator: BridgeExecutableLocator(bundle: bundle),
             processLauncher: { _ in processHandle },
@@ -48,7 +48,7 @@ struct WorkspaceBridgeRuntimeTests {
             threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
         ])
         var openedURLs: [URL] = []
-        let runtime = WorkspaceBridgeRuntime(
+        let runtime = makeRuntime(
             controller: controller,
             executableLocator: BridgeExecutableLocator(bundle: bundle),
             processLauncher: { _ in processHandle },
@@ -92,7 +92,7 @@ struct WorkspaceBridgeRuntimeTests {
             rateLimitUpdatedJSON(requestID: "ateliercode-account-read-2"),
             threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
         ])
-        let runtime = WorkspaceBridgeRuntime(
+        let runtime = makeRuntime(
             controller: controller,
             executableLocator: BridgeExecutableLocator(bundle: bundle),
             processLauncher: { _ in processHandle },
@@ -139,7 +139,7 @@ struct WorkspaceBridgeRuntimeTests {
             authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
             threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
         ])
-        let runtime = WorkspaceBridgeRuntime(
+        let runtime = makeRuntime(
             controller: controller,
             executableLocator: BridgeExecutableLocator(bundle: bundle),
             processLauncher: { _ in processHandle },
@@ -207,7 +207,7 @@ struct WorkspaceBridgeRuntimeTests {
             authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
             threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
         ])
-        let runtime = WorkspaceBridgeRuntime(
+        let runtime = makeRuntime(
             controller: controller,
             executableLocator: BridgeExecutableLocator(bundle: bundle),
             processLauncher: { _ in processHandle },
@@ -299,6 +299,182 @@ struct WorkspaceBridgeRuntimeTests {
         ))
     }
 
+    @Test func activityStartedBeforeTurnStartedRemainsVisible() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-early-activity"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4671)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        let session = controller.openThread(id: "thread-1", title: "Thread")
+
+        try await runtime.startTurn(prompt: "Inspect the early tool state")
+        #expect(session.messages.map(\.text) == ["Inspect the early tool state"])
+        #expect(session.turnState.phase == .inProgress)
+
+        socketClient.enqueue(toolStartedJSON(
+            threadID: "thread-1",
+            turnID: "turn-1",
+            activityID: "tool-1",
+            title: "Read Files",
+            detail: "Scanning the workspace.",
+            command: "rg --files -g '*.swift' .",
+            workingDirectory: workspace.canonicalPath
+        ))
+
+        try await waitUntil {
+            session.turnItems.count == 1 &&
+            session.turnItems[0].id == "tool-1" &&
+            controller.connectionStatus == .streaming &&
+            controller.isAwaitingTurnStart == false
+        }
+
+        #expect(session.turnItems[0].status == .running)
+        #expect(session.turnItems[0].title == "Read Files")
+        #expect(session.turnItems[0].command == "rg --files -g '*.swift' .")
+
+        socketClient.enqueue(turnStartedJSON(requestID: "ateliercode-turn-start-4", threadID: "thread-1", turnID: "turn-1"))
+
+        try await waitUntil {
+            pendingCommandCount(in: runtime) == 0 &&
+            session.turnItems.count == 1 &&
+            session.turnItems[0].id == "tool-1"
+        }
+
+        #expect(session.turnItems[0].status == .running)
+    }
+
+    @Test func toolOutputStartsPlaceholderActivityWhenStartedEventIsMissing() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-tool-output-placeholder"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4668)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        let session = controller.openThread(id: "thread-1", title: "Thread")
+
+        try await runtime.startTurn(prompt: "Inspect output fallback")
+        socketClient.enqueue(turnStartedJSON(requestID: "ateliercode-turn-start-4", threadID: "thread-1", turnID: "turn-1"))
+        socketClient.enqueue(toolOutputJSON(threadID: "thread-1", turnID: "turn-1", activityID: "tool-1", delta: "Streaming...\n"))
+
+        try await waitUntil {
+            session.turnItems.count == 1 &&
+            session.turnItems[0].id == "tool-1" &&
+            session.turnItems[0].status == .running
+        }
+
+        #expect(session.turnItems[0].title == "Tool Call")
+        #expect(session.turnItems[0].output == "Streaming...\n")
+
+        socketClient.enqueue(toolCompletedJSON(
+            threadID: "thread-1",
+            turnID: "turn-1",
+            activityID: "tool-1",
+            status: "completed",
+            detail: "Finished.",
+            exitCode: 0
+        ))
+
+        try await waitUntil {
+            session.turnItems[0].status == .completed && session.turnItems[0].detail == "Finished."
+        }
+
+        #expect(session.turnItems[0].status == .completed)
+        #expect(session.turnItems[0].detail == "Finished.")
+    }
+
+    @Test func fastToolCompletionStaysRunningLongEnoughToRender() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-fast-tool-visible"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4669)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let sleepGate = SleepGate()
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in },
+            minimumVisibleRunningActivityDuration: 0.2,
+            sleep: { _ in await sleepGate.wait() }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        let session = controller.openThread(id: "thread-1", title: "Thread")
+
+        try await runtime.startTurn(prompt: "Make the spinner visible")
+        socketClient.enqueue(turnStartedJSON(requestID: "ateliercode-turn-start-4", threadID: "thread-1", turnID: "turn-1"))
+        socketClient.enqueue(toolStartedJSON(
+            threadID: "thread-1",
+            turnID: "turn-1",
+            activityID: "tool-1",
+            title: "Read Files",
+            detail: "Scanning the workspace.",
+            command: "rg --files",
+            workingDirectory: workspace.canonicalPath
+        ))
+
+        try await waitUntil {
+            session.turnItems.count == 1 && session.turnItems[0].status == .running
+        }
+
+        socketClient.enqueue(toolCompletedJSON(
+            threadID: "thread-1",
+            turnID: "turn-1",
+            activityID: "tool-1",
+            status: "completed",
+            detail: "Finished reading files.",
+            exitCode: 0
+        ))
+
+        try await Task.sleep(nanoseconds: 20_000_000)
+        #expect(session.turnItems[0].status == .running)
+
+        await sleepGate.open()
+
+        try await waitUntil {
+            session.turnItems[0].status == .completed &&
+            session.turnItems[0].detail == "Finished reading files."
+        }
+
+        #expect(session.turnItems[0].status == .completed)
+    }
+
     @Test func completedTurnArchivesAssistantTranscriptAndCancelledTurnKeepsInlineRows() async throws {
         let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-inline-turn-terminal"), lastOpenedAt: .now)
         let controller = WorkspaceController(workspace: workspace)
@@ -309,7 +485,7 @@ struct WorkspaceBridgeRuntimeTests {
             authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
             threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
         ])
-        let runtime = WorkspaceBridgeRuntime(
+        let runtime = makeRuntime(
             controller: controller,
             executableLocator: BridgeExecutableLocator(bundle: bundle),
             processLauncher: { _ in processHandle },
@@ -380,7 +556,7 @@ struct WorkspaceBridgeRuntimeTests {
             authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
             threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
         ])
-        let runtime = WorkspaceBridgeRuntime(
+        let runtime = makeRuntime(
             controller: controller,
             executableLocator: BridgeExecutableLocator(bundle: bundle),
             processLauncher: { _ in processHandle },
@@ -417,7 +593,7 @@ struct WorkspaceBridgeRuntimeTests {
             authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
             threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
         ])
-        let runtime = WorkspaceBridgeRuntime(
+        let runtime = makeRuntime(
             controller: controller,
             executableLocator: BridgeExecutableLocator(bundle: bundle),
             processLauncher: { _ in processHandle },
@@ -463,7 +639,7 @@ struct WorkspaceBridgeRuntimeTests {
             authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
             threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
         ])
-        let runtime = WorkspaceBridgeRuntime(
+        let runtime = makeRuntime(
             controller: controller,
             executableLocator: BridgeExecutableLocator(bundle: bundle),
             processLauncher: { _ in processHandle },
@@ -500,7 +676,7 @@ struct WorkspaceBridgeRuntimeTests {
             authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
             threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
         ])
-        let runtime = WorkspaceBridgeRuntime(
+        let runtime = makeRuntime(
             controller: controller,
             executableLocator: BridgeExecutableLocator(bundle: bundle),
             processLauncher: { _ in processHandle },
@@ -591,6 +767,47 @@ private final class FakeBridgeSocketClient: BridgeSocketClient {
     func enqueue(_ message: String) {
         continuation.yield(message)
     }
+}
+
+private actor SleepGate {
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        let currentWaiters = waiters
+        waiters.removeAll()
+        currentWaiters.forEach { $0.resume() }
+    }
+}
+
+@MainActor
+private func makeRuntime(
+    controller: WorkspaceController,
+    executableLocator: BridgeExecutableLocator? = nil,
+    processLauncher: ((URL) throws -> any BridgeProcessHandle)? = nil,
+    socketFactory: ((URL) -> any BridgeSocketClient)? = nil,
+    openURLAction: ((URL) -> Void)? = nil,
+    appVersion: String? = nil,
+    minimumVisibleRunningActivityDuration: TimeInterval = 0,
+    now: @escaping () -> Date = Date.init,
+    sleep: WorkspaceBridgeRuntime.SleepAction? = nil
+) -> WorkspaceBridgeRuntime {
+    WorkspaceBridgeRuntime(
+        controller: controller,
+        executableLocator: executableLocator,
+        processLauncher: processLauncher,
+        socketFactory: socketFactory,
+        openURLAction: openURLAction,
+        appVersion: appVersion,
+        minimumVisibleRunningActivityDuration: minimumVisibleRunningActivityDuration,
+        now: now,
+        sleep: sleep
+    )
 }
 
 private func bridgeFixtureBundle() throws -> Bundle {

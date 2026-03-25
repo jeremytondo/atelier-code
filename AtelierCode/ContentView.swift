@@ -103,24 +103,27 @@ private struct ConversationDetailView: View {
     @Binding var isShowingWorkspacePicker: Bool
 
     var body: some View {
-        if let controller = appModel.activeWorkspaceController {
-            ActiveWorkspaceConversationView(
-                appModel: appModel,
-                controller: controller,
-                composerText: $composerText
-            )
-        } else {
-            ContentUnavailableView {
-                Label("Pick a Workspace", systemImage: "folder.badge.plus")
-            } description: {
-                Text("Select a recent workspace or open a new one to start the bridge runtime.")
-            } actions: {
-                Button("Open Workspace...") {
-                    isShowingWorkspacePicker = true
+        Group {
+            if let controller = appModel.activeWorkspaceController {
+                ActiveWorkspaceConversationView(
+                    appModel: appModel,
+                    controller: controller,
+                    composerText: $composerText
+                )
+            } else {
+                ContentUnavailableView {
+                    Label("Pick a Workspace", systemImage: "folder.badge.plus")
+                } description: {
+                    Text("Select a recent workspace or open a new one to start the bridge runtime.")
+                } actions: {
+                    Button("Open Workspace...") {
+                        isShowingWorkspacePicker = true
+                    }
                 }
+                .accessibilityIdentifier("conversation-empty-state")
             }
-            .accessibilityIdentifier("conversation-empty-state")
         }
+        .navigationTitle(appModel.activeWorkspaceController?.workspace.displayName ?? "AtelierCode")
     }
 }
 
@@ -128,62 +131,63 @@ private struct ActiveWorkspaceConversationView: View {
     let appModel: AppModel
     let controller: WorkspaceController
     @Binding var composerText: String
+    @State private var composerHeight: CGFloat = 260
+
+    private let floatingComposerMaxWidth: CGFloat = 740
+    private let contentPadding: CGFloat = 24
+    private let floatingComposerBottomPadding: CGFloat = 20
+    private let transcriptComposerSpacing: CGFloat = 20
+
+    private var composerClearance: CGFloat {
+        composerHeight + floatingComposerBottomPadding + transcriptComposerSpacing
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .bottom) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    WorkspaceHeader(appModel: appModel, controller: controller)
-
-                    if appModel.uiPreferences.showsStartupDiagnostics {
-                        DiagnosticsSection(diagnostics: appModel.startupDiagnostics)
-                    }
-
-                    ConversationSurface(appModel: appModel, controller: controller)
+                    ConversationSurface(
+                        appModel: appModel,
+                        controller: controller,
+                        bottomInset: composerClearance
+                    )
+                    .frame(maxWidth: floatingComposerMaxWidth, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
                 }
-                .padding(24)
+                .padding(.horizontal, contentPadding)
+                .padding(.top, contentPadding)
+                .padding(.bottom, composerClearance)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Divider()
-
             ComposerBar(appModel: appModel, composerText: $composerText)
-                .padding(20)
-                .background(.regularMaterial)
-        }
-    }
-}
-
-private struct WorkspaceHeader: View {
-    let appModel: AppModel
-    let controller: WorkspaceController
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(controller.workspace.displayName)
-                        .font(.largeTitle.weight(.semibold))
-                    Text(controller.workspace.canonicalPath)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 16)
+                .frame(maxWidth: floatingComposerMaxWidth)
+                .background(
+                    Color(nsColor: .windowBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .stroke(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
                 }
-
-                Spacer(minLength: 0)
-
+                .shadow(color: Color.black.opacity(0.16), radius: 24, y: 10)
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear
+                            .preference(key: ComposerHeightPreferenceKey.self, value: geometry.size.height)
+                    }
+                }
+                .padding(.horizontal, contentPadding)
+                .padding(.bottom, floatingComposerBottomPadding)
+        }
+        .onPreferenceChange(ComposerHeightPreferenceKey.self) { composerHeight = $0 }
+        .toolbar {
+            ToolbarItemGroup {
                 ConnectionBadge(status: controller.connectionStatus)
                     .accessibilityIdentifier("workspace-connection-status")
-            }
 
-            HStack(spacing: 12) {
-                Label(controller.bridgeLifecycleState.label, systemImage: "bolt.horizontal.circle")
-                Label(controller.authState.label, systemImage: "person.crop.circle")
-            }
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-
-            HStack(spacing: 12) {
                 if appModel.canRetryActiveWorkspace {
                     Button("Retry Connection") {
                         appModel.retryActiveWorkspaceConnection()
@@ -197,22 +201,13 @@ private struct WorkspaceHeader: View {
                 .accessibilityIdentifier("clear-selection-button")
             }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            LinearGradient(
-                colors: [Color.accentColor.opacity(0.18), Color.accentColor.opacity(0.05)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
-        )
     }
 }
 
 private struct ConversationSurface: View {
     let appModel: AppModel
     let controller: WorkspaceController
+    let bottomInset: CGFloat
 
     var body: some View {
         Group {
@@ -222,23 +217,27 @@ private struct ConversationSurface: View {
                     title: "Connecting to the Bridge",
                     message: "The selected workspace has been restored and the runtime is starting."
                 )
+                .padding(.bottom, bottomInset)
                 .accessibilityIdentifier("conversation-connecting-state")
             case .error(let message):
                 StateCard(
                     title: "Connection Error",
                     message: message
                 )
+                .padding(.bottom, bottomInset)
                 .accessibilityIdentifier("workspace-error-state")
             case .ready:
-                ConversationTranscript(appModel: appModel, session: controller.activeThreadSession)
+                ConversationTranscript(
+                    appModel: appModel,
+                    session: controller.activeThreadSession,
+                    bottomInset: bottomInset
+                )
             }
         }
     }
 
     private var conversationState: ConversationSurfaceState {
         switch controller.connectionStatus {
-        case .connecting where hasTranscript == false:
-            return .connecting
         case .error(let message) where hasTranscript == false:
             return .error(message)
         default:
@@ -268,15 +267,19 @@ private enum ConversationSurfaceState {
 private struct ConversationTranscript: View {
     let appModel: AppModel
     let session: ThreadSession?
+    let bottomInset: CGFloat
 
     var body: some View {
         if let session {
-            TranscriptBody(appModel: appModel, session: session)
+            TranscriptBody(appModel: appModel, session: session, bottomInset: bottomInset)
         } else {
-            StateCard(
-                title: "Start the First Turn",
-                message: "Send a prompt to create a new thread for this workspace. Existing threads stay hidden for now."
-            )
+            ContentUnavailableView {
+                Label("Start a Thread", systemImage: "square.and.pencil")
+            } description: {
+                Text("Send your first prompt below to create a new thread for this workspace.")
+            }
+            .padding(.bottom, bottomInset)
+            .frame(maxWidth: .infinity, minHeight: 420)
             .accessibilityIdentifier("conversation-ready-empty-state")
         }
     }
@@ -285,6 +288,7 @@ private struct ConversationTranscript: View {
 private struct TranscriptBody: View {
     let appModel: AppModel
     let session: ThreadSession
+    let bottomInset: CGFloat
     @State private var transcriptWidth: CGFloat = 720
 
     var body: some View {
@@ -313,7 +317,7 @@ private struct TranscriptBody: View {
                 }
 
                 Color.clear
-                    .frame(height: 1)
+                    .frame(height: bottomInset)
                     .id("transcript-end")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -328,6 +332,9 @@ private struct TranscriptBody: View {
                 scrollToLatest(using: proxy)
             }
             .onChange(of: scrollAnchor) { _, _ in
+                scrollToLatest(using: proxy)
+            }
+            .onChange(of: bottomInset) { _, _ in
                 scrollToLatest(using: proxy)
             }
         }
@@ -356,8 +363,10 @@ private struct TranscriptBody: View {
     }
 
     private func scrollToLatest(using proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: 0.2)) {
-            proxy.scrollTo("transcript-end", anchor: .bottom)
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo("transcript-end", anchor: .bottom)
+            }
         }
     }
 }
@@ -409,10 +418,6 @@ private struct TurnDetailsStack: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if presentation.showsAssistantWaitingIndicator {
-                AssistantWaitingIndicatorRow(maxWidth: maxWidth)
-            }
-
             if session.turnItems.isEmpty == false {
                 ForEach(transcriptEntries) { entry in
                     TranscriptTurnEntryRow(
@@ -421,6 +426,10 @@ private struct TurnDetailsStack: View {
                         expandedActivitySectionIDs: $expandedActivitySectionIDs
                     )
                 }
+            }
+
+            if presentation.showsAssistantWaitingIndicator {
+                AssistantWaitingIndicatorRow(maxWidth: maxWidth)
             }
 
             if session.pendingApprovals.isEmpty == false {
@@ -545,6 +554,13 @@ private struct ActivitySectionCard: View {
                                         )
                                     )
                                 }
+
+                                if section.status.activityStatus == .running {
+                                    ActivityStatusAccessory(
+                                        status: .running,
+                                        accessibilityIdentifier: section.statusAccessoryAccessibilityIdentifier
+                                    )
+                                }
                             } else {
                                 PlanCountBadge(text: itemCountLabel)
                                 ActivityStatusAccessory(
@@ -619,30 +635,20 @@ private struct AssistantTurnItemRow: View {
 
 private struct AssistantWaitingIndicatorRow: View {
     let maxWidth: CGFloat
-    @State private var isAnimating = false
 
     var body: some View {
         HStack {
-            HStack(spacing: 0) {
-                Text("...")
-                    .font(.system(size: 24, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.accentColor)
-                    .opacity(isAnimating ? 1 : 0.35)
-                    .onAppear {
-                        withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
-                            isAnimating = true
-                        }
-                    }
-
-                Text("assistant waiting indicator")
-                    .font(.system(size: 1))
-                    .foregroundStyle(.clear)
-                    .accessibilityIdentifier("assistant-waiting-indicator")
+            HStack(spacing: 8) {
+                AnimatedEllipsisIndicator()
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color.secondary.opacity(0.10), in: Capsule())
             .frame(maxWidth: maxWidth, alignment: .leading)
 
             Spacer(minLength: 48)
         }
+        .accessibilityIdentifier("assistant-waiting-indicator")
     }
 }
 
@@ -1027,18 +1033,68 @@ private struct ActivityStatusBadge: View {
     }
 }
 
+private struct ActivitySpinner: View {
+    let color: Color
+    var size: CGFloat = 12
+    var lineWidth: CGFloat = 2
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+            let elapsed = context.date.timeIntervalSinceReferenceDate
+            let rotation = Angle.degrees((elapsed * 220).truncatingRemainder(dividingBy: 360))
+
+            ZStack {
+                Circle()
+                    .stroke(color.opacity(0.18), lineWidth: lineWidth)
+
+                Circle()
+                    .trim(from: 0.12, to: 0.72)
+                    .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                    .rotationEffect(rotation)
+            }
+            .frame(width: size, height: size)
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+private struct AnimatedEllipsisIndicator: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 0.24)) { context in
+            let visibleDots = (Int(context.date.timeIntervalSinceReferenceDate / 0.24) % 3) + 1
+
+            HStack(spacing: 4) {
+                ForEach(0..<3, id: \.self) { index in
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 6, height: 6)
+                        .opacity(index < visibleDots ? 1 : 0.28)
+                }
+            }
+            .frame(height: 10)
+        }
+    }
+}
+
+private struct RunningActivityStatusAccessory: View {
+    let status: ActivityStatus
+
+    var body: some View {
+        ActivitySpinner(color: status.tintColor, size: 18, lineWidth: 2.6)
+            .padding(9)
+            .background(Color.secondary.opacity(0.10), in: Circle())
+    }
+}
+
 private struct ActivityStatusAccessory: View {
     let status: ActivityStatus
     let accessibilityIdentifier: String
 
     var body: some View {
         if status == .running {
-            HStack(spacing: 0) {
-                ProgressView()
-                    .controlSize(.small)
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Running")
+            RunningActivityStatusAccessory(status: status)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Running")
                 .accessibilityIdentifier(accessibilityIdentifier)
         } else {
             ActivityStatusBadge(status: status)
@@ -1054,8 +1110,7 @@ private struct ActivityStatusCountChip: View {
     var body: some View {
         HStack(spacing: 6) {
             if chip.status == .running {
-                ProgressView()
-                    .controlSize(.small)
+                ActivitySpinner(color: chip.status.activityStatus.tintColor)
             }
 
             Text(chip.text)
@@ -1306,39 +1361,6 @@ private final class ComposerNSTextView: NSTextView {
     }
 }
 
-private struct DiagnosticsSection: View {
-    let diagnostics: [StartupDiagnostic]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Startup Diagnostics")
-                .font(.headline)
-
-            ForEach(diagnostics) { diagnostic in
-                HStack(alignment: .top, spacing: 12) {
-                    Circle()
-                        .fill(diagnostic.severity.color)
-                        .frame(width: 10, height: 10)
-                        .padding(.top, 6)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(diagnostic.severity.label)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(diagnostic.severity.color)
-                        Text(diagnostic.message)
-                            .font(.subheadline)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
-            }
-        }
-        .accessibilityIdentifier("startup-diagnostics-section")
-    }
-}
-
 private struct StateCard: View {
     let title: String
     let message: String
@@ -1380,8 +1402,7 @@ private struct ConnectionBadge: View {
         AppPreferencesSnapshot(
             recentWorkspaces: [WorkspaceRecord(url: workspaceRoot, lastOpenedAt: .now)],
             lastSelectedWorkspacePath: workspaceRoot.path,
-            codexPathOverride: "/usr/local/bin/codex",
-            uiPreferences: UIPreferences(showsStartupDiagnostics: true)
+            codexPathOverride: "/usr/local/bin/codex"
         )
     )
 
@@ -1480,20 +1501,11 @@ private struct TranscriptWidthPreferenceKey: PreferenceKey {
     }
 }
 
-private extension StartupDiagnosticSeverity {
-    var label: String {
-        rawValue.capitalized
-    }
+private struct ComposerHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 260
 
-    var color: Color {
-        switch self {
-        case .info:
-            return .blue
-        case .warning:
-            return .orange
-        case .error:
-            return .red
-        }
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

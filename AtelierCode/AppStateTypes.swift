@@ -35,10 +35,6 @@ struct WorkspaceRecord: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-struct UIPreferences: Codable, Equatable, Sendable {
-    var showsStartupDiagnostics = true
-}
-
 enum StartupDiagnosticSource: String, Codable, Equatable, Sendable {
     case embeddedBridge
     case restoredWorkspace
@@ -321,7 +317,7 @@ struct TranscriptActivitySection: Equatable, Sendable, Identifiable {
     }
 
     var defaultExpanded: Bool {
-        statusCounts.running > 0
+        false
     }
 }
 
@@ -399,9 +395,17 @@ struct TranscriptTurnPresentation: Equatable, Sendable {
             return false
         }
 
-        return turnItems.contains {
-            $0.kind == .assistant || $0.kind == .tool || $0.kind == .fileChange
-        } == false
+        if turnItems.contains(where: {
+            ($0.kind == .tool || $0.kind == .fileChange) && $0.status == .running
+        }) {
+            return false
+        }
+
+        if let latestMeaningfulItem = turnItems.last(where: { $0.kind != .reasoning }) {
+            return latestMeaningfulItem.kind != .assistant || latestMeaningfulItem.status != .running
+        }
+
+        return true
     }
 
     private static func makeSectionStatus(for items: [TurnItem]) -> TranscriptActivitySectionStatus {

@@ -19,8 +19,7 @@ struct AppModelTests {
         let snapshot = AppPreferencesSnapshot(
             recentWorkspaces: [WorkspaceRecord(url: workspaceURL, lastOpenedAt: .distantPast)],
             lastSelectedWorkspacePath: nil,
-            codexPathOverride: codexURL.path,
-            uiPreferences: UIPreferences(showsStartupDiagnostics: false)
+            codexPathOverride: codexURL.path
         )
         let store = InMemoryAppPreferencesStore(snapshot: snapshot)
         let runtimeCoordinator = TestRuntimeCoordinator()
@@ -33,9 +32,7 @@ struct AppModelTests {
 
         #expect(appModel.recentWorkspaces == snapshot.recentWorkspaces)
         #expect(appModel.codexPathOverride == codexURL.path)
-        #expect(appModel.uiPreferences == UIPreferences(showsStartupDiagnostics: false))
-        #expect(appModel.startupDiagnostics.contains(where: { $0.source == .embeddedBridge }))
-        #expect(appModel.startupDiagnostics.contains(where: { $0.source == .codexOverridePath }))
+        #expect(appModel.startupDiagnostics.isEmpty)
     }
 
     @Test func restoresValidLastSelectedWorkspace() async throws {
@@ -43,8 +40,7 @@ struct AppModelTests {
         let snapshot = AppPreferencesSnapshot(
             recentWorkspaces: [WorkspaceRecord(url: workspaceURL, lastOpenedAt: .now)],
             lastSelectedWorkspacePath: workspaceURL.path,
-            codexPathOverride: nil,
-            uiPreferences: UIPreferences()
+            codexPathOverride: nil
         )
         let store = InMemoryAppPreferencesStore(snapshot: snapshot)
         let runtimeCoordinator = TestRuntimeCoordinator()
@@ -59,7 +55,7 @@ struct AppModelTests {
         #expect(appModel.lastSelectedWorkspacePath == workspaceURL.path)
         #expect(appModel.activeWorkspaceController?.workspace.canonicalPath == workspaceURL.path)
         #expect(appModel.activeWorkspaceController?.connectionStatus == .ready)
-        #expect(appModel.startupDiagnostics.contains(where: { $0.source == .restoredWorkspace && $0.severity == .info }))
+        #expect(appModel.startupDiagnostics.isEmpty)
         #expect(runtimeCoordinator.startCount == 1)
     }
 
@@ -70,8 +66,7 @@ struct AppModelTests {
         let snapshot = AppPreferencesSnapshot(
             recentWorkspaces: [],
             lastSelectedWorkspacePath: workspaceURL.path,
-            codexPathOverride: nil,
-            uiPreferences: UIPreferences()
+            codexPathOverride: nil
         )
         let store = InMemoryAppPreferencesStore(snapshot: snapshot)
 
@@ -110,7 +105,7 @@ struct AppModelTests {
         #expect(Set(appModel.recentWorkspaces.map(\.canonicalPath)).count == appModel.recentWorkspaces.count)
     }
 
-    @Test func roundTripsCodexOverrideAndUIPreferences() async throws {
+    @Test func roundTripsCodexOverride() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
         let appModel = AppModel(
@@ -122,9 +117,6 @@ struct AppModelTests {
         FileManager.default.createFile(atPath: codexURL.path, contents: Data())
 
         appModel.setCodexPathOverride(codexURL.path)
-        appModel.updateUIPreferences { preferences in
-            preferences.showsStartupDiagnostics = false
-        }
 
         let restoredModel = AppModel(
             preferencesStore: store,
@@ -133,7 +125,6 @@ struct AppModelTests {
         )
 
         #expect(restoredModel.codexPathOverride == codexURL.path)
-        #expect(restoredModel.uiPreferences == UIPreferences(showsStartupDiagnostics: false))
     }
 
     @Test func firstSendCreatesThreadBeforeStartingTurn() async throws {

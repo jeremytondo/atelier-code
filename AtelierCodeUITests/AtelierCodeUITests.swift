@@ -32,7 +32,8 @@ final class AtelierCodeUITests: XCTestCase {
 
         let readyState = app.staticTexts["Ready"]
         XCTAssertTrue(readyState.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Start the First Turn"].exists)
+        XCTAssertTrue(app.staticTexts["Start a Thread"].exists)
+        XCTAssertFalse(app.staticTexts["Start the First Turn"].exists)
     }
 
     func testSendingPromptRendersTranscript() throws {
@@ -86,9 +87,9 @@ final class AtelierCodeUITests: XCTestCase {
         mixedToolsToggle.click()
         app.buttons["turn-file-changes-section-1-toggle"].click()
 
-        XCTAssertTrue(app.staticTexts["Run tests"].exists)
-        XCTAssertTrue(app.staticTexts["swift test --filter ThreadSessionTests"].exists)
-        XCTAssertTrue(app.staticTexts["Run runtime tests"].exists)
+        XCTAssertTrue(app.staticTexts["Run tests"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["swift test --filter ThreadSessionTests"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["Run runtime tests"].waitForExistence(timeout: 2))
 
         app.buttons["Approve"].click()
 
@@ -161,7 +162,7 @@ final class AtelierCodeUITests: XCTestCase {
         let app = try makeApp(scenario: "retry", workspaceName: "RetryWorkspace")
         app.launch()
 
-        let retryButton = app.buttons["retry-connection-button"]
+        let retryButton = app.buttons.matching(identifier: "retry-connection-button").firstMatch
         XCTAssertTrue(retryButton.waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Connection Error"].exists)
 
