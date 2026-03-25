@@ -35,10 +35,6 @@ struct WorkspaceRecord: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-struct UIPreferences: Codable, Equatable, Sendable {
-    var showsStartupDiagnostics = true
-}
-
 enum StartupDiagnosticSource: String, Codable, Equatable, Sendable {
     case embeddedBridge
     case restoredWorkspace

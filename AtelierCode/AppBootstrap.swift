@@ -14,8 +14,7 @@ enum AppBootstrap {
             snapshot: AppPreferencesSnapshot(
                 recentWorkspaces: [WorkspaceRecord(url: workspaceURL, lastOpenedAt: .now)],
                 lastSelectedWorkspacePath: scenario.startsWithSelectedWorkspace ? workspaceURL.path : nil,
-                codexPathOverride: nil,
-                uiPreferences: UIPreferences(showsStartupDiagnostics: true)
+                codexPathOverride: nil
             )
         )
         let coordinator = UITestRuntimeCoordinator(scenario: scenario.kind)

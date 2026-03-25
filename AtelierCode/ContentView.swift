@@ -134,11 +134,6 @@ private struct ActiveWorkspaceConversationView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     WorkspaceHeader(appModel: appModel, controller: controller)
-
-                    if appModel.uiPreferences.showsStartupDiagnostics {
-                        DiagnosticsSection(diagnostics: appModel.startupDiagnostics)
-                    }
-
                     ConversationSurface(appModel: appModel, controller: controller)
                 }
                 .padding(24)
@@ -1352,39 +1347,6 @@ private final class ComposerNSTextView: NSTextView {
     }
 }
 
-private struct DiagnosticsSection: View {
-    let diagnostics: [StartupDiagnostic]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Startup Diagnostics")
-                .font(.headline)
-
-            ForEach(diagnostics) { diagnostic in
-                HStack(alignment: .top, spacing: 12) {
-                    Circle()
-                        .fill(diagnostic.severity.color)
-                        .frame(width: 10, height: 10)
-                        .padding(.top, 6)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(diagnostic.severity.label)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(diagnostic.severity.color)
-                        Text(diagnostic.message)
-                            .font(.subheadline)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
-            }
-        }
-        .accessibilityIdentifier("startup-diagnostics-section")
-    }
-}
-
 private struct StateCard: View {
     let title: String
     let message: String
@@ -1426,8 +1388,7 @@ private struct ConnectionBadge: View {
         AppPreferencesSnapshot(
             recentWorkspaces: [WorkspaceRecord(url: workspaceRoot, lastOpenedAt: .now)],
             lastSelectedWorkspacePath: workspaceRoot.path,
-            codexPathOverride: "/usr/local/bin/codex",
-            uiPreferences: UIPreferences(showsStartupDiagnostics: true)
+            codexPathOverride: "/usr/local/bin/codex"
         )
     )
 
@@ -1523,23 +1484,6 @@ private struct TranscriptWidthPreferenceKey: PreferenceKey {
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
-    }
-}
-
-private extension StartupDiagnosticSeverity {
-    var label: String {
-        rawValue.capitalized
-    }
-
-    var color: Color {
-        switch self {
-        case .info:
-            return .blue
-        case .warning:
-            return .orange
-        case .error:
-            return .red
-        }
     }
 }
 

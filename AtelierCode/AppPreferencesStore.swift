@@ -9,7 +9,6 @@ struct AppPreferencesSnapshot: Codable, Equatable, Sendable {
     var recentWorkspaces: [WorkspaceRecord]
     var lastSelectedWorkspacePath: String?
     var codexPathOverride: String?
-    var uiPreferences: UIPreferences
 }
 
 struct UserDefaultsAppPreferencesStore: AppPreferencesStore {

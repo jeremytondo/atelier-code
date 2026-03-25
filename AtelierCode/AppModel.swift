@@ -10,7 +10,6 @@ final class AppModel {
     private(set) var recentWorkspaces: [WorkspaceRecord]
     private(set) var lastSelectedWorkspacePath: String?
     private(set) var codexPathOverride: String?
-    private(set) var uiPreferences: UIPreferences
     private(set) var startupDiagnostics: [StartupDiagnostic]
     private(set) var activeWorkspaceController: WorkspaceController?
 
@@ -43,12 +42,10 @@ final class AppModel {
         let normalizedRecentWorkspaces = Self.normalizeRecentWorkspaces(loadedSnapshot?.recentWorkspaces ?? [])
         let selectedPath = loadedSnapshot?.lastSelectedWorkspacePath.map(WorkspaceRecord.canonicalizedPath(for:))
         let codexOverridePath = loadedSnapshot?.codexPathOverride
-        let preferences = loadedSnapshot?.uiPreferences ?? UIPreferences()
 
         recentWorkspaces = normalizedRecentWorkspaces
         lastSelectedWorkspacePath = selectedPath
         codexPathOverride = codexOverridePath
-        uiPreferences = preferences
         startupDiagnostics = [resolvedBridgeDiagnosticProvider()]
         activeWorkspaceController = nil
 
@@ -87,8 +84,7 @@ final class AppModel {
         AppPreferencesSnapshot(
             recentWorkspaces: recentWorkspaces,
             lastSelectedWorkspacePath: lastSelectedWorkspacePath,
-            codexPathOverride: codexPathOverride,
-            uiPreferences: uiPreferences
+            codexPathOverride: codexPathOverride
         )
     }
 
@@ -125,11 +121,6 @@ final class AppModel {
 
     func setCodexPathOverride(_ path: String?) {
         codexPathOverride = path?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-        persistPreferences()
-    }
-
-    func updateUIPreferences(_ update: (inout UIPreferences) -> Void) {
-        update(&uiPreferences)
         persistPreferences()
     }
 
