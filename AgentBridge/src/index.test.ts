@@ -4,9 +4,14 @@ import type {
   AccountLoginPayload,
   AccountReadPayload,
   ApprovalResolvePayload,
+  ThreadArchivePayload,
+  ThreadForkPayload,
   ThreadListPayload,
+  ThreadReadPayload,
+  ThreadRollbackPayload,
   ThreadResumePayload,
   ThreadStartPayload,
+  ThreadUnarchivePayload,
   TurnStartPayload,
 } from "./protocol/types";
 import { executeBridgeCommand } from "./index";
@@ -14,9 +19,13 @@ import type {
   CodexAccountReadResult,
   CodexClientAdapter,
   CodexLoginResult,
+  CodexThreadForkResult,
   CodexThreadListResult,
+  CodexThreadReadResult,
   CodexThreadResumeResult,
+  CodexThreadRollbackResult,
   CodexThreadStartResult,
+  CodexThreadUnarchiveResult,
   CodexTurnStartResult,
 } from "./codex/codex-client";
 
@@ -115,6 +124,57 @@ describe("executeBridgeCommand", () => {
     ]);
   });
 
+  test("emits direct thread management events", async () => {
+    const client = new FakeCodexClient();
+
+    const readEvents = await executeBridgeCommand(client, {
+      id: "req-read",
+      type: "thread.read",
+      timestamp: new Date().toISOString(),
+      provider: "codex",
+      threadID: "thread-1",
+      payload: {},
+    });
+    const archiveEvents = await executeBridgeCommand(client, {
+      id: "req-archive",
+      type: "thread.archive",
+      timestamp: new Date().toISOString(),
+      provider: "codex",
+      threadID: "thread-1",
+      payload: {},
+    });
+    const unarchiveEvents = await executeBridgeCommand(client, {
+      id: "req-unarchive",
+      type: "thread.unarchive",
+      timestamp: new Date().toISOString(),
+      provider: "codex",
+      threadID: "thread-1",
+      payload: {},
+    });
+
+    expect(readEvents).toEqual([
+      expect.objectContaining({
+        type: "thread.started",
+        requestID: "req-read",
+        threadID: "thread-1",
+      }),
+    ]);
+    expect(archiveEvents).toEqual([
+      expect.objectContaining({
+        type: "thread.archived",
+        requestID: "req-archive",
+        threadID: "thread-1",
+      }),
+    ]);
+    expect(unarchiveEvents).toEqual([
+      expect.objectContaining({
+        type: "thread.started",
+        requestID: "req-unarchive",
+        threadID: "thread-1",
+      }),
+    ]);
+  });
+
   test("emits an approval resolved event after forwarding an approval decision", async () => {
     const client = new FakeCodexClient();
 
@@ -208,6 +268,8 @@ class FakeCodexClient implements CodexClientAdapter {
         preview: payload.title ?? "Preview",
         updatedAt: 1_700_000_000,
         name: payload.title ?? null,
+        status: { type: "idle" },
+        turns: [],
       },
     };
   }
@@ -223,6 +285,82 @@ class FakeCodexClient implements CodexClientAdapter {
         preview: "Preview",
         updatedAt: 1_700_000_000,
         name: "Resumed",
+        status: { type: "idle" },
+        turns: [],
+      },
+    };
+  }
+
+  async readThread(
+    _requestID: string,
+    threadID: string,
+    _payload: ThreadReadPayload,
+  ): Promise<CodexThreadReadResult> {
+    return {
+      thread: {
+        id: threadID,
+        preview: "Read preview",
+        updatedAt: 1_700_000_001,
+        name: "Read Thread",
+        status: { type: "idle" },
+        turns: [],
+      },
+    };
+  }
+
+  async forkThread(
+    _requestID: string,
+    threadID: string,
+    _payload: ThreadForkPayload,
+  ): Promise<CodexThreadForkResult> {
+    return {
+      thread: {
+        id: `${threadID}-fork`,
+        preview: "Fork preview",
+        updatedAt: 1_700_000_002,
+        name: "Forked Thread",
+        status: { type: "idle" },
+        turns: [],
+      },
+    };
+  }
+
+  async archiveThread(
+    _requestID: string,
+    _threadID: string,
+    _payload: ThreadArchivePayload,
+  ): Promise<void> {}
+
+  async unarchiveThread(
+    _requestID: string,
+    threadID: string,
+    _payload: ThreadUnarchivePayload,
+  ): Promise<CodexThreadUnarchiveResult> {
+    return {
+      thread: {
+        id: threadID,
+        preview: "Unarchived preview",
+        updatedAt: 1_700_000_003,
+        name: "Unarchived Thread",
+        status: { type: "idle" },
+        turns: [],
+      },
+    };
+  }
+
+  async rollbackThread(
+    _requestID: string,
+    threadID: string,
+    _payload: ThreadRollbackPayload,
+  ): Promise<CodexThreadRollbackResult> {
+    return {
+      thread: {
+        id: threadID,
+        preview: "Rolled back preview",
+        updatedAt: 1_700_000_004,
+        name: "Rolled Back Thread",
+        status: { type: "idle" },
+        turns: [],
       },
     };
   }
@@ -235,6 +373,8 @@ class FakeCodexClient implements CodexClientAdapter {
           preview: "Preview",
           updatedAt: 1_700_000_000,
           name: "Phase 3",
+          status: { type: "idle" },
+          turns: [],
         },
       ],
       nextCursor: "cursor-2",

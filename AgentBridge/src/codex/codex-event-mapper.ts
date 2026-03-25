@@ -2,12 +2,15 @@ import type {
   ApprovalRequestedEvent,
   ApprovalRequestedPayload,
   BridgeEvent,
+  ConversationMessage,
   DiffFileSummary,
   ErrorEvent,
   PlanStep,
   RateLimitBucket,
+  ThreadArchivedEvent,
   ThreadStartedEvent,
   ThreadSummary,
+  ThreadUnarchivedEvent,
 } from "../protocol/types";
 import type { CodexTransportNotification, CodexTransportServerRequest } from "./codex-transport";
 
@@ -183,7 +186,7 @@ export class DefaultCodexEventMapper implements CodexEventMapper {
         return params && typeof params.message === "string"
           ? [
               buildErrorEvent(
-                typeof params.code === "string" ? params.code : "provider_error",
+                  typeof params.code === "string" ? params.code : "provider_error",
                 params.message,
                 undefined,
                 params,
@@ -191,7 +194,17 @@ export class DefaultCodexEventMapper implements CodexEventMapper {
             ]
           : [malformedNotificationError(notification.method)];
       case "thread/started":
-        return [];
+        return params && isPlainObject(params.thread)
+          ? [buildThreadStartedEvent(undefined, toCodexThreadForEvent(params.thread))]
+          : [malformedNotificationError(notification.method)];
+      case "thread/archived":
+        return params && typeof params.threadId === "string"
+          ? [buildThreadArchivedEvent(params.threadId)]
+          : [malformedNotificationError(notification.method)];
+      case "thread/unarchived":
+        return params && typeof params.threadId === "string"
+          ? [buildThreadUnarchivedEvent(params.threadId)]
+          : [malformedNotificationError(notification.method)];
       default:
         return [];
     }
@@ -235,22 +248,32 @@ export function buildThreadSummary(thread: {
   preview: string;
   updatedAt: number;
   name: string | null;
+  status?: unknown;
+  turns?: unknown[];
+  archived?: boolean;
 }): ThreadSummary {
   return {
     id: thread.id,
     title: thread.name ?? fallbackThreadTitle(thread.preview, thread.id),
     previewText: thread.preview,
     updatedAt: new Date(Math.max(0, thread.updatedAt) * 1_000).toISOString(),
+    archived: thread.archived === true,
+    running: threadStatusToRunning(thread.status),
+    errorMessage: threadStatusToErrorMessage(thread.status),
+    messages: extractTranscriptMessages(thread.turns ?? []),
   };
 }
 
 export function buildThreadStartedEvent(
-  requestID: string,
+  requestID: string | undefined,
   thread: {
     id: string;
     preview: string;
     updatedAt: number;
     name: string | null;
+    status?: unknown;
+    turns?: unknown[];
+    archived?: boolean;
   },
 ): ThreadStartedEvent {
   return {
@@ -261,6 +284,32 @@ export function buildThreadStartedEvent(
     threadID: thread.id,
     payload: {
       thread: buildThreadSummary(thread),
+    },
+  };
+}
+
+export function buildThreadArchivedEvent(threadID: string, requestID?: string): ThreadArchivedEvent {
+  return {
+    type: "thread.archived",
+    timestamp: new Date().toISOString(),
+    provider: "codex",
+    requestID,
+    threadID,
+    payload: {
+      threadID,
+    },
+  };
+}
+
+export function buildThreadUnarchivedEvent(threadID: string, requestID?: string): ThreadUnarchivedEvent {
+  return {
+    type: "thread.unarchived",
+    timestamp: new Date().toISOString(),
+    provider: "codex",
+    requestID,
+    threadID,
+    payload: {
+      threadID,
     },
   };
 }
@@ -868,6 +917,97 @@ function formatRateLimitDetail(name: string, usedPercent: number, windowDuration
   }
 
   return `${name}: ${usedPercent}% used over ${windowDurationMins}m`;
+}
+
+function toCodexThreadForEvent(value: Record<string, unknown>): {
+  id: string;
+  preview: string;
+  updatedAt: number;
+  name: string | null;
+  status?: unknown;
+  turns?: unknown[];
+  archived?: boolean;
+} {
+  return {
+    id: typeof value.id === "string" ? value.id : "thread",
+    preview: typeof value.preview === "string" ? value.preview : "",
+    updatedAt: typeof value.updatedAt === "number" ? value.updatedAt : 0,
+    name: typeof value.name === "string" ? value.name : null,
+    status: value.status,
+    turns: Array.isArray(value.turns) ? value.turns : [],
+    archived: value.archived === true,
+  };
+}
+
+function threadStatusToRunning(status: unknown): boolean {
+  return isPlainObject(status) && status.type === "active";
+}
+
+function threadStatusToErrorMessage(status: unknown): string | undefined {
+  if (!isPlainObject(status) || status.type !== "systemError") {
+    return undefined;
+  }
+
+  return "Thread reported a system error.";
+}
+
+function extractTranscriptMessages(turns: unknown[]): ConversationMessage[] {
+  const messages: ConversationMessage[] = [];
+
+  for (const turn of turns) {
+    if (!isPlainObject(turn) || !Array.isArray(turn.items)) {
+      continue;
+    }
+
+    for (const item of turn.items) {
+      const message = toConversationMessage(item);
+      if (message) {
+        messages.push(message);
+      }
+    }
+  }
+
+  return messages;
+}
+
+function toConversationMessage(item: unknown): ConversationMessage | null {
+  if (!isPlainObject(item) || typeof item.id !== "string" || typeof item.type !== "string") {
+    return null;
+  }
+
+  if (item.type === "userMessage" && Array.isArray(item.content)) {
+    const text = item.content
+      .flatMap((contentItem) => {
+        if (!isPlainObject(contentItem) || typeof contentItem.type !== "string") {
+          return [];
+        }
+
+        if (contentItem.type === "text" && typeof contentItem.text === "string") {
+          return [contentItem.text];
+        }
+
+        return [];
+      })
+      .join("");
+
+    return text.length > 0
+      ? {
+          id: item.id,
+          role: "user",
+          text,
+        }
+      : null;
+  }
+
+  if (item.type === "agentMessage" && typeof item.text === "string") {
+    return {
+      id: item.id,
+      role: "assistant",
+      text: item.text,
+    };
+  }
+
+  return null;
 }
 
 function fallbackThreadTitle(preview: string, threadID: string): string {

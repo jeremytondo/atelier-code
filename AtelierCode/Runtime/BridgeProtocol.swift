@@ -9,6 +9,11 @@ enum BridgeCommandType: String, Encodable, Sendable {
     case threadStart = "thread.start"
     case threadResume = "thread.resume"
     case threadList = "thread.list"
+    case threadRead = "thread.read"
+    case threadFork = "thread.fork"
+    case threadArchive = "thread.archive"
+    case threadUnarchive = "thread.unarchive"
+    case threadRollback = "thread.rollback"
     case turnStart = "turn.start"
     case turnCancel = "turn.cancel"
     case approvalResolve = "approval.resolve"
@@ -19,6 +24,8 @@ enum BridgeCommandType: String, Encodable, Sendable {
 
 enum BridgeEventType: String, Decodable, Sendable {
     case threadStarted = "thread.started"
+    case threadArchived = "thread.archived"
+    case threadUnarchived = "thread.unarchived"
     case turnStarted = "turn.started"
     case messageDelta = "message.delta"
     case thinkingDelta = "thinking.delta"
@@ -175,6 +182,22 @@ struct BridgeThreadListPayload: Encodable, Sendable {
     let archived: BridgeThreadArchiveFilter?
 }
 
+struct BridgeThreadReadPayload: Encodable, Sendable {
+    let includeTurns: Bool?
+}
+
+struct BridgeThreadForkPayload: Encodable, Sendable {
+    let workspacePath: String
+}
+
+struct BridgeThreadArchivePayload: Encodable, Sendable {}
+
+struct BridgeThreadUnarchivePayload: Encodable, Sendable {}
+
+struct BridgeThreadRollbackPayload: Encodable, Sendable {
+    let numTurns: Int
+}
+
 struct BridgeTurnStartConfiguration: Encodable, Sendable {
     let cwd: String?
     let model: String?
@@ -218,6 +241,16 @@ struct BridgeThreadSummaryDTO: Decodable, Equatable, Sendable {
     let title: String
     let previewText: String
     let updatedAt: String
+    let archived: Bool?
+    let running: Bool?
+    let errorMessage: String?
+    let messages: [BridgeConversationMessageDTO]?
+}
+
+struct BridgeConversationMessageDTO: Decodable, Equatable, Sendable {
+    let id: String
+    let role: ConversationRole
+    let text: String
 }
 
 struct BridgeTurnStartedPayload: Decodable, Equatable, Sendable {
@@ -227,6 +260,14 @@ struct BridgeTurnStartedPayload: Decodable, Equatable, Sendable {
 
 struct BridgeThreadStartedPayload: Decodable, Equatable, Sendable {
     let thread: BridgeThreadSummaryDTO
+}
+
+struct BridgeThreadArchivedPayload: Decodable, Equatable, Sendable {
+    let threadID: String
+}
+
+struct BridgeThreadUnarchivedPayload: Decodable, Equatable, Sendable {
+    let threadID: String
 }
 
 struct BridgeMessageDeltaPayload: Decodable, Equatable, Sendable {
@@ -418,6 +459,8 @@ struct BridgeProviderStatusPayload: Decodable, Equatable, Sendable {
 
 enum BridgeEventPayload: Equatable, Sendable {
     case threadStarted(BridgeThreadStartedPayload)
+    case threadArchived(BridgeThreadArchivedPayload)
+    case threadUnarchived(BridgeThreadUnarchivedPayload)
     case turnStarted(BridgeTurnStartedPayload)
     case messageDelta(BridgeMessageDeltaPayload)
     case thinkingDelta(BridgeThinkingDeltaPayload)
@@ -478,6 +521,10 @@ struct BridgeEventEnvelope: Decodable, Equatable, Sendable {
         switch type {
         case .threadStarted:
             payload = .threadStarted(try container.decode(BridgeThreadStartedPayload.self, forKey: .payload))
+        case .threadArchived:
+            payload = .threadArchived(try container.decode(BridgeThreadArchivedPayload.self, forKey: .payload))
+        case .threadUnarchived:
+            payload = .threadUnarchived(try container.decode(BridgeThreadUnarchivedPayload.self, forKey: .payload))
         case .turnStarted:
             payload = .turnStarted(try container.decode(BridgeTurnStartedPayload.self, forKey: .payload))
         case .messageDelta:
@@ -546,7 +593,28 @@ extension BridgeThreadSummaryDTO {
             id: id,
             title: title,
             previewText: previewText,
-            updatedAt: bridgeDate(from: updatedAt) ?? .distantPast
+            updatedAt: bridgeDate(from: updatedAt) ?? .distantPast,
+            isArchived: archived ?? false,
+            isRunning: running ?? false,
+            lastErrorMessage: errorMessage
+        )
+    }
+
+    func toThreadSession() -> ThreadSession {
+        ThreadSession(
+            threadID: id,
+            title: title,
+            messages: (messages ?? []).map { $0.toConversationMessage() }
+        )
+    }
+}
+
+extension BridgeConversationMessageDTO {
+    func toConversationMessage() -> ConversationMessage {
+        ConversationMessage(
+            id: id,
+            role: role,
+            text: text
         )
     }
 }
@@ -661,6 +729,6 @@ extension BridgeLoginMethod {
     }
 }
 
-private func bridgeDate(from string: String) -> Date? {
+func bridgeDate(from string: String) -> Date? {
     ISO8601DateFormatter().date(from: string)
 }

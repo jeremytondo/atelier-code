@@ -37,6 +37,9 @@ describe("CodexClient", () => {
       preview: "Preview text",
       updatedAt: 1_700_000_000,
       name: "New Thread",
+      status: undefined,
+      turns: [],
+      archived: false,
     });
     expect(transport.sent).toEqual([
       {

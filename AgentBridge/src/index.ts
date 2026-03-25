@@ -8,6 +8,7 @@ import {
 import { CodexClient, type CodexClientAdapter } from "./codex/codex-client";
 import {
   DefaultCodexEventMapper,
+  buildThreadArchivedEvent,
   buildThreadStartedEvent,
   buildThreadSummary,
 } from "./codex/codex-event-mapper";
@@ -639,6 +640,25 @@ export async function executeBridgeCommand(
           },
         };
         return [event];
+      }
+      case "thread.read": {
+        const result = await client.readThread(command.id, command.threadID, command.payload);
+        return [buildThreadStartedEvent(command.id, result.thread)];
+      }
+      case "thread.fork": {
+        const result = await client.forkThread(command.id, command.threadID, command.payload);
+        return [buildThreadStartedEvent(command.id, result.thread)];
+      }
+      case "thread.archive":
+        await client.archiveThread(command.id, command.threadID, command.payload);
+        return [buildThreadArchivedEvent(command.threadID, command.id)];
+      case "thread.unarchive": {
+        const result = await client.unarchiveThread(command.id, command.threadID, command.payload);
+        return [buildThreadStartedEvent(command.id, result.thread)];
+      }
+      case "thread.rollback": {
+        const result = await client.rollbackThread(command.id, command.threadID, command.payload);
+        return [buildThreadStartedEvent(command.id, result.thread)];
       }
       case "turn.start": {
         const result = await client.startTurn(command.id, command.threadID, command.payload);

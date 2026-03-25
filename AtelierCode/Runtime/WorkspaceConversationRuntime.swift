@@ -4,9 +4,15 @@ import Foundation
 protocol WorkspaceConversationRuntime: AnyObject {
     func start() async throws
     func stop() async
+    func listThreads(archived: Bool) async throws
     func startThreadAndWait(title: String?) async throws -> ThreadSession
     func resumeThreadAndWait(id: String) async throws -> ThreadSession
-    func startTurn(prompt: String, configuration: BridgeTurnStartConfiguration?) async throws
-    func cancelTurn(reason: String?) async throws
-    func resolveApproval(id: String, resolution: ApprovalResolution) async throws
+    func readThreadAndWait(id: String, includeTurns: Bool) async throws -> ThreadSession
+    func forkThreadAndWait(id: String) async throws -> ThreadSession
+    func archiveThread(id: String) async throws
+    func unarchiveThreadAndWait(id: String) async throws -> ThreadSession
+    func rollbackThreadAndWait(id: String, numTurns: Int) async throws -> ThreadSession
+    func startTurn(threadID: String, prompt: String, configuration: BridgeTurnStartConfiguration?) async throws
+    func cancelTurn(threadID: String, reason: String?) async throws
+    func resolveApproval(threadID: String, id: String, resolution: ApprovalResolution) async throws
 }

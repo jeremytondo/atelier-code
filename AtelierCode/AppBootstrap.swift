@@ -130,6 +130,10 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
         controller.setConnectionStatus(.disconnected)
     }
 
+    func listThreads(archived: Bool) async throws {
+        controller.setShowingArchivedThreads(archived)
+    }
+
     func startThreadAndWait(title: String?) async throws -> ThreadSession {
         controller.openThread(id: "ui-test-thread", title: title ?? "New Conversation")
     }
@@ -138,12 +142,50 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
         controller.resumeThread(id: id, title: "Recovered Conversation")
     }
 
-    func startTurn(prompt: String, configuration: BridgeTurnStartConfiguration?) async throws {
-        let session = controller.activeThreadSession ?? controller.openThread(id: "ui-test-thread", title: "New Conversation")
+    func readThreadAndWait(id: String, includeTurns: Bool) async throws -> ThreadSession {
+        let messages: [ConversationMessage] = includeTurns
+            ? [
+                ConversationMessage(id: "ui-read-user", role: .user, text: "Loaded thread \(id)."),
+                ConversationMessage(id: "ui-read-assistant", role: .assistant, text: "Thread transcript restored.")
+            ]
+            : []
+        return controller.resumeThread(id: id, title: "Recovered Conversation", messages: messages)
+    }
+
+    func forkThreadAndWait(id: String) async throws -> ThreadSession {
+        controller.resumeThread(
+            id: "\(id)-fork",
+            title: "Forked Conversation",
+            messages: controller.threadSession(id: id)?.messages ?? []
+        )
+    }
+
+    func archiveThread(id: String) async throws {
+        controller.setThreadArchived(true, for: id)
+    }
+
+    func unarchiveThreadAndWait(id: String) async throws -> ThreadSession {
+        controller.setThreadArchived(false, for: id)
+        return controller.resumeThread(id: id, title: controller.threadSummary(id: id)?.title ?? "Recovered Conversation")
+    }
+
+    func rollbackThreadAndWait(id: String, numTurns: Int) async throws -> ThreadSession {
+        let existingMessages = controller.threadSession(id: id)?.messages ?? []
+        let rolledBackMessages = Array(existingMessages.dropLast(max(0, numTurns)))
+        return controller.resumeThread(
+            id: id,
+            title: controller.threadSummary(id: id)?.title ?? "Recovered Conversation",
+            messages: rolledBackMessages
+        )
+    }
+
+    func startTurn(threadID: String, prompt: String, configuration: BridgeTurnStartConfiguration?) async throws {
+        let session = controller.threadSession(id: threadID) ?? controller.openThread(id: threadID, title: "New Conversation")
         let turnNumber = coordinator.nextTurnCount()
 
         session.beginTurn(userPrompt: prompt)
-        controller.setAwaitingTurnStart(false)
+        controller.setAwaitingTurnStart(false, for: threadID)
+        controller.setCurrentTurnID("ui-test-turn-\(turnNumber)", for: threadID)
         controller.setConnectionStatus(.streaming)
 
         if coordinator.scenario == .phase2 {
@@ -273,6 +315,7 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
                 )
                 session.appendAssistantTextDelta("Completed repeated waiting test turn \(turnNumber).")
                 session.completeTurn()
+                controller.setCurrentTurnID(nil, for: threadID)
                 controller.setConnectionStatus(.ready)
             }
             return
@@ -283,19 +326,22 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
         try await Task.sleep(nanoseconds: 40_000_000)
         session.appendAssistantTextDelta(" in the UI test harness.")
         session.completeTurn()
+        controller.setCurrentTurnID(nil, for: threadID)
         controller.setConnectionStatus(.ready)
     }
 
-    func cancelTurn(reason: String?) async throws {
+    func cancelTurn(threadID: String, reason: String?) async throws {
         controller.setConnectionStatus(.cancelling)
-        controller.setAwaitingTurnStart(false)
-        controller.activeThreadSession?.cancelTurn()
+        controller.setAwaitingTurnStart(false, for: threadID)
+        controller.threadSession(id: threadID)?.cancelTurn()
+        controller.setCurrentTurnID(nil, for: threadID)
         controller.setConnectionStatus(.ready)
     }
 
-    func resolveApproval(id: String, resolution: ApprovalResolution) async throws {
-        controller.activeThreadSession?.resolveApprovalRequest(id: id, resolution: resolution)
-        controller.activeThreadSession?.completeTurn()
+    func resolveApproval(threadID: String, id: String, resolution: ApprovalResolution) async throws {
+        controller.threadSession(id: threadID)?.resolveApprovalRequest(id: id, resolution: resolution)
+        controller.threadSession(id: threadID)?.completeTurn()
+        controller.setCurrentTurnID(nil, for: threadID)
         controller.setConnectionStatus(.ready)
     }
 }
