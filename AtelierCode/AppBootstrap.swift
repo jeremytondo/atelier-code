@@ -145,11 +145,11 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
                 DiffFileChange(id: "phase2-session", path: "AtelierCode/ThreadSession.swift", additions: 18, deletions: 4)
             ]
 
-            try await Task.sleep(nanoseconds: 30_000_000)
+            try await Task.sleep(nanoseconds: 900_000_000)
             session.appendAssistantTextDelta("I grouped the current turn details under the transcript.")
             session.appendThinkingDelta("Inspecting activity, approvals, plan state, and diff summaries for the active turn.")
             session.startActivity(
-                id: "phase2-tool",
+                id: "phase2-tool-success",
                 kind: .tool,
                 title: "Run tests",
                 detail: "Checking the session and runtime wiring.",
@@ -157,14 +157,32 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
                 workingDirectory: controller.workspace.canonicalPath
             )
             session.appendActivityOutput(
-                id: "phase2-tool",
+                id: "phase2-tool-success",
                 delta: "Building AtelierCode...\nRunning ThreadSessionTests...\n"
             )
             session.completeActivity(
-                id: "phase2-tool",
+                id: "phase2-tool-success",
                 status: .completed,
                 detail: "ThreadSessionTests finished successfully.",
                 exitCode: 0
+            )
+            session.startActivity(
+                id: "phase2-tool-failed",
+                kind: .tool,
+                title: "Run runtime tests",
+                detail: "Validating the grouped failure state.",
+                command: "swift test --filter WorkspaceBridgeRuntimeTests",
+                workingDirectory: controller.workspace.canonicalPath
+            )
+            session.appendActivityOutput(
+                id: "phase2-tool-failed",
+                delta: "Running WorkspaceBridgeRuntimeTests...\nAssertion failed.\n"
+            )
+            session.completeActivity(
+                id: "phase2-tool-failed",
+                status: .failed,
+                detail: "WorkspaceBridgeRuntimeTests failed.",
+                exitCode: 1
             )
             session.startActivity(
                 id: "phase2-files",
@@ -178,6 +196,18 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
                 status: .completed,
                 detail: "Applied the current patch set.",
                 files: changedFiles
+            )
+            session.startActivity(
+                id: "phase2-tool-running",
+                kind: .tool,
+                title: "Run final verification",
+                detail: "Collecting final UI polish output.",
+                command: "xcodebuild test -scheme AtelierCode",
+                workingDirectory: controller.workspace.canonicalPath
+            )
+            session.appendActivityOutput(
+                id: "phase2-tool-running",
+                delta: "Testing in progress...\n"
             )
             session.replacePlanState(
                 PlanState(

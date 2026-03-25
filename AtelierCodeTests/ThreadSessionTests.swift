@@ -56,6 +56,7 @@ struct ThreadSessionTests {
 
     @Test func transcriptPresentationGroupsContiguousActivityAndPreservesTurnOrdering() async throws {
         let presentation = TranscriptTurnPresentation(
+            turnState: TurnState(phase: .inProgress, failureDescription: nil),
             turnItems: [
                 makeTurnItem(id: "assistant-1", kind: .assistant, text: "First"),
                 makeTurnItem(id: "tool-1", kind: .tool, detail: "Preparing"),
@@ -102,9 +103,44 @@ struct ThreadSessionTests {
 
         #expect(sections.map(\.kind) == [.tools, .fileChanges, .tools])
         #expect(sections.map(\.status) == [.failed, .running, .completed])
+        #expect(sections.map(\.hasMixedStatuses) == [true, false, false])
         #expect(sections.map(\.defaultExpanded) == [false, true, false])
         #expect(sections.map(\.summary) == ["Build failed", "Applying patch", "Finished"])
         #expect(sections.map(\.ordinal) == [1, 1, 2])
+        #expect(sections[0].statusCounts.completed == 1)
+        #expect(sections[0].statusCounts.failed == 1)
+        #expect(sections[1].statusCounts.running == 1)
+        #expect(presentation.showsAssistantWaitingIndicator == false)
+    }
+
+    @Test func transcriptPresentationShowsAssistantWaitingIndicatorOnlyBeforeAssistantOrActivityAppears() async throws {
+        let waitingPresentation = TranscriptTurnPresentation(
+            turnState: TurnState(phase: .inProgress, failureDescription: nil),
+            turnItems: [
+                makeTurnItem(id: "reasoning-1", kind: .reasoning, text: "Thinking")
+            ]
+        )
+        let assistantPresentation = TranscriptTurnPresentation(
+            turnState: TurnState(phase: .inProgress, failureDescription: nil),
+            turnItems: [
+                makeTurnItem(id: "assistant-1", kind: .assistant, text: "Started")
+            ]
+        )
+        let activityPresentation = TranscriptTurnPresentation(
+            turnState: TurnState(phase: .inProgress, failureDescription: nil),
+            turnItems: [
+                makeTurnItem(id: "tool-1", kind: .tool, status: .running)
+            ]
+        )
+        let completedPresentation = TranscriptTurnPresentation(
+            turnState: TurnState(phase: .completed, failureDescription: nil),
+            turnItems: []
+        )
+
+        #expect(waitingPresentation.showsAssistantWaitingIndicator)
+        #expect(assistantPresentation.showsAssistantWaitingIndicator == false)
+        #expect(activityPresentation.showsAssistantWaitingIndicator == false)
+        #expect(completedPresentation.showsAssistantWaitingIndicator == false)
     }
 
     @Test func approvalQueueHandlesResolveDuplicateAndStaleCases() async throws {

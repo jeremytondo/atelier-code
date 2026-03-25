@@ -275,28 +275,66 @@ enum TranscriptActivitySectionStatus: String, Equatable, Sendable {
     case cancelled
 }
 
+struct TranscriptActivitySectionStatusCounts: Equatable, Sendable {
+    let running: Int
+    let completed: Int
+    let failed: Int
+    let cancelled: Int
+
+    var distinctStatusCount: Int {
+        [running, completed, failed, cancelled].filter { $0 > 0 }.count
+    }
+
+    var isMixed: Bool {
+        distinctStatusCount > 1
+    }
+
+    func count(for status: TranscriptActivitySectionStatus) -> Int {
+        switch status {
+        case .running:
+            return running
+        case .completed:
+            return completed
+        case .failed:
+            return failed
+        case .cancelled:
+            return cancelled
+        }
+    }
+}
+
 struct TranscriptActivitySection: Equatable, Sendable, Identifiable {
     let id: String
     let kind: TranscriptActivitySectionKind
     let ordinal: Int
     let items: [TurnItem]
     let status: TranscriptActivitySectionStatus
+    let statusCounts: TranscriptActivitySectionStatusCounts
     let summary: String
 
     var itemCount: Int {
         items.count
     }
 
+    var hasMixedStatuses: Bool {
+        statusCounts.isMixed
+    }
+
     var defaultExpanded: Bool {
-        status == .running
+        statusCounts.running > 0
     }
 }
 
 struct TranscriptTurnPresentation: Equatable, Sendable {
     let entries: [TranscriptTurnEntry]
+    let showsAssistantWaitingIndicator: Bool
 
-    init(turnItems: [TurnItem]) {
+    init(turnState: TurnState = TurnState(), turnItems: [TurnItem]) {
         entries = Self.makeEntries(from: turnItems)
+        showsAssistantWaitingIndicator = Self.shouldShowAssistantWaitingIndicator(
+            turnState: turnState,
+            turnItems: turnItems
+        )
     }
 
     private static func makeEntries(from turnItems: [TurnItem]) -> [TranscriptTurnEntry] {
@@ -325,6 +363,7 @@ struct TranscriptTurnPresentation: Equatable, Sendable {
                         ordinal: ordinal,
                         items: section.items,
                         status: makeSectionStatus(for: section.items),
+                        statusCounts: makeSectionStatusCounts(for: section.items),
                         summary: makeSectionSummary(for: section.items, kind: section.kind)
                     )
                 )
@@ -352,6 +391,19 @@ struct TranscriptTurnPresentation: Equatable, Sendable {
         return entries
     }
 
+    private static func shouldShowAssistantWaitingIndicator(
+        turnState: TurnState,
+        turnItems: [TurnItem]
+    ) -> Bool {
+        guard turnState.phase == .inProgress else {
+            return false
+        }
+
+        return turnItems.contains {
+            $0.kind == .assistant || $0.kind == .tool || $0.kind == .fileChange
+        } == false
+    }
+
     private static func makeSectionStatus(for items: [TurnItem]) -> TranscriptActivitySectionStatus {
         if items.contains(where: { $0.status == .running }) {
             return .running
@@ -366,6 +418,15 @@ struct TranscriptTurnPresentation: Equatable, Sendable {
         }
 
         return .completed
+    }
+
+    private static func makeSectionStatusCounts(for items: [TurnItem]) -> TranscriptActivitySectionStatusCounts {
+        TranscriptActivitySectionStatusCounts(
+            running: items.filter { $0.status == .running }.count,
+            completed: items.filter { $0.status == .completed }.count,
+            failed: items.filter { $0.status == .failed }.count,
+            cancelled: items.filter { $0.status == .cancelled }.count
+        )
     }
 
     private static func makeSectionSummary(
