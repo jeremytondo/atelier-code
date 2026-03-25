@@ -86,9 +86,9 @@ final class AtelierCodeUITests: XCTestCase {
         mixedToolsToggle.click()
         app.buttons["turn-file-changes-section-1-toggle"].click()
 
-        XCTAssertTrue(app.staticTexts["Run tests"].exists)
-        XCTAssertTrue(app.staticTexts["swift test --filter ThreadSessionTests"].exists)
-        XCTAssertTrue(app.staticTexts["Run runtime tests"].exists)
+        XCTAssertTrue(app.staticTexts["Run tests"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["swift test --filter ThreadSessionTests"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["Run runtime tests"].waitForExistence(timeout: 2))
 
         app.buttons["Approve"].click()
 

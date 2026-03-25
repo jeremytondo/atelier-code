@@ -142,6 +142,10 @@ final class ThreadSession {
         turnItems[index].detail = detail
     }
 
+    func hasTurnItem(id: String) -> Bool {
+        turnItems.contains(where: { $0.id == id })
+    }
+
     func appendActivityOutput(id: String, delta: String) {
         guard delta.isEmpty == false,
               let index = turnItems.firstIndex(where: { $0.id == id }) else {

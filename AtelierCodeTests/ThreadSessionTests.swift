@@ -104,7 +104,7 @@ struct ThreadSessionTests {
         #expect(sections.map(\.kind) == [.tools, .fileChanges, .tools])
         #expect(sections.map(\.status) == [.failed, .running, .completed])
         #expect(sections.map(\.hasMixedStatuses) == [true, false, false])
-        #expect(sections.map(\.defaultExpanded) == [false, true, false])
+        #expect(sections.map(\.defaultExpanded) == [false, false, false])
         #expect(sections.map(\.summary) == ["Build failed", "Applying patch", "Finished"])
         #expect(sections.map(\.ordinal) == [1, 1, 2])
         #expect(sections[0].statusCounts.completed == 1)
@@ -138,9 +138,21 @@ struct ThreadSessionTests {
         )
 
         #expect(waitingPresentation.showsAssistantWaitingIndicator)
-        #expect(assistantPresentation.showsAssistantWaitingIndicator == false)
+        #expect(assistantPresentation.showsAssistantWaitingIndicator)
         #expect(activityPresentation.showsAssistantWaitingIndicator == false)
         #expect(completedPresentation.showsAssistantWaitingIndicator == false)
+    }
+
+    @Test func transcriptPresentationShowsAssistantWaitingIndicatorAgainAfterToolFinishes() async throws {
+        let presentation = TranscriptTurnPresentation(
+            turnState: TurnState(phase: .inProgress, failureDescription: nil),
+            turnItems: [
+                makeTurnItem(id: "tool-1", kind: .tool, status: .completed),
+                makeTurnItem(id: "assistant-1", kind: .assistant, text: "Checking the results.")
+            ]
+        )
+
+        #expect(presentation.showsAssistantWaitingIndicator)
     }
 
     @Test func approvalQueueHandlesResolveDuplicateAndStaleCases() async throws {

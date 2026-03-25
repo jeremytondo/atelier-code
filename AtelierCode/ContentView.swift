@@ -409,10 +409,6 @@ private struct TurnDetailsStack: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if presentation.showsAssistantWaitingIndicator {
-                AssistantWaitingIndicatorRow(maxWidth: maxWidth)
-            }
-
             if session.turnItems.isEmpty == false {
                 ForEach(transcriptEntries) { entry in
                     TranscriptTurnEntryRow(
@@ -421,6 +417,10 @@ private struct TurnDetailsStack: View {
                         expandedActivitySectionIDs: $expandedActivitySectionIDs
                     )
                 }
+            }
+
+            if presentation.showsAssistantWaitingIndicator {
+                AssistantWaitingIndicatorRow(maxWidth: maxWidth)
             }
 
             if session.pendingApprovals.isEmpty == false {
@@ -545,6 +545,13 @@ private struct ActivitySectionCard: View {
                                         )
                                     )
                                 }
+
+                                if section.status.activityStatus == .running {
+                                    ActivityStatusAccessory(
+                                        status: .running,
+                                        accessibilityIdentifier: section.statusAccessoryAccessibilityIdentifier
+                                    )
+                                }
                             } else {
                                 PlanCountBadge(text: itemCountLabel)
                                 ActivityStatusAccessory(
@@ -619,30 +626,20 @@ private struct AssistantTurnItemRow: View {
 
 private struct AssistantWaitingIndicatorRow: View {
     let maxWidth: CGFloat
-    @State private var isAnimating = false
 
     var body: some View {
         HStack {
-            HStack(spacing: 0) {
-                Text("...")
-                    .font(.system(size: 24, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.accentColor)
-                    .opacity(isAnimating ? 1 : 0.35)
-                    .onAppear {
-                        withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
-                            isAnimating = true
-                        }
-                    }
-
-                Text("assistant waiting indicator")
-                    .font(.system(size: 1))
-                    .foregroundStyle(.clear)
-                    .accessibilityIdentifier("assistant-waiting-indicator")
+            HStack(spacing: 8) {
+                AnimatedEllipsisIndicator()
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color.secondary.opacity(0.10), in: Capsule())
             .frame(maxWidth: maxWidth, alignment: .leading)
 
             Spacer(minLength: 48)
         }
+        .accessibilityIdentifier("assistant-waiting-indicator")
     }
 }
 
@@ -1027,18 +1024,68 @@ private struct ActivityStatusBadge: View {
     }
 }
 
+private struct ActivitySpinner: View {
+    let color: Color
+    var size: CGFloat = 12
+    var lineWidth: CGFloat = 2
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+            let elapsed = context.date.timeIntervalSinceReferenceDate
+            let rotation = Angle.degrees((elapsed * 220).truncatingRemainder(dividingBy: 360))
+
+            ZStack {
+                Circle()
+                    .stroke(color.opacity(0.18), lineWidth: lineWidth)
+
+                Circle()
+                    .trim(from: 0.12, to: 0.72)
+                    .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                    .rotationEffect(rotation)
+            }
+            .frame(width: size, height: size)
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+private struct AnimatedEllipsisIndicator: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 0.24)) { context in
+            let visibleDots = (Int(context.date.timeIntervalSinceReferenceDate / 0.24) % 3) + 1
+
+            HStack(spacing: 4) {
+                ForEach(0..<3, id: \.self) { index in
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 6, height: 6)
+                        .opacity(index < visibleDots ? 1 : 0.28)
+                }
+            }
+            .frame(height: 10)
+        }
+    }
+}
+
+private struct RunningActivityStatusAccessory: View {
+    let status: ActivityStatus
+
+    var body: some View {
+        ActivitySpinner(color: status.tintColor, size: 18, lineWidth: 2.6)
+            .padding(9)
+            .background(Color.secondary.opacity(0.10), in: Circle())
+    }
+}
+
 private struct ActivityStatusAccessory: View {
     let status: ActivityStatus
     let accessibilityIdentifier: String
 
     var body: some View {
         if status == .running {
-            HStack(spacing: 0) {
-                ProgressView()
-                    .controlSize(.small)
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Running")
+            RunningActivityStatusAccessory(status: status)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Running")
                 .accessibilityIdentifier(accessibilityIdentifier)
         } else {
             ActivityStatusBadge(status: status)
@@ -1054,8 +1101,7 @@ private struct ActivityStatusCountChip: View {
     var body: some View {
         HStack(spacing: 6) {
             if chip.status == .running {
-                ProgressView()
-                    .controlSize(.small)
+                ActivitySpinner(color: chip.status.activityStatus.tintColor)
             }
 
             Text(chip.text)

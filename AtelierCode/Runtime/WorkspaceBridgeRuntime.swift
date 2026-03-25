@@ -42,6 +42,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     typealias ProcessLauncher = (URL) throws -> any BridgeProcessHandle
     typealias SocketFactory = (URL) -> any BridgeSocketClient
     typealias OpenURLAction = (URL) -> Void
+    typealias SleepAction = @Sendable (TimeInterval) async -> Void
 
     private enum PendingCommand {
         case threadStart
@@ -67,6 +68,9 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     private let socketFactory: SocketFactory
     private let openURLAction: OpenURLAction
     private let appVersion: String
+    private let minimumVisibleRunningActivityDuration: TimeInterval
+    private let now: () -> Date
+    private let sleep: SleepAction
 
     private var processHandle: (any BridgeProcessHandle)?
     private var socketClient: (any BridgeSocketClient)?
@@ -77,6 +81,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     private var abandonedThreadRequestIDs: Set<String> = []
     private var requestCounter = 0
     private var currentTurnID: String?
+    private var runningActivityStartedAt: [String: Date] = [:]
+    private var pendingActivityCompletions: [String: Task<Void, Never>] = [:]
     private var isStopping = false
 
     init(
@@ -85,7 +91,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         processLauncher: ProcessLauncher? = nil,
         socketFactory: SocketFactory? = nil,
         openURLAction: OpenURLAction? = nil,
-        appVersion: String? = nil
+        appVersion: String? = nil,
+        minimumVisibleRunningActivityDuration: TimeInterval = 0.2,
+        now: @escaping () -> Date = Date.init,
+        sleep: SleepAction? = nil
     ) {
         let resolvedExecutableLocator = executableLocator ?? BridgeExecutableLocator()
         let resolvedProcessLauncher = processLauncher ?? { try DefaultBridgeProcessHandle(executableURL: $0) }
@@ -93,6 +102,14 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         let resolvedOpenURLAction = openURLAction ?? { NSWorkspace.shared.open($0) }
         let resolvedAppVersion = appVersion
             ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0")
+        let resolvedSleep = sleep ?? { duration in
+            let nanoseconds = UInt64(max(0, duration) * 1_000_000_000)
+            guard nanoseconds > 0 else {
+                return
+            }
+
+            try? await Task.sleep(nanoseconds: nanoseconds)
+        }
 
         self.controller = controller
         self.executableLocator = resolvedExecutableLocator
@@ -100,6 +117,9 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         self.socketFactory = resolvedSocketFactory
         self.openURLAction = resolvedOpenURLAction
         self.appVersion = resolvedAppVersion
+        self.minimumVisibleRunningActivityDuration = max(0, minimumVisibleRunningActivityDuration)
+        self.now = now
+        self.sleep = resolvedSleep
     }
 
     func start() async throws {
@@ -153,6 +173,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         isStopping = true
         controller.setBridgeLifecycleState(.stopping)
 
+        cancelPendingActivityCompletions()
         receiveTask?.cancel()
         receiveTask = nil
         socketClient?.close()
@@ -294,6 +315,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             throw WorkspaceBridgeRuntimeError.missingActiveThread
         }
 
+        if session.turnState.phase != .inProgress {
+            session.beginTurn(userPrompt: prompt)
+        }
+
         let requestID = nextRequestID(prefix: "turn-start")
         pendingCommands[requestID] = .turnStart(prompt: prompt)
         controller.setAwaitingTurnStart(true)
@@ -387,6 +412,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     }
 
     private func handleEvent(_ event: BridgeEventEnvelope) {
+        adoptTurnContextIfNeeded(from: event)
+
         switch event.payload {
         case .threadStarted(let payload):
             handleThreadStarted(payload, requestID: event.requestID)
@@ -415,6 +442,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 return
             }
 
+            if let activityID = event.activityID {
+                markActivityStarted(id: activityID)
+            }
+
             session.startActivity(
                 id: event.activityID ?? UUID().uuidString,
                 kind: .tool,
@@ -429,6 +460,16 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 return
             }
 
+            if session.hasTurnItem(id: activityID) == false {
+                markActivityStarted(id: activityID)
+                session.startActivity(
+                    id: activityID,
+                    kind: .tool,
+                    title: "Tool Call",
+                    detail: "Running"
+                )
+            }
+
             session.appendActivityOutput(id: activityID, delta: payload.delta)
         case .toolCompleted(let payload):
             guard let session = session(for: event.threadID),
@@ -436,15 +477,31 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 return
             }
 
-            session.completeActivity(
-                id: activityID,
-                status: payload.status.activityStatus,
-                detail: payload.detail,
-                exitCode: payload.exitCode
-            )
+            if session.hasTurnItem(id: activityID) == false {
+                markActivityStarted(id: activityID)
+                session.startActivity(
+                    id: activityID,
+                    kind: .tool,
+                    title: "Tool Call",
+                    detail: "Running"
+                )
+            }
+
+            completeActivityWhenVisible(threadID: event.threadID, activityID: activityID) { session in
+                session.completeActivity(
+                    id: activityID,
+                    status: payload.status.activityStatus,
+                    detail: payload.detail,
+                    exitCode: payload.exitCode
+                )
+            }
         case .fileChangeStarted(let payload):
             guard let session = session(for: event.threadID) else {
                 return
+            }
+
+            if let activityID = event.activityID {
+                markActivityStarted(id: activityID)
             }
 
             session.startActivity(
@@ -460,12 +517,25 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 return
             }
 
-            session.completeActivity(
-                id: activityID,
-                status: payload.status.activityStatus,
-                detail: payload.detail,
-                files: payload.files.map { $0.toDiffFileChange() }
-            )
+            if session.hasTurnItem(id: activityID) == false {
+                markActivityStarted(id: activityID)
+                session.startActivity(
+                    id: activityID,
+                    kind: .fileChange,
+                    title: payload.detail ?? "File Change",
+                    detail: "Running",
+                    files: payload.files.map { $0.toDiffFileChange() }
+                )
+            }
+
+            completeActivityWhenVisible(threadID: event.threadID, activityID: activityID) { session in
+                session.completeActivity(
+                    id: activityID,
+                    status: payload.status.activityStatus,
+                    detail: payload.detail,
+                    files: payload.files.map { $0.toDiffFileChange() }
+                )
+            }
         case .approvalRequested(let payload):
             guard let session = session(for: event.threadID) else {
                 return
@@ -612,6 +682,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             currentTurnID = nil
         }
 
+        cancelPendingActivityCompletions()
         controller.setAwaitingTurnStart(false)
 
         switch payload.status {
@@ -706,6 +777,20 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         }
     }
 
+    private func adoptTurnContextIfNeeded(from event: BridgeEventEnvelope) {
+        guard currentTurnID == nil,
+              controller.isAwaitingTurnStart,
+              let turnID = event.turnID,
+              let threadID = event.threadID,
+              controller.activeThreadSession?.threadID == threadID else {
+            return
+        }
+
+        currentTurnID = turnID
+        controller.setAwaitingTurnStart(false)
+        controller.setConnectionStatus(.streaming)
+    }
+
     private func session(for threadID: String?) -> ThreadSession? {
         guard let threadID else {
             return nil
@@ -715,6 +800,62 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             ?? controller.activeThreadSession?.title
             ?? "Thread"
         return controller.ensureActiveThreadSession(id: threadID, title: title)
+    }
+
+    private func markActivityStarted(id: String) {
+        pendingActivityCompletions[id]?.cancel()
+        pendingActivityCompletions.removeValue(forKey: id)
+        runningActivityStartedAt[id] = now()
+    }
+
+    private func completeActivityWhenVisible(
+        threadID: String?,
+        activityID: String,
+        applyCompletion: @escaping @MainActor (ThreadSession) -> Void
+    ) {
+        let elapsed = runningActivityStartedAt[activityID].map { now().timeIntervalSince($0) }
+            ?? minimumVisibleRunningActivityDuration
+        let remaining = max(0, minimumVisibleRunningActivityDuration - elapsed)
+
+        guard remaining > 0 else {
+            if let session = session(for: threadID) {
+                applyCompletion(session)
+            }
+
+            clearActivityTracking(id: activityID)
+            return
+        }
+
+        pendingActivityCompletions[activityID]?.cancel()
+        pendingActivityCompletions[activityID] = Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+
+            await self.sleep(remaining)
+
+            guard Task.isCancelled == false else {
+                return
+            }
+
+            if let session = self.session(for: threadID) {
+                applyCompletion(session)
+            }
+
+            self.clearActivityTracking(id: activityID)
+        }
+    }
+
+    private func clearActivityTracking(id: String) {
+        pendingActivityCompletions[id]?.cancel()
+        pendingActivityCompletions.removeValue(forKey: id)
+        runningActivityStartedAt.removeValue(forKey: id)
+    }
+
+    private func cancelPendingActivityCompletions() {
+        pendingActivityCompletions.values.forEach { $0.cancel() }
+        pendingActivityCompletions.removeAll()
+        runningActivityStartedAt.removeAll()
     }
 
     private func sendHello() async throws {
@@ -823,6 +964,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     }
 
     private func handleBridgeFailure(message: String) {
+        cancelPendingActivityCompletions()
         receiveTask?.cancel()
         receiveTask = nil
         socketClient?.close()

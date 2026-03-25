@@ -34,6 +34,7 @@ private struct UITestScenario {
         case ready
         case retry
         case phase2
+        case repeatedWaiting = "repeated-waiting"
     }
 
     let kind: Kind
@@ -79,6 +80,7 @@ private final class InMemoryBootstrapPreferencesStore: AppPreferencesStore {
 private final class UITestRuntimeCoordinator {
     let scenario: UITestScenario.Kind
     private(set) var startAttempts = 0
+    private(set) var startedTurnCount = 0
 
     init(scenario: UITestScenario.Kind) {
         self.scenario = scenario
@@ -87,6 +89,11 @@ private final class UITestRuntimeCoordinator {
     func nextStartAttempt() -> Int {
         startAttempts += 1
         return startAttempts
+    }
+
+    func nextTurnCount() -> Int {
+        startedTurnCount += 1
+        return startedTurnCount
     }
 }
 
@@ -134,6 +141,7 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
 
     func startTurn(prompt: String, configuration: BridgeTurnStartConfiguration?) async throws {
         let session = controller.activeThreadSession ?? controller.openThread(id: "ui-test-thread", title: "New Conversation")
+        let turnNumber = coordinator.nextTurnCount()
 
         session.beginTurn(userPrompt: prompt)
         controller.setAwaitingTurnStart(false)
@@ -239,6 +247,35 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
                     riskLevel: .medium
                 )
             )
+            return
+        }
+
+        if coordinator.scenario == .repeatedWaiting {
+            Task { @MainActor [controller] in
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                session.startActivity(
+                    id: "repeated-waiting-tool-\(turnNumber)",
+                    kind: .tool,
+                    title: "Read Files",
+                    detail: "Scanning the current workspace.",
+                    command: "find . -type f | head -20",
+                    workingDirectory: controller.workspace.canonicalPath
+                )
+                session.appendActivityOutput(
+                    id: "repeated-waiting-tool-\(turnNumber)",
+                    delta: "Collecting Swift files...\n"
+                )
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                session.completeActivity(
+                    id: "repeated-waiting-tool-\(turnNumber)",
+                    status: .completed,
+                    detail: "Finished reading files.",
+                    exitCode: 0
+                )
+                session.appendAssistantTextDelta("Completed repeated waiting test turn \(turnNumber).")
+                session.completeTurn()
+                controller.setConnectionStatus(.ready)
+            }
             return
         }
 
