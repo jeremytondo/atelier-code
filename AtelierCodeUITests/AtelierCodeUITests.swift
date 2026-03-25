@@ -53,7 +53,7 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Activity"].exists)
     }
 
-    func testPhase2TurnShowsInlineRowsAndApproveKeepsCompletedTurnVisible() throws {
+    func testPhase2TurnShowsCollapsedGroupedSectionsAndApproveKeepsCompletedTurnVisible() throws {
         let app = try makeApp(scenario: "phase2", workspaceName: "Phase2ApproveWorkspace")
         app.launch()
 
@@ -63,16 +63,32 @@ final class AtelierCodeUITests: XCTestCase {
         composer.typeText("Show the grouped turn details")
 
         app.buttons["conversation-send-button"].click()
+        XCTAssertTrue(app.staticTexts["I grouped the current turn details under the transcript."].waitForExistence(timeout: 5))
         app.scrollViews.firstMatch.swipeUp()
 
         XCTAssertTrue(app.buttons["Approve"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Approvals"].exists)
         XCTAssertTrue(app.staticTexts["I grouped the current turn details under the transcript."].exists)
         XCTAssertTrue(app.staticTexts["Reasoning"].exists)
-        XCTAssertTrue(app.staticTexts["Run tests"].exists)
         XCTAssertTrue(app.staticTexts["Plan"].exists)
         XCTAssertTrue(app.staticTexts["Turn Diff"].exists)
         XCTAssertTrue(app.buttons["Approve"].exists)
+        let mixedToolsToggle = app.buttons["turn-tools-section-1-toggle"]
+        XCTAssertTrue(mixedToolsToggle.exists)
+        XCTAssertTrue(app.buttons["turn-file-changes-section-1-toggle"].exists)
+        XCTAssertEqual(mixedToolsToggle.value as? String, "1 completed, 1 failed")
+        XCTAssertTrue(app.otherElements["turn-item-phase2-tool-running-status-accessory"].exists)
+        XCTAssertFalse(app.otherElements["turn-item-assistant-status-accessory"].exists)
+        XCTAssertFalse(app.staticTexts["Run tests"].exists)
+        XCTAssertFalse(app.staticTexts["swift test --filter ThreadSessionTests"].exists)
+        XCTAssertTrue(app.staticTexts["Run final verification"].exists)
+
+        mixedToolsToggle.click()
+        app.buttons["turn-file-changes-section-1-toggle"].click()
+
+        XCTAssertTrue(app.staticTexts["Run tests"].exists)
+        XCTAssertTrue(app.staticTexts["swift test --filter ThreadSessionTests"].exists)
+        XCTAssertTrue(app.staticTexts["Run runtime tests"].exists)
 
         app.buttons["Approve"].click()
 
@@ -97,6 +113,9 @@ final class AtelierCodeUITests: XCTestCase {
         app.scrollViews.firstMatch.swipeUp()
 
         XCTAssertTrue(app.buttons["Decline"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["turn-tools-section-1-toggle"].exists)
+        XCTAssertTrue(app.buttons["turn-file-changes-section-1-toggle"].exists)
+        XCTAssertTrue(app.staticTexts["Run final verification"].exists)
         XCTAssertTrue(app.buttons["Decline"].exists)
 
         app.buttons["Decline"].click()
@@ -108,7 +127,7 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["I grouped the current turn details under the transcript."].exists)
     }
 
-    func testPhase2InlineTurnRowsAppearBeforeFooterPanels() throws {
+    func testPhase2GroupedTurnSectionsAppearBeforeFooterPanels() throws {
         let app = try makeApp(scenario: "phase2", workspaceName: "Phase2OrderingWorkspace")
         app.launch()
 
@@ -123,19 +142,19 @@ final class AtelierCodeUITests: XCTestCase {
         let promptText = app.staticTexts["Check inline ordering"]
         let assistantText = app.staticTexts["I grouped the current turn details under the transcript."]
         let reasoningHeading = app.staticTexts["Reasoning"]
-        let toolTitle = app.staticTexts["Run tests"]
+        let toolsSection = app.buttons["turn-tools-section-1-toggle"]
         let approvalsHeading = app.staticTexts["Approvals"]
 
         XCTAssertTrue(promptText.waitForExistence(timeout: 5))
         XCTAssertTrue(assistantText.exists)
         XCTAssertTrue(reasoningHeading.exists)
-        XCTAssertTrue(toolTitle.exists)
+        XCTAssertTrue(toolsSection.exists)
         XCTAssertTrue(approvalsHeading.exists)
 
         XCTAssertLessThan(promptText.frame.minY, assistantText.frame.minY)
         XCTAssertLessThan(assistantText.frame.minY, reasoningHeading.frame.minY)
-        XCTAssertLessThan(reasoningHeading.frame.minY, toolTitle.frame.minY)
-        XCTAssertLessThan(toolTitle.frame.minY, approvalsHeading.frame.minY)
+        XCTAssertLessThan(reasoningHeading.frame.minY, toolsSection.frame.minY)
+        XCTAssertLessThan(toolsSection.frame.minY, approvalsHeading.frame.minY)
     }
 
     func testRetryRecoversFromConnectionError() throws {

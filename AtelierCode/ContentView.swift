@@ -397,12 +397,29 @@ private struct TurnDetailsStack: View {
     let appModel: AppModel
     let session: ThreadSession
     let maxWidth: CGFloat
+    @State private var expandedActivitySectionIDs: Set<String> = []
+
+    private var presentation: TranscriptTurnPresentation {
+        TranscriptTurnPresentation(turnState: session.turnState, turnItems: session.turnItems)
+    }
+
+    private var transcriptEntries: [TranscriptTurnEntry] {
+        presentation.entries
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if presentation.showsAssistantWaitingIndicator {
+                AssistantWaitingIndicatorRow(maxWidth: maxWidth)
+            }
+
             if session.turnItems.isEmpty == false {
-                ForEach(session.turnItems) { item in
-                    TurnItemRow(item: item, maxWidth: maxWidth)
+                ForEach(transcriptEntries) { entry in
+                    TranscriptTurnEntryRow(
+                        entry: entry,
+                        maxWidth: maxWidth,
+                        expandedActivitySectionIDs: $expandedActivitySectionIDs
+                    )
                 }
             }
 
@@ -431,6 +448,38 @@ private struct TurnDetailsStack: View {
                 DiffSection(aggregatedDiff: aggregatedDiff, maxWidth: maxWidth)
             }
         }
+        .onChange(of: transcriptEntries) { _, newEntries in
+            let validSectionIDs: Set<String> = Set(
+                newEntries.compactMap { entry in
+                    guard case let .activitySection(section) = entry else {
+                        return nil
+                    }
+
+                    return section.id
+                }
+            )
+
+            expandedActivitySectionIDs.formIntersection(validSectionIDs)
+        }
+    }
+}
+
+private struct TranscriptTurnEntryRow: View {
+    let entry: TranscriptTurnEntry
+    let maxWidth: CGFloat
+    @Binding var expandedActivitySectionIDs: Set<String>
+
+    var body: some View {
+        switch entry {
+        case .item(let item):
+            TurnItemRow(item: item, maxWidth: maxWidth)
+        case .activitySection(let section):
+            ActivitySectionCard(
+                section: section,
+                maxWidth: maxWidth,
+                expandedActivitySectionIDs: $expandedActivitySectionIDs
+            )
+        }
     }
 }
 
@@ -454,6 +503,96 @@ private struct TurnItemRow: View {
     }
 }
 
+private struct ActivitySectionCard: View {
+    let section: TranscriptActivitySection
+    let maxWidth: CGFloat
+    @Binding var expandedActivitySectionIDs: Set<String>
+
+    private var isExpanded: Bool {
+        section.defaultExpanded || expandedActivitySectionIDs.contains(section.id)
+    }
+
+    private var itemCountLabel: String {
+        section.itemCount == 1 ? "1 item" : "\(section.itemCount) items"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button(action: toggleExpansion) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label(section.kind.title, systemImage: section.kind.systemImage)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+
+                            Text(section.summary)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.leading)
+                                .lineLimit(2)
+                        }
+
+                        Spacer(minLength: 0)
+
+                        HStack(spacing: 8) {
+                            if section.hasMixedStatuses {
+                                ForEach(section.statusCountChips) { chip in
+                                    ActivityStatusCountChip(
+                                        chip: chip,
+                                        accessibilityIdentifier: section.statusCountAccessibilityIdentifier(
+                                            for: chip.status
+                                        )
+                                    )
+                                }
+                            } else {
+                                PlanCountBadge(text: itemCountLabel)
+                                ActivityStatusAccessory(
+                                    status: section.status.activityStatus,
+                                    accessibilityIdentifier: section.statusAccessoryAccessibilityIdentifier
+                                )
+                            }
+
+                            Image(systemName: isExpanded ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(section.toggleAccessibilityIdentifier)
+            .accessibilityValue(section.accessibilityValue)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(section.items) { item in
+                        ActivityTurnItemRow(item: item, maxWidth: maxWidth)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: maxWidth, alignment: .leading)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(section.accessibilityIdentifier)
+    }
+
+    private func toggleExpansion() {
+        guard section.defaultExpanded == false else {
+            return
+        }
+
+        if expandedActivitySectionIDs.contains(section.id) {
+            expandedActivitySectionIDs.remove(section.id)
+        } else {
+            expandedActivitySectionIDs.insert(section.id)
+        }
+    }
+}
+
 private struct AssistantTurnItemRow: View {
     let item: TurnItem
     let maxWidth: CGFloat
@@ -461,15 +600,9 @@ private struct AssistantTurnItemRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .top, spacing: 12) {
-                    Text("Assistant")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.blue)
-
-                    Spacer(minLength: 0)
-
-                    ActivityStatusBadge(status: item.status)
-                }
+                Text("Assistant")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.blue)
 
                 Text(item.text)
                     .textSelection(.enabled)
@@ -478,6 +611,35 @@ private struct AssistantTurnItemRow: View {
             .padding(16)
             .frame(maxWidth: maxWidth, alignment: .leading)
             .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            Spacer(minLength: 48)
+        }
+    }
+}
+
+private struct AssistantWaitingIndicatorRow: View {
+    let maxWidth: CGFloat
+    @State private var isAnimating = false
+
+    var body: some View {
+        HStack {
+            HStack(spacing: 0) {
+                Text("...")
+                    .font(.system(size: 24, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.accentColor)
+                    .opacity(isAnimating ? 1 : 0.35)
+                    .onAppear {
+                        withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+                            isAnimating = true
+                        }
+                    }
+
+                Text("assistant waiting indicator")
+                    .font(.system(size: 1))
+                    .foregroundStyle(.clear)
+                    .accessibilityIdentifier("assistant-waiting-indicator")
+            }
+            .frame(maxWidth: maxWidth, alignment: .leading)
 
             Spacer(minLength: 48)
         }
@@ -590,6 +752,14 @@ private struct ActivityTurnItemRow: View {
     let item: TurnItem
     let maxWidth: CGFloat
 
+    private var visibleDetail: String? {
+        guard let detail = item.detail, detail.isEmpty == false else {
+            return nil
+        }
+
+        return detail.isMeaningfullyDifferent(from: [item.title, item.command]) ? detail : nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
@@ -597,7 +767,7 @@ private struct ActivityTurnItemRow: View {
                     Text(item.title)
                         .font(.headline)
 
-                    if let detail = item.detail, detail.isEmpty == false {
+                    if let detail = visibleDetail {
                         Text(detail)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -607,7 +777,10 @@ private struct ActivityTurnItemRow: View {
 
                 Spacer(minLength: 0)
 
-                ActivityStatusBadge(status: item.status)
+                ActivityStatusAccessory(
+                    status: item.status,
+                    accessibilityIdentifier: "turn-item-\(item.id)-status-accessory"
+                )
             }
 
             if item.command?.isEmpty == false || item.workingDirectory != nil {
@@ -628,10 +801,10 @@ private struct ActivityTurnItemRow: View {
                 FileSummaryList(files: item.files)
             }
 
-            if let exitCode = item.exitCode {
+            if let exitCode = item.exitCode, exitCode != 0 {
                 Text("Exit code: \(exitCode)")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(exitCode == 0 ? .green : .secondary)
+                    .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
         }
@@ -854,6 +1027,49 @@ private struct ActivityStatusBadge: View {
     }
 }
 
+private struct ActivityStatusAccessory: View {
+    let status: ActivityStatus
+    let accessibilityIdentifier: String
+
+    var body: some View {
+        if status == .running {
+            HStack(spacing: 0) {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Running")
+                .accessibilityIdentifier(accessibilityIdentifier)
+        } else {
+            ActivityStatusBadge(status: status)
+                .accessibilityIdentifier(accessibilityIdentifier)
+        }
+    }
+}
+
+private struct ActivityStatusCountChip: View {
+    let chip: TranscriptActivityStatusCountChip
+    let accessibilityIdentifier: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if chip.status == .running {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            Text(chip.text)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(chip.status.activityStatus.tintColor)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(chip.status.activityStatus.tintColor.opacity(0.14), in: Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(accessibilityIdentifier)
+    }
+}
+
 private struct RiskBadge: View {
     let riskLevel: ApprovalRiskLevel
 
@@ -890,6 +1106,19 @@ private struct DiffCountBadge: View {
             .font(.caption.weight(.semibold))
             .monospacedDigit()
             .foregroundStyle(color)
+    }
+}
+
+private struct TranscriptActivityStatusCountChip: Identifiable {
+    let status: TranscriptActivitySectionStatus
+    let count: Int
+
+    var id: String {
+        status.rawValue
+    }
+
+    var text: String {
+        "\(count) \(status.countLabel)"
     }
 }
 
@@ -1353,6 +1582,123 @@ private extension ActivityStatus {
         case .cancelled:
             return .secondary
         }
+    }
+}
+
+private extension TranscriptActivitySectionStatus {
+    var activityStatus: ActivityStatus {
+        switch self {
+        case .running:
+            return .running
+        case .completed:
+            return .completed
+        case .failed:
+            return .failed
+        case .cancelled:
+            return .cancelled
+        }
+    }
+
+    var countLabel: String {
+        switch self {
+        case .running:
+            return "running"
+        case .completed:
+            return "completed"
+        case .failed:
+            return "failed"
+        case .cancelled:
+            return "cancelled"
+        }
+    }
+}
+
+private extension TranscriptActivitySectionKind {
+    var title: String {
+        switch self {
+        case .tools:
+            return "Tools"
+        case .fileChanges:
+            return "File Changes"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .tools:
+            return "hammer"
+        case .fileChanges:
+            return "doc.text"
+        }
+    }
+
+    var accessibilityIdentifierPrefix: String {
+        switch self {
+        case .tools:
+            return "turn-tools-section"
+        case .fileChanges:
+            return "turn-file-changes-section"
+        }
+    }
+}
+
+private extension TranscriptActivitySection {
+    var statusCountChips: [TranscriptActivityStatusCountChip] {
+        [
+            TranscriptActivityStatusCountChip(status: .running, count: statusCounts.running),
+            TranscriptActivityStatusCountChip(status: .completed, count: statusCounts.completed),
+            TranscriptActivityStatusCountChip(status: .failed, count: statusCounts.failed),
+            TranscriptActivityStatusCountChip(status: .cancelled, count: statusCounts.cancelled)
+        ]
+        .filter { $0.count > 0 }
+    }
+
+    var accessibilityIdentifier: String {
+        "\(kind.accessibilityIdentifierPrefix)-\(ordinal)"
+    }
+
+    var toggleAccessibilityIdentifier: String {
+        "\(accessibilityIdentifier)-toggle"
+    }
+
+    var statusAccessoryAccessibilityIdentifier: String {
+        "\(accessibilityIdentifier)-status-accessory"
+    }
+
+    func statusCountAccessibilityIdentifier(
+        for status: TranscriptActivitySectionStatus
+    ) -> String {
+        "\(accessibilityIdentifier)-status-count-\(status.rawValue)"
+    }
+
+    var accessibilityValue: String {
+        if hasMixedStatuses {
+            return statusCountChips
+                .map(\.text)
+                .joined(separator: ", ")
+        }
+
+        return "\(itemCount) \(itemCount == 1 ? "item" : "items"), \(status.countLabel)"
+    }
+}
+
+private extension String {
+    func isMeaningfullyDifferent(from candidates: [String?]) -> Bool {
+        let normalizedSelf = normalizedComparisonValue
+        guard normalizedSelf.isEmpty == false else {
+            return false
+        }
+
+        return candidates
+            .compactMap { $0?.normalizedComparisonValue }
+            .filter { $0.isEmpty == false }
+            .contains(normalizedSelf) == false
+    }
+
+    var normalizedComparisonValue: String {
+        lowercased()
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
     }
 }
 
