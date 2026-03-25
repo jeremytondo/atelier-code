@@ -249,6 +249,158 @@ struct TurnItem: Equatable, Sendable, Identifiable {
     var exitCode: Int?
 }
 
+enum TranscriptTurnEntry: Equatable, Sendable, Identifiable {
+    case item(TurnItem)
+    case activitySection(TranscriptActivitySection)
+
+    var id: String {
+        switch self {
+        case .item(let item):
+            return item.id
+        case .activitySection(let section):
+            return section.id
+        }
+    }
+}
+
+enum TranscriptActivitySectionKind: String, Equatable, Sendable {
+    case tools
+    case fileChanges
+}
+
+enum TranscriptActivitySectionStatus: String, Equatable, Sendable {
+    case running
+    case completed
+    case failed
+    case cancelled
+}
+
+struct TranscriptActivitySection: Equatable, Sendable, Identifiable {
+    let id: String
+    let kind: TranscriptActivitySectionKind
+    let ordinal: Int
+    let items: [TurnItem]
+    let status: TranscriptActivitySectionStatus
+    let summary: String
+
+    var itemCount: Int {
+        items.count
+    }
+
+    var defaultExpanded: Bool {
+        status == .running
+    }
+}
+
+struct TranscriptTurnPresentation: Equatable, Sendable {
+    let entries: [TranscriptTurnEntry]
+
+    init(turnItems: [TurnItem]) {
+        entries = Self.makeEntries(from: turnItems)
+    }
+
+    private static func makeEntries(from turnItems: [TurnItem]) -> [TranscriptTurnEntry] {
+        struct PendingSection {
+            let kind: TranscriptActivitySectionKind
+            var items: [TurnItem]
+        }
+
+        var entries: [TranscriptTurnEntry] = []
+        var pendingSection: PendingSection?
+        var sectionOrdinals: [TranscriptActivitySectionKind: Int] = [:]
+
+        func flushPendingSection() {
+            guard let section = pendingSection else {
+                return
+            }
+
+            let ordinal = (sectionOrdinals[section.kind] ?? 0) + 1
+            sectionOrdinals[section.kind] = ordinal
+
+            entries.append(
+                .activitySection(
+                    TranscriptActivitySection(
+                        id: "\(section.kind.rawValue)-\(ordinal)-\(section.items[0].id)",
+                        kind: section.kind,
+                        ordinal: ordinal,
+                        items: section.items,
+                        status: makeSectionStatus(for: section.items),
+                        summary: makeSectionSummary(for: section.items, kind: section.kind)
+                    )
+                )
+            )
+
+            pendingSection = nil
+        }
+
+        for item in turnItems {
+            guard let sectionKind = item.transcriptActivitySectionKind else {
+                flushPendingSection()
+                entries.append(.item(item))
+                continue
+            }
+
+            if pendingSection?.kind == sectionKind {
+                pendingSection?.items.append(item)
+            } else {
+                flushPendingSection()
+                pendingSection = PendingSection(kind: sectionKind, items: [item])
+            }
+        }
+
+        flushPendingSection()
+        return entries
+    }
+
+    private static func makeSectionStatus(for items: [TurnItem]) -> TranscriptActivitySectionStatus {
+        if items.contains(where: { $0.status == .running }) {
+            return .running
+        }
+
+        if items.contains(where: { $0.status == .failed }) {
+            return .failed
+        }
+
+        if items.contains(where: { $0.status == .cancelled }) {
+            return .cancelled
+        }
+
+        return .completed
+    }
+
+    private static func makeSectionSummary(
+        for items: [TurnItem],
+        kind: TranscriptActivitySectionKind
+    ) -> String {
+        if let detail = items.lazy.compactMap(\.detail).last(where: { $0.isEmpty == false }) {
+            return detail
+        }
+
+        if let command = items.lazy.compactMap(\.command).last(where: { $0.isEmpty == false }) {
+            return command
+        }
+
+        switch kind {
+        case .tools:
+            return items.last?.title ?? "Tool activity"
+        case .fileChanges:
+            let fileCount = items.reduce(0) { partialResult, item in
+                partialResult + max(item.files.count, item.title.contains("file changed") ? 1 : 0)
+            }
+
+            if fileCount == 1 {
+                return "1 file changed"
+            }
+
+            if fileCount > 1 {
+                return "\(fileCount) files changed"
+            }
+
+            return items.last?.title ?? "File changes"
+        }
+    }
+}
+
 struct ActivityItem: Equatable, Sendable, Identifiable {
     let id: String
     let kind: ActivityKind
@@ -319,4 +471,17 @@ struct DiffFileChange: Equatable, Sendable, Identifiable {
 struct AggregatedDiff: Equatable, Sendable {
     var summary: String
     var files: [DiffFileChange]
+}
+
+extension TurnItem {
+    var transcriptActivitySectionKind: TranscriptActivitySectionKind? {
+        switch kind {
+        case .assistant, .reasoning:
+            return nil
+        case .tool:
+            return .tools
+        case .fileChange:
+            return .fileChanges
+        }
+    }
 }

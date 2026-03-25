@@ -54,6 +54,59 @@ struct ThreadSessionTests {
         #expect(session.turnItems.map(\.kind) == [.tool, .fileChange])
     }
 
+    @Test func transcriptPresentationGroupsContiguousActivityAndPreservesTurnOrdering() async throws {
+        let presentation = TranscriptTurnPresentation(
+            turnItems: [
+                makeTurnItem(id: "assistant-1", kind: .assistant, text: "First"),
+                makeTurnItem(id: "tool-1", kind: .tool, detail: "Preparing"),
+                makeTurnItem(id: "tool-2", kind: .tool, detail: "Build failed", status: .failed),
+                makeTurnItem(id: "reasoning-1", kind: .reasoning, text: "Thinking"),
+                makeTurnItem(
+                    id: "file-1",
+                    kind: .fileChange,
+                    title: "Patch",
+                    detail: "Applying patch",
+                    files: [DiffFileChange(id: "diff-1", path: "AtelierCode/ContentView.swift", additions: 4, deletions: 1)],
+                    status: .running
+                ),
+                makeTurnItem(id: "assistant-2", kind: .assistant, text: "Second"),
+                makeTurnItem(id: "tool-3", kind: .tool, title: "Run tests", detail: "Finished", status: .completed)
+            ]
+        )
+
+        #expect(
+            presentation.entries.map { entry in
+                switch entry {
+                case .item(let item):
+                    return "item:\(item.id)"
+                case .activitySection(let section):
+                    return "section:\(section.kind.rawValue):\(section.items.map(\.id).joined(separator: ","))"
+                }
+            } == [
+                "item:assistant-1",
+                "section:tools:tool-1,tool-2",
+                "item:reasoning-1",
+                "section:fileChanges:file-1",
+                "item:assistant-2",
+                "section:tools:tool-3"
+            ]
+        )
+
+        let sections = presentation.entries.compactMap { entry -> TranscriptActivitySection? in
+            guard case let .activitySection(section) = entry else {
+                return nil
+            }
+
+            return section
+        }
+
+        #expect(sections.map(\.kind) == [.tools, .fileChanges, .tools])
+        #expect(sections.map(\.status) == [.failed, .running, .completed])
+        #expect(sections.map(\.defaultExpanded) == [false, true, false])
+        #expect(sections.map(\.summary) == ["Build failed", "Applying patch", "Finished"])
+        #expect(sections.map(\.ordinal) == [1, 1, 2])
+    }
+
     @Test func approvalQueueHandlesResolveDuplicateAndStaleCases() async throws {
         let session = ThreadSession(threadID: "thread-1", title: "Thread")
         let request = ApprovalRequest(
@@ -150,4 +203,29 @@ struct ThreadSessionTests {
         #expect(session.pendingApprovals.isEmpty)
         #expect(session.planState == nil)
     }
+}
+
+private func makeTurnItem(
+    id: String,
+    kind: TurnItemKind,
+    title: String = "Item",
+    text: String = "",
+    detail: String? = nil,
+    command: String? = nil,
+    files: [DiffFileChange] = [],
+    status: ActivityStatus = .completed
+) -> TurnItem {
+    TurnItem(
+        id: id,
+        kind: kind,
+        title: title,
+        text: text,
+        detail: detail,
+        command: command,
+        workingDirectory: nil,
+        output: "",
+        files: files,
+        status: status,
+        exitCode: nil
+    )
 }

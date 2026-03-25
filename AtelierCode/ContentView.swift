@@ -397,12 +397,21 @@ private struct TurnDetailsStack: View {
     let appModel: AppModel
     let session: ThreadSession
     let maxWidth: CGFloat
+    @State private var expandedActivitySectionIDs: Set<String> = []
+
+    private var transcriptEntries: [TranscriptTurnEntry] {
+        TranscriptTurnPresentation(turnItems: session.turnItems).entries
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if session.turnItems.isEmpty == false {
-                ForEach(session.turnItems) { item in
-                    TurnItemRow(item: item, maxWidth: maxWidth)
+                ForEach(transcriptEntries) { entry in
+                    TranscriptTurnEntryRow(
+                        entry: entry,
+                        maxWidth: maxWidth,
+                        expandedActivitySectionIDs: $expandedActivitySectionIDs
+                    )
                 }
             }
 
@@ -431,6 +440,38 @@ private struct TurnDetailsStack: View {
                 DiffSection(aggregatedDiff: aggregatedDiff, maxWidth: maxWidth)
             }
         }
+        .onChange(of: transcriptEntries) { _, newEntries in
+            let validSectionIDs: Set<String> = Set(
+                newEntries.compactMap { entry in
+                    guard case let .activitySection(section) = entry else {
+                        return nil
+                    }
+
+                    return section.id
+                }
+            )
+
+            expandedActivitySectionIDs.formIntersection(validSectionIDs)
+        }
+    }
+}
+
+private struct TranscriptTurnEntryRow: View {
+    let entry: TranscriptTurnEntry
+    let maxWidth: CGFloat
+    @Binding var expandedActivitySectionIDs: Set<String>
+
+    var body: some View {
+        switch entry {
+        case .item(let item):
+            TurnItemRow(item: item, maxWidth: maxWidth)
+        case .activitySection(let section):
+            ActivitySectionCard(
+                section: section,
+                maxWidth: maxWidth,
+                expandedActivitySectionIDs: $expandedActivitySectionIDs
+            )
+        }
     }
 }
 
@@ -451,6 +492,80 @@ private struct TurnItemRow: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("turn-item-\(item.id)")
+    }
+}
+
+private struct ActivitySectionCard: View {
+    let section: TranscriptActivitySection
+    let maxWidth: CGFloat
+    @Binding var expandedActivitySectionIDs: Set<String>
+
+    private var isExpanded: Bool {
+        section.defaultExpanded || expandedActivitySectionIDs.contains(section.id)
+    }
+
+    private var itemCountLabel: String {
+        section.itemCount == 1 ? "1 item" : "\(section.itemCount) items"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button(action: toggleExpansion) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label(section.kind.title, systemImage: section.kind.systemImage)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+
+                            Text(section.summary)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.leading)
+                                .lineLimit(2)
+                        }
+
+                        Spacer(minLength: 0)
+
+                        HStack(spacing: 8) {
+                            PlanCountBadge(text: itemCountLabel)
+                            ActivityStatusBadge(status: section.status.activityStatus)
+                            Image(systemName: isExpanded ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(section.toggleAccessibilityIdentifier)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(section.items) { item in
+                        ActivityTurnItemRow(item: item, maxWidth: maxWidth)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: maxWidth, alignment: .leading)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(section.accessibilityIdentifier)
+    }
+
+    private func toggleExpansion() {
+        guard section.defaultExpanded == false else {
+            return
+        }
+
+        if expandedActivitySectionIDs.contains(section.id) {
+            expandedActivitySectionIDs.remove(section.id)
+        } else {
+            expandedActivitySectionIDs.insert(section.id)
+        }
     }
 }
 
@@ -1353,6 +1468,60 @@ private extension ActivityStatus {
         case .cancelled:
             return .secondary
         }
+    }
+}
+
+private extension TranscriptActivitySectionKind {
+    var title: String {
+        switch self {
+        case .tools:
+            return "Tools"
+        case .fileChanges:
+            return "File Changes"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .tools:
+            return "hammer"
+        case .fileChanges:
+            return "doc.text"
+        }
+    }
+
+    var accessibilityIdentifierPrefix: String {
+        switch self {
+        case .tools:
+            return "turn-tools-section"
+        case .fileChanges:
+            return "turn-file-changes-section"
+        }
+    }
+}
+
+private extension TranscriptActivitySectionStatus {
+    var activityStatus: ActivityStatus {
+        switch self {
+        case .running:
+            return .running
+        case .completed:
+            return .completed
+        case .failed:
+            return .failed
+        case .cancelled:
+            return .cancelled
+        }
+    }
+}
+
+private extension TranscriptActivitySection {
+    var accessibilityIdentifier: String {
+        "\(kind.accessibilityIdentifierPrefix)-\(ordinal)"
+    }
+
+    var toggleAccessibilityIdentifier: String {
+        "\(accessibilityIdentifier)-toggle"
     }
 }
 
