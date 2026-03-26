@@ -213,6 +213,61 @@ struct WorkspaceThreadRoute: Equatable, Sendable {
     var threadID: String?
 }
 
+enum AppPrimaryView: String, Equatable, Sendable {
+    case conversations
+    case settings
+}
+
+enum SettingsSection: String, Codable, Equatable, Sendable, CaseIterable, Identifiable {
+    case general
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general:
+            return "General"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .general:
+            return "slider.horizontal.3"
+        }
+    }
+}
+
+enum AppAppearancePreference: String, Codable, Equatable, Sendable, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system:
+            return "System"
+        case .light:
+            return "Light"
+        case .dark:
+            return "Dark"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .system:
+            return "Follow your Mac appearance automatically."
+        case .light:
+            return "Always use the light appearance."
+        case .dark:
+            return "Always use the dark appearance."
+        }
+    }
+}
+
 enum ConversationRole: String, Codable, Equatable, Sendable {
     case system
     case user

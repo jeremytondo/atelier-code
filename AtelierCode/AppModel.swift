@@ -10,9 +10,12 @@ final class AppModel {
     private(set) var recentWorkspaces: [WorkspaceRecord]
     private(set) var lastSelectedWorkspacePath: String?
     private(set) var codexPathOverride: String?
+    private(set) var appearancePreference: AppAppearancePreference
     private(set) var startupDiagnostics: [StartupDiagnostic]
     private(set) var workspaceControllers: [WorkspaceController]
     private(set) var selectedRoute: WorkspaceThreadRoute?
+    private(set) var primaryView: AppPrimaryView
+    private(set) var selectedSettingsSection: SettingsSection
 
     @ObservationIgnored private let preferencesStore: any AppPreferencesStore
     @ObservationIgnored private let fileManager: FileManager
@@ -45,13 +48,17 @@ final class AppModel {
         let normalizedRecentWorkspaces = Self.normalizeRecentWorkspaces(loadedSnapshot?.recentWorkspaces ?? [])
         let selectedPath = loadedSnapshot?.lastSelectedWorkspacePath.map(WorkspaceRecord.canonicalizedPath(for:))
         let codexOverridePath = loadedSnapshot?.codexPathOverride
+        let appearancePreference = loadedSnapshot?.appearancePreference ?? .system
 
         recentWorkspaces = []
         lastSelectedWorkspacePath = nil
         codexPathOverride = codexOverridePath
+        self.appearancePreference = appearancePreference
         startupDiagnostics = []
         workspaceControllers = []
         selectedRoute = nil
+        primaryView = .conversations
+        selectedSettingsSection = .general
 
         if let codexOverridePath {
             appendStartupDiagnostic(Self.codexOverrideDiagnostic(path: codexOverridePath, fileManager: fileManager))
@@ -127,12 +134,14 @@ final class AppModel {
         AppPreferencesSnapshot(
             recentWorkspaces: recentWorkspaces,
             lastSelectedWorkspacePath: lastSelectedWorkspacePath,
-            codexPathOverride: codexPathOverride
+            codexPathOverride: codexPathOverride,
+            appearancePreference: appearancePreference
         )
     }
 
     func activateWorkspace(at url: URL) {
         let workspace = WorkspaceRecord(url: url, lastOpenedAt: now())
+        showConversations()
 
         if let controller = workspaceController(for: workspace.canonicalPath) {
             updateWorkspaceRecord(workspace)
@@ -162,6 +171,7 @@ final class AppModel {
     }
 
     func clearSelectedWorkspace() {
+        showConversations()
         selectedRoute = nil
         lastSelectedWorkspacePath = nil
         persistPreferences()
@@ -198,12 +208,36 @@ final class AppModel {
         persistPreferences()
     }
 
+    func setAppearancePreference(_ preference: AppAppearancePreference) {
+        guard appearancePreference != preference else {
+            return
+        }
+
+        appearancePreference = preference
+        persistPreferences()
+    }
+
+    func showSettings(section: SettingsSection = .general) {
+        selectedSettingsSection = section
+        primaryView = .settings
+    }
+
+    func selectSettingsSection(_ section: SettingsSection) {
+        selectedSettingsSection = section
+        primaryView = .settings
+    }
+
+    func showConversations() {
+        primaryView = .conversations
+    }
+
     func selectWorkspace(path: String) {
         let canonicalPath = WorkspaceRecord.canonicalizedPath(for: path)
         guard let controller = workspaceController(for: canonicalPath) else {
             return
         }
 
+        showConversations()
         let threadID = preferredThreadID(for: controller)
         controller.markThreadSelected(threadID)
         selectedRoute = WorkspaceThreadRoute(
@@ -244,6 +278,7 @@ final class AppModel {
         }
 
         do {
+            showConversations()
             if controller.threadSession(id: threadID) == nil {
                 guard await ensureRuntimeReady(for: canonicalPath),
                       let runtime = runtime(for: canonicalPath) else {
@@ -276,6 +311,7 @@ final class AppModel {
             return false
         }
 
+        showConversations()
         controller.clearActiveThreadSession()
         selectedRoute = WorkspaceThreadRoute(
             workspacePath: controller.workspace.canonicalPath,

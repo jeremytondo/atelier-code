@@ -9,6 +9,42 @@ struct AppPreferencesSnapshot: Codable, Equatable, Sendable {
     var recentWorkspaces: [WorkspaceRecord]
     var lastSelectedWorkspacePath: String?
     var codexPathOverride: String?
+    var appearancePreference: AppAppearancePreference
+
+    init(
+        recentWorkspaces: [WorkspaceRecord],
+        lastSelectedWorkspacePath: String?,
+        codexPathOverride: String?,
+        appearancePreference: AppAppearancePreference = .system
+    ) {
+        self.recentWorkspaces = recentWorkspaces
+        self.lastSelectedWorkspacePath = lastSelectedWorkspacePath
+        self.codexPathOverride = codexPathOverride
+        self.appearancePreference = appearancePreference
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case recentWorkspaces
+        case lastSelectedWorkspacePath
+        case codexPathOverride
+        case appearancePreference
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        recentWorkspaces = try container.decodeIfPresent([WorkspaceRecord].self, forKey: .recentWorkspaces) ?? []
+        lastSelectedWorkspacePath = try container.decodeIfPresent(String.self, forKey: .lastSelectedWorkspacePath)
+        codexPathOverride = try container.decodeIfPresent(String.self, forKey: .codexPathOverride)
+        appearancePreference = try container.decodeIfPresent(AppAppearancePreference.self, forKey: .appearancePreference) ?? .system
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(recentWorkspaces, forKey: .recentWorkspaces)
+        try container.encodeIfPresent(lastSelectedWorkspacePath, forKey: .lastSelectedWorkspacePath)
+        try container.encodeIfPresent(codexPathOverride, forKey: .codexPathOverride)
+        try container.encode(appearancePreference, forKey: .appearancePreference)
+    }
 }
 
 struct UserDefaultsAppPreferencesStore: AppPreferencesStore {
