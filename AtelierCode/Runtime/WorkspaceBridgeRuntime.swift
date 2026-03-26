@@ -49,6 +49,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         case threadResume
         case threadRead
         case threadFork
+        case threadRename(threadID: String)
         case threadArchive(threadID: String)
         case threadUnarchive
         case threadRollback
@@ -355,6 +356,24 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 type: .threadFork,
                 threadID: id,
                 payload: BridgeThreadForkPayload(workspacePath: self.controller.workspace.canonicalPath)
+            )
+        }
+    }
+
+    func renameThread(id: String, title: String) async throws {
+        let requestID = nextRequestID(prefix: "thread-rename")
+        pendingCommands[requestID] = .threadRename(threadID: id)
+
+        try await awaitVoidResponse(requestID: requestID) { [weak self] in
+            guard let self else {
+                throw CancellationError()
+            }
+
+            try await self.sendCommand(
+                id: requestID,
+                type: .threadRename,
+                threadID: id,
+                payload: BridgeThreadRenamePayload(title: title)
             )
         }
     }
@@ -879,6 +898,12 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 } else {
                     session = controller.openThread(id: summary.id, title: summary.title)
                 }
+            case .threadRename(let threadID):
+                if let session = controller.threadSession(id: threadID) {
+                    session.updateThreadIdentity(id: summary.id, title: summary.title)
+                }
+                pendingVoidResponses.removeValue(forKey: requestID)?.resume()
+                return
             default:
                 session = controller.ensureThreadSession(id: summary.id, title: summary.title, markSelected: false)
             }
@@ -1049,6 +1074,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             switch pendingCommand {
             case .threadStart, .threadResume, .threadRead, .threadFork, .threadUnarchive, .threadRollback:
                 pendingThreadSessions.removeValue(forKey: requestID)?.resume(
+                    throwing: RuntimeBridgeError.requestFailed(message: payload.message)
+                )
+            case .threadRename:
+                pendingVoidResponses.removeValue(forKey: requestID)?.resume(
                     throwing: RuntimeBridgeError.requestFailed(message: payload.message)
                 )
             case .threadArchive(let threadID):

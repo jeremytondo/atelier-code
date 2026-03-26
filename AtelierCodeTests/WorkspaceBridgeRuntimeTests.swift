@@ -619,6 +619,56 @@ struct WorkspaceBridgeRuntimeTests {
         #expect(controller.activeThreadSession?.threadID == "thread-42")
     }
 
+    @Test func renameThreadSendsCommandAndUpdatesLoadedSession() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-thread-rename"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4749)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        let session = controller.openThread(id: "thread-1", title: "Thread")
+        let renameTask = Task {
+            try await runtime.renameThread(id: "thread-1", title: "Renamed Thread")
+        }
+
+        try await waitUntil {
+            pendingCommandCount(in: runtime) == 1 &&
+            commandObject(from: socketClient.sentTexts.last ?? "")?["type"] as? String == "thread.rename"
+        }
+
+        #expect(commandPayload(from: socketClient.sentTexts.last)?["title"] as? String == "Renamed Thread")
+
+        socketClient.enqueue(threadStartedJSON(
+            requestID: "ateliercode-thread-rename-4",
+            threadID: "thread-1",
+            threadTitle: "Renamed Thread"
+        ))
+
+        try await renameTask.value
+        try await waitUntil {
+            controller.threadSummary(id: "thread-1")?.title == "Renamed Thread" &&
+            session.title == "Renamed Thread" &&
+            pendingCommandCount(in: runtime) == 0
+        }
+
+        #expect(controller.threadSummary(id: "thread-1")?.title == "Renamed Thread")
+        #expect(session.title == "Renamed Thread")
+    }
+
     @Test func cancelledStartThreadAndWaitIgnoresLateThreadStartedEvent() async throws {
         let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-thread-cancel"), lastOpenedAt: .now)
         let controller = WorkspaceController(workspace: workspace)

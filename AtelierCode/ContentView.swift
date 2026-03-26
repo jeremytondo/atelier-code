@@ -124,7 +124,7 @@ private struct WorkspaceTreeRow: View {
             )
 
             if controller.isExpanded {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
                     if controller.visibleThreadSummaries.isEmpty {
                         Text("No active threads yet.")
                             .font(.caption)
@@ -357,36 +357,156 @@ private struct WorkspaceThreadRow: View {
     let appModel: AppModel
     let workspacePath: String
     let threadSummary: ThreadSummary
+    @State private var isHovering = false
+    @State private var isRenaming = false
+    @State private var draftTitle = ""
+    @FocusState private var isRenameFieldFocused: Bool
 
     private var isSelected: Bool {
         appModel.selectedRoute?.workspacePath == workspacePath && appModel.selectedRoute?.threadID == threadSummary.id
     }
 
-    var body: some View {
-        Button {
-            Task {
-                _ = await appModel.openThread(
-                    workspacePath: workspacePath,
-                    threadID: threadSummary.id
-                )
-            }
-        } label: {
-            HStack(alignment: .center, spacing: 10) {
-                ZStack {
-                    Circle()
-                        .fill(threadSummary.hasUnreadActivity ? Color.accentColor : Color.clear)
-                        .frame(width: 8, height: 8)
-                }
-                .frame(width: 24, height: 24)
+    private var showsHoverActions: Bool {
+        isHovering || isSelected || isRenaming
+    }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(alignment: .center, spacing: 8) {
+    private var rowBackgroundColor: Color {
+        if isSelected {
+            return Color.accentColor.opacity(0.14)
+        }
+
+        if isHovering || isRenaming {
+            return Color.secondary.opacity(0.08)
+        }
+
+        return .clear
+    }
+
+    private var rowBorderColor: Color {
+        if isSelected {
+            return Color.accentColor.opacity(0.2)
+        }
+
+        if isHovering || isRenaming {
+            return Color(nsColor: .separatorColor).opacity(0.24)
+        }
+
+        return .clear
+    }
+
+    private var renameCandidate: String {
+        draftTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canCommitRename: Bool {
+        renameCandidate.isEmpty == false && renameCandidate != threadSummary.title
+    }
+
+    private var showsStatusBadges: Bool {
+        threadSummary.isRunning || threadSummary.lastErrorMessage != nil || threadSummary.isArchived
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            if isRenaming {
+                rowContent
+            } else {
+                Button(action: openThread) {
+                    rowContent
+                }
+                .buttonStyle(.plain)
+            }
+
+            Menu {
+                threadActionMenuItems
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(showsHoverActions ? Color.secondary : Color.clear)
+                    .frame(width: 28, height: 28)
+                    .background(
+                        (isHovering || isRenaming) ? Color.primary.opacity(0.06) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(BorderlessButtonMenuStyle())
+            .menuIndicator(.hidden)
+            .accessibilityIdentifier("thread-menu-\(threadSummary.id)")
+            .help("Thread options")
+            .opacity(showsHoverActions ? 1 : 0)
+            .allowsHitTesting(showsHoverActions)
+            .animation(.easeInOut(duration: 0.16), value: showsHoverActions)
+        }
+        .padding(.trailing, 6)
+        .background(
+            rowBackgroundColor,
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(rowBorderColor, lineWidth: 1)
+        }
+        .shadow(color: isHovering ? Color.black.opacity(0.04) : .clear, radius: 6, y: 2)
+        .onAppear {
+            draftTitle = threadSummary.title
+        }
+        .onChange(of: threadSummary.title) { _, newValue in
+            if isRenaming == false {
+                draftTitle = newValue
+            }
+        }
+        .onHover { isHovering = $0 }
+        .contextMenu {
+            threadActionMenuItems
+        }
+        .accessibilityIdentifier("thread-row-\(threadSummary.id)")
+    }
+
+    private var rowContent: some View {
+        HStack(alignment: .center, spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(threadSummary.hasUnreadActivity ? Color.accentColor : Color.clear)
+                    .frame(width: 8, height: 8)
+            }
+            .frame(width: 24, height: 24)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .center, spacing: 8) {
+                    if isRenaming {
+                        HStack(spacing: 8) {
+                            TextField("Thread title", text: $draftTitle)
+                                .textFieldStyle(.plain)
+                                .font(.subheadline.weight(.semibold))
+                                .focused($isRenameFieldFocused)
+                                .onSubmit(commitRename)
+                                .onExitCommand(perform: cancelRename)
+
+                            Button(action: commitRename) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(canCommitRename ? Color.accentColor : Color.secondary.opacity(0.6))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(canCommitRename == false)
+                            .help("Save thread title")
+
+                            Button(action: cancelRename) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(Color.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Cancel renaming")
+                        }
+                    } else {
                         Text(threadSummary.title)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                     }
+                }
 
+                if showsStatusBadges {
                     HStack(spacing: 6) {
                         if threadSummary.isRunning {
                             SidebarThreadBadge(text: "Running", color: .blue)
@@ -402,17 +522,86 @@ private struct WorkspaceThreadRow: View {
                     }
                 }
             }
-            .padding(.vertical, 8)
-            .padding(.trailing, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                isSelected ? Color.accentColor.opacity(0.12) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-            )
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("thread-row-\(threadSummary.id)")
+        .padding(.vertical, 3)
+        .padding(.leading, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var threadActionMenuItems: some View {
+        Button(threadSummary.isArchived ? "Unarchive" : "Archive") {
+            if threadSummary.isArchived {
+                Task {
+                    _ = await appModel.unarchiveThread(workspacePath: workspacePath, threadID: threadSummary.id)
+                }
+            } else {
+                Task {
+                    _ = await appModel.archiveThread(workspacePath: workspacePath, threadID: threadSummary.id)
+                }
+            }
+        }
+
+        Button("Rename") {
+            beginRename()
+        }
+
+        Button("Fork") {
+            Task {
+                _ = await appModel.forkThread(workspacePath: workspacePath, threadID: threadSummary.id)
+            }
+        }
+    }
+
+    private func beginRename() {
+        draftTitle = threadSummary.title
+        isRenaming = true
+
+        Task { @MainActor in
+            isRenameFieldFocused = true
+        }
+    }
+
+    private func cancelRename() {
+        draftTitle = threadSummary.title
+        isRenaming = false
+        isRenameFieldFocused = false
+    }
+
+    private func commitRename() {
+        guard canCommitRename else {
+            cancelRename()
+            return
+        }
+
+        let nextTitle = renameCandidate
+        Task {
+            let succeeded = await appModel.renameThread(
+                workspacePath: workspacePath,
+                threadID: threadSummary.id,
+                title: nextTitle
+            )
+
+            await MainActor.run {
+                if succeeded {
+                    draftTitle = nextTitle
+                    isRenaming = false
+                    isRenameFieldFocused = false
+                } else {
+                    isRenameFieldFocused = true
+                }
+            }
+        }
+    }
+
+    private func openThread() {
+        Task {
+            _ = await appModel.openThread(
+                workspacePath: workspacePath,
+                threadID: threadSummary.id
+            )
+        }
     }
 }
 
@@ -1919,6 +2108,13 @@ private final class PreviewWorkspaceRuntime: WorkspaceConversationRuntime {
 
     func forkThreadAndWait(id: String) async throws -> ThreadSession {
         controller.resumeThread(id: "\(id)-fork", title: "Preview Thread")
+    }
+
+    func renameThread(id: String, title: String) async throws {
+        controller.updateThreadSummary(id: id) { summary in
+            summary.title = title
+        }
+        controller.threadSession(id: id)?.updateThreadIdentity(id: id, title: title)
     }
 
     func archiveThread(id: String) async throws {

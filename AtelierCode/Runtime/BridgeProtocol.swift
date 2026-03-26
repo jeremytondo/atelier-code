@@ -11,6 +11,7 @@ enum BridgeCommandType: String, Encodable, Sendable {
     case threadList = "thread.list"
     case threadRead = "thread.read"
     case threadFork = "thread.fork"
+    case threadRename = "thread.rename"
     case threadArchive = "thread.archive"
     case threadUnarchive = "thread.unarchive"
     case threadRollback = "thread.rollback"
@@ -188,6 +189,10 @@ struct BridgeThreadReadPayload: Encodable, Sendable {
 
 struct BridgeThreadForkPayload: Encodable, Sendable {
     let workspacePath: String
+}
+
+struct BridgeThreadRenamePayload: Encodable, Sendable {
+    let title: String
 }
 
 struct BridgeThreadArchivePayload: Encodable, Sendable {}

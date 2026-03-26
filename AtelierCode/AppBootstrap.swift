@@ -160,6 +160,13 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
         )
     }
 
+    func renameThread(id: String, title: String) async throws {
+        controller.updateThreadSummary(id: id) { summary in
+            summary.title = title
+        }
+        controller.threadSession(id: id)?.updateThreadIdentity(id: id, title: title)
+    }
+
     func archiveThread(id: String) async throws {
         controller.setThreadArchived(true, for: id)
     }

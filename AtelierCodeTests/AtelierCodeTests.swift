@@ -582,6 +582,13 @@ private final class TestWorkspaceRuntime: WorkspaceConversationRuntime {
         )
     }
 
+    func renameThread(id: String, title: String) async throws {
+        controller.updateThreadSummary(id: id) { summary in
+            summary.title = title
+        }
+        controller.threadSession(id: id)?.updateThreadIdentity(id: id, title: title)
+    }
+
     func archiveThread(id: String) async throws {
         controller.setThreadArchived(true, for: id)
     }
@@ -728,6 +735,13 @@ private final class LifecycleProbeRuntime: WorkspaceConversationRuntime {
 
     func forkThreadAndWait(id: String) async throws -> ThreadSession {
         controller.resumeThread(id: "\(id)-fork", title: "Recovered Conversation")
+    }
+
+    func renameThread(id: String, title: String) async throws {
+        controller.updateThreadSummary(id: id) { summary in
+            summary.title = title
+        }
+        controller.threadSession(id: id)?.updateThreadIdentity(id: id, title: title)
     }
 
     func archiveThread(id: String) async throws {

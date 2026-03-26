@@ -6,6 +6,7 @@ import type {
   ThreadArchivePayload,
   ThreadForkPayload,
   ThreadListPayload,
+  ThreadRenamePayload,
   ThreadReadPayload,
   ThreadRollbackPayload,
   ThreadResumePayload,
@@ -51,6 +52,10 @@ export interface CodexThreadReadResult {
 }
 
 export interface CodexThreadForkResult {
+  thread: CodexThread;
+}
+
+export interface CodexThreadRenameResult {
   thread: CodexThread;
 }
 
@@ -121,6 +126,11 @@ export interface CodexClientAdapter {
     threadID: string,
     payload: ThreadForkPayload,
   ): Promise<CodexThreadForkResult>;
+  renameThread(
+    requestID: CodexTransportRequestID,
+    threadID: string,
+    payload: ThreadRenamePayload,
+  ): Promise<CodexThreadRenameResult>;
   archiveThread(
     requestID: CodexTransportRequestID,
     threadID: string,
@@ -292,6 +302,35 @@ export class CodexClient implements CodexClientAdapter {
         threadId: threadID,
       },
     });
+  }
+
+  async renameThread(
+    requestID: CodexTransportRequestID,
+    threadID: string,
+    payload: ThreadRenamePayload,
+  ): Promise<CodexThreadRenameResult> {
+    const title = payload.title.trim();
+
+    await this.transport.send({
+      id: `${String(requestID)}:set-name`,
+      method: "thread/name/set",
+      params: {
+        threadId: threadID,
+        name: title,
+      },
+    });
+
+    const response = await this.transport.send<{ thread: unknown }>({
+      id: requestID,
+      method: "thread/read",
+      params: {
+        threadId: threadID,
+      },
+    });
+
+    return {
+      thread: toCodexThread(response.thread),
+    };
   }
 
   async unarchiveThread(
