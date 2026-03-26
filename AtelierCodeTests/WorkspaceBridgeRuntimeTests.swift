@@ -34,7 +34,60 @@ struct WorkspaceBridgeRuntimeTests {
         #expect(controller.authState == .signedIn(accountDescription: "chatgpt (pro)"))
         #expect(controller.rateLimitState?.buckets.count == 1)
         #expect(controller.threadSummaries.map(\.title) == ["Bootstrap Thread"])
+        #expect(controller.bridgeEnvironmentDiagnostics == WorkspaceBridgeEnvironmentDiagnostics(
+            source: .loginProbe,
+            shellPath: "/bin/zsh",
+            probeError: nil,
+            pathDirectoryCount: 5,
+            homeDirectory: "/Users/tester"
+        ))
         #expect(sentMessageTypes(from: socketClient.sentTexts) == ["hello", "account.read", "thread.list"])
+    }
+
+    @Test func providerStatusUpdatesEnvironmentWarningAndExecutablePath() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-provider-status"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4244)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        socketClient.enqueue(
+            providerStatusJSON(
+                status: "ready",
+                detail: "Codex is ready.",
+                executablePath: "/opt/homebrew/bin/codex",
+                environmentSource: "fallback",
+                probeError: "Shell environment probe timed out after 3000ms."
+            )
+        )
+        try await waitUntil {
+            controller.providerExecutablePath == "/opt/homebrew/bin/codex"
+                && controller.bridgeEnvironmentDiagnostics?.source == .fallback
+        }
+
+        #expect(controller.providerExecutablePath == "/opt/homebrew/bin/codex")
+        #expect(controller.bridgeEnvironmentDiagnostics == WorkspaceBridgeEnvironmentDiagnostics(
+            source: .fallback,
+            shellPath: "/bin/zsh",
+            probeError: "Shell environment probe timed out after 3000ms.",
+            pathDirectoryCount: 3,
+            homeDirectory: "/Users/tester"
+        ))
+        #expect(controller.bridgeEnvironmentWarningMessage?.contains("fallback PATH entries") == true)
     }
 
     @Test func archivingPristineThreadStaysLocalAndAvoidsRolloutErrors() async throws {
@@ -1014,7 +1067,30 @@ private func startupRecordJSON(port: Int) -> String {
 
 private func welcomeJSON(requestID: String) -> String {
     """
-    {"type":"welcome","timestamp":"2026-03-24T10:00:01Z","requestID":"\(requestID)","payload":{"bridgeVersion":"0.1.0","protocolVersion":1,"supportedProtocolVersions":[1],"sessionID":"session-1","transport":"websocket","providers":[{"id":"codex","displayName":"Codex","status":"available"}]}}
+    {"type":"welcome","timestamp":"2026-03-24T10:00:01Z","requestID":"\(requestID)","payload":{"bridgeVersion":"0.1.0","protocolVersion":1,"supportedProtocolVersions":[1],"sessionID":"session-1","transport":"websocket","providers":[{"id":"codex","displayName":"Codex","status":"available"}],"environment":{"source":"login_probe","shellPath":"/bin/zsh","probeError":null,"pathDirectoryCount":5,"homeDirectory":"/Users/tester"}}}
+    """
+}
+
+private func providerStatusJSON(
+    status: String,
+    detail: String,
+    executablePath: String? = nil,
+    environmentSource: String? = nil,
+    probeError: String? = nil
+) -> String {
+    let executableFragment = executablePath.map { "\"executablePath\":\"\(jsonEscaped($0))\"," } ?? ""
+    let environmentFragment: String
+    if let environmentSource {
+        let probeErrorJSON = probeError.map { "\"\(jsonEscaped($0))\"" } ?? "null"
+        environmentFragment = """
+        "environment":{"source":"\(environmentSource)","shellPath":"/bin/zsh","probeError":\(probeErrorJSON),"pathDirectoryCount":3,"homeDirectory":"/Users/tester"}
+        """
+    } else {
+        environmentFragment = "\"environment\":null"
+    }
+
+    return """
+    {"type":"provider.status","timestamp":"2026-03-24T10:00:06Z","provider":"codex","payload":{"status":"\(status)","detail":"\(jsonEscaped(detail))",\(executableFragment)\(environmentFragment)}}
     """
 }
 

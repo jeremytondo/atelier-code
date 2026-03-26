@@ -2,6 +2,7 @@ export type BridgeHealthStatus = "ok" | "degraded";
 export type ProviderReadiness = "available" | "degraded";
 export type ExecutableDiscoveryStatus = "found" | "missing";
 export type ExecutableDiscoverySource = "environment" | "path" | "known-path" | "not-found";
+export type BridgeEnvironmentSource = "inherited" | "login_probe" | "fallback";
 export type BridgeStartupErrorCode =
   | "provider_executable_missing"
   | "embedded_bridge_missing"
@@ -173,6 +174,14 @@ export interface HelloPayload {
   transport?: BridgeTransport;
 }
 
+export interface BridgeEnvironmentDiagnostics {
+  source: BridgeEnvironmentSource;
+  shellPath: string;
+  probeError: string | null;
+  pathDirectoryCount: number;
+  homeDirectory: string | null;
+}
+
 export interface WelcomePayload {
   bridgeVersion: string;
   protocolVersion: number;
@@ -180,6 +189,7 @@ export interface WelcomePayload {
   sessionID: string;
   transport: BridgeTransport;
   providers: ProviderSummary[];
+  environment: BridgeEnvironmentDiagnostics;
 }
 
 export interface HelloEnvelope extends BridgeHandshakeEnvelope<"hello", HelloPayload> {
@@ -443,6 +453,8 @@ export interface ErrorPayload {
 export interface ProviderStatusPayload {
   status: ProviderConnectionStatus;
   detail: string;
+  executablePath?: string;
+  environment?: BridgeEnvironmentDiagnostics;
 }
 
 export interface TurnStartedEvent extends BridgeEventEnvelope<"turn.started", TurnStartedPayload> {
@@ -587,6 +599,7 @@ export interface ExecutableDiscoveryResult {
   status: ExecutableDiscoveryStatus;
   resolvedPath: string | null;
   source: ExecutableDiscoverySource;
+  baseEnvironmentSource: BridgeEnvironmentSource;
   checkedPaths: string[];
 }
 
@@ -595,6 +608,7 @@ export interface ProviderHealth {
   status: ProviderReadiness;
   detail: string;
   executable: ExecutableDiscoveryResult;
+  environment: BridgeEnvironmentDiagnostics;
 }
 
 export interface BridgeStartupError {

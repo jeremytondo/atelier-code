@@ -14,6 +14,8 @@ final class WorkspaceController {
             persistableStateDidChange?()
         }
     }
+    private(set) var bridgeEnvironmentDiagnostics: WorkspaceBridgeEnvironmentDiagnostics?
+    private(set) var providerExecutablePath: String?
     private(set) var threadListSyncState: ThreadListSyncState
     private(set) var lastSuccessfulThreadListAt: Date? {
         didSet {
@@ -51,6 +53,8 @@ final class WorkspaceController {
         self.bridgeLifecycleState = .idle
         self.connectionStatus = .disconnected
         self.threadSummaries = []
+        self.bridgeEnvironmentDiagnostics = nil
+        self.providerExecutablePath = nil
         self.threadListSyncState = .idle
         self.lastSuccessfulThreadListAt = nil
         self.authState = .unknown
@@ -108,6 +112,10 @@ final class WorkspaceController {
         threadSummaries.contains(where: \.isRunning)
     }
 
+    var bridgeEnvironmentWarningMessage: String? {
+        bridgeEnvironmentDiagnostics?.warningMessage
+    }
+
     var persistedState: PersistedWorkspaceState {
         PersistedWorkspaceState(
             workspacePath: workspace.canonicalPath,
@@ -128,6 +136,8 @@ final class WorkspaceController {
     func resetWorkspace() {
         bridgeLifecycleState = .idle
         connectionStatus = .disconnected
+        bridgeEnvironmentDiagnostics = nil
+        providerExecutablePath = nil
         threadListRepository.reset()
         authState = .unknown
         pendingLogin = nil
@@ -148,6 +158,14 @@ final class WorkspaceController {
 
     func setConnectionStatus(_ status: ConnectionStatus) {
         connectionStatus = status
+    }
+
+    func setBridgeEnvironmentDiagnostics(_ diagnostics: WorkspaceBridgeEnvironmentDiagnostics?) {
+        bridgeEnvironmentDiagnostics = diagnostics
+    }
+
+    func setProviderExecutablePath(_ executablePath: String?) {
+        providerExecutablePath = executablePath
     }
 
     func setAuthState(_ authState: AuthState) {

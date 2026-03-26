@@ -1,4 +1,3 @@
-import { discoverCodexExecutable } from "../discovery/executable";
 import type { ExecutableDiscoveryResult } from "../protocol/types";
 
 const JSON_LINE_ENCODER = new TextEncoder();
@@ -82,8 +81,15 @@ export interface CodexTransportInput {
 }
 
 export interface CodexTransportDependencies {
-  discoverExecutable?: () => Promise<ExecutableDiscoveryResult>;
-  spawnProcess?: (executablePath: string) => CodexTransportProcess;
+  spawnProcess?: (
+    executablePath: string,
+    environment: Readonly<Record<string, string>>,
+  ) => CodexTransportProcess;
+}
+
+export interface CodexTransportStartupContext {
+  executable: ExecutableDiscoveryResult;
+  environment: Readonly<Record<string, string>>;
 }
 
 export interface CodexTransport {
@@ -136,9 +142,11 @@ export class CodexAppServerTransport implements CodexTransport {
   private hasWrittenRequest = false;
   private finalized = false;
 
-  constructor(dependencies: CodexTransportDependencies = {}) {
+  constructor(
+    private readonly startupContext: CodexTransportStartupContext,
+    dependencies: CodexTransportDependencies = {},
+  ) {
     this.dependencies = {
-      discoverExecutable: dependencies.discoverExecutable ?? discoverCodexExecutable,
       spawnProcess: dependencies.spawnProcess ?? spawnCodexProcess,
     };
   }
@@ -156,7 +164,7 @@ export class CodexAppServerTransport implements CodexTransport {
       return;
     }
 
-    const executable = await this.dependencies.discoverExecutable();
+    const executable = this.startupContext.executable;
     if (executable.status !== "found" || executable.resolvedPath === null) {
       throw new CodexTransportError(
         "provider_executable_missing",
@@ -164,6 +172,7 @@ export class CodexAppServerTransport implements CodexTransport {
         {
           checkedPaths: executable.checkedPaths,
           source: executable.source,
+          baseEnvironmentSource: executable.baseEnvironmentSource,
         },
       );
     }
@@ -171,7 +180,10 @@ export class CodexAppServerTransport implements CodexTransport {
     this.resetRuntimeState();
 
     try {
-      this.process = this.dependencies.spawnProcess(executable.resolvedPath);
+      this.process = this.dependencies.spawnProcess(
+        executable.resolvedPath,
+        this.startupContext.environment,
+      );
     } catch (error) {
       this.process = null;
       throw new CodexTransportError(
@@ -179,6 +191,7 @@ export class CodexAppServerTransport implements CodexTransport {
         `Unable to start codex app-server from ${executable.resolvedPath}.`,
         {
           executablePath: executable.resolvedPath,
+          baseEnvironmentSource: executable.baseEnvironmentSource,
         },
         error,
       );
@@ -561,12 +574,15 @@ export class CodexAppServerTransport implements CodexTransport {
   }
 }
 
-function spawnCodexProcess(executablePath: string): CodexTransportProcess {
+function spawnCodexProcess(
+  executablePath: string,
+  environment: Readonly<Record<string, string>>,
+): CodexTransportProcess {
   const subprocess = Bun.spawn([executablePath, "app-server"], {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    env: process.env,
+    env: environment,
   });
 
   if (subprocess.stdin === null || subprocess.stdout === null || subprocess.stderr === null) {

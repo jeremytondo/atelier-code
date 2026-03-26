@@ -4,6 +4,7 @@ import type {
   AccountLoginPayload,
   AccountReadPayload,
   ApprovalResolvePayload,
+  BridgeEnvironmentDiagnostics,
   ThreadArchivePayload,
   ThreadForkPayload,
   ThreadListPayload,
@@ -15,7 +16,11 @@ import type {
   ThreadUnarchivePayload,
   TurnStartPayload,
 } from "./protocol/types";
-import { executeBridgeCommand } from "./index";
+import {
+  buildProviderStatusEvent,
+  buildWelcomeEnvelope,
+  executeBridgeCommand,
+} from "./index";
 import type {
   CodexAccountReadResult,
   CodexClientAdapter,
@@ -279,6 +284,86 @@ describe("executeBridgeCommand", () => {
         }),
       }),
     ]);
+  });
+});
+
+describe("bridge startup diagnostics", () => {
+  test("includes environment diagnostics in welcome payloads", () => {
+    const environment: BridgeEnvironmentDiagnostics = {
+      source: "login_probe",
+      shellPath: "/bin/zsh",
+      probeError: null,
+      pathDirectoryCount: 6,
+      homeDirectory: "/Users/tester",
+    };
+
+    const welcome = buildWelcomeEnvelope(
+      "hello-1",
+      "session-1",
+      1,
+      [
+        {
+          id: "codex",
+          displayName: "Codex",
+          status: "available",
+        },
+      ],
+      environment,
+    );
+
+    expect(welcome).toEqual(
+      expect.objectContaining({
+        type: "welcome",
+        requestID: "hello-1",
+        payload: expect.objectContaining({
+          sessionID: "session-1",
+          environment,
+        }),
+      }),
+    );
+  });
+
+  test("includes executable and environment diagnostics in provider status events", () => {
+    const status = buildProviderStatusEvent("ready", "Codex is ready.", {
+      baseEnvironment: {
+        environment: {
+          PATH: "/opt/homebrew/bin:/usr/bin:/bin",
+        },
+        diagnostics: {
+          source: "fallback",
+          shellPath: "/bin/zsh",
+          probeError: "timed out",
+          pathDirectoryCount: 3,
+          homeDirectory: "/Users/tester",
+        },
+      },
+      executable: {
+        executableName: "codex",
+        status: "found",
+        resolvedPath: "/opt/homebrew/bin/codex",
+        source: "path",
+        baseEnvironmentSource: "fallback",
+        checkedPaths: ["/opt/homebrew/bin/codex"],
+      },
+    });
+
+    expect(status).toEqual(
+      expect.objectContaining({
+        type: "provider.status",
+        payload: {
+          status: "ready",
+          detail: "Codex is ready.",
+          executablePath: "/opt/homebrew/bin/codex",
+          environment: {
+            source: "fallback",
+            shellPath: "/bin/zsh",
+            probeError: "timed out",
+            pathDirectoryCount: 3,
+            homeDirectory: "/Users/tester",
+          },
+        },
+      }),
+    );
   });
 });
 

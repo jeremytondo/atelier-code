@@ -101,6 +101,12 @@ enum BridgeThreadArchiveFilter: String, Encodable, Sendable {
     case only
 }
 
+enum BridgeEnvironmentSourceValue: String, Decodable, Sendable {
+    case inherited
+    case loginProbe = "login_probe"
+    case fallback
+}
+
 enum BridgeLoginMethod: String, Codable, Sendable {
     case apiKey
     case chatgpt
@@ -141,6 +147,7 @@ struct BridgeWelcomePayload: Decodable, Equatable, Sendable {
     let sessionID: String
     let transport: String
     let providers: [BridgeProviderSummary]
+    let environment: BridgeEnvironmentDiagnosticsDTO?
 }
 
 struct BridgeWelcomeEnvelope: Decodable, Equatable, Sendable {
@@ -155,6 +162,14 @@ struct BridgeProviderSummary: Decodable, Equatable, Sendable {
     let id: String
     let displayName: String
     let status: String
+}
+
+struct BridgeEnvironmentDiagnosticsDTO: Decodable, Equatable, Sendable {
+    let source: BridgeEnvironmentSourceValue
+    let shellPath: String
+    let probeError: String?
+    let pathDirectoryCount: Int
+    let homeDirectory: String?
 }
 
 struct BridgeCommandEnvelope<Payload: Encodable>: Encodable {
@@ -460,6 +475,8 @@ struct BridgeErrorPayload: Decodable, Equatable, Sendable {
 struct BridgeProviderStatusPayload: Decodable, Equatable, Sendable {
     let status: BridgeProviderConnectionStatus
     let detail: String
+    let executablePath: String?
+    let environment: BridgeEnvironmentDiagnosticsDTO?
 }
 
 enum BridgeEventPayload: Equatable, Sendable {
@@ -717,6 +734,28 @@ extension BridgeRateLimitBucketDTO {
             remaining: remaining,
             resetAt: resetAt.flatMap { bridgeDate(from: $0) },
             detail: detail
+        )
+    }
+}
+
+extension BridgeEnvironmentDiagnosticsDTO {
+    func toWorkspaceBridgeEnvironmentDiagnostics() -> WorkspaceBridgeEnvironmentDiagnostics {
+        let resolvedSource: WorkspaceBridgeEnvironmentSource
+        switch self.source {
+        case .inherited:
+            resolvedSource = .inherited
+        case .loginProbe:
+            resolvedSource = .loginProbe
+        case .fallback:
+            resolvedSource = .fallback
+        }
+
+        return WorkspaceBridgeEnvironmentDiagnostics(
+            source: resolvedSource,
+            shellPath: shellPath,
+            probeError: probeError,
+            pathDirectoryCount: pathDirectoryCount,
+            homeDirectory: homeDirectory
         )
     }
 }

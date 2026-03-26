@@ -15,10 +15,15 @@ describe("CodexAppServerTransport", () => {
   test("correlates responses while forwarding interleaved notifications", async () => {
     const process = new FakeCodexProcess();
     const events: CodexTransportEvent[] = [];
-    const transport = new CodexAppServerTransport({
-      discoverExecutable: async () => foundExecutable(),
-      spawnProcess: () => process,
-    });
+    const transport = new CodexAppServerTransport(
+      {
+        executable: foundExecutable(),
+        environment: baseEnvironment(),
+      },
+      {
+        spawnProcess: () => process,
+      },
+    );
 
     transport.subscribe((event) => {
       events.push(event);
@@ -62,10 +67,15 @@ describe("CodexAppServerTransport", () => {
   test("forwards provider-initiated requests and writes JSONL replies", async () => {
     const process = new FakeCodexProcess();
     const events: CodexTransportEvent[] = [];
-    const transport = new CodexAppServerTransport({
-      discoverExecutable: async () => foundExecutable(),
-      spawnProcess: () => process,
-    });
+    const transport = new CodexAppServerTransport(
+      {
+        executable: foundExecutable(),
+        environment: baseEnvironment(),
+      },
+      {
+        spawnProcess: () => process,
+      },
+    );
 
     transport.subscribe((event) => {
       events.push(event);
@@ -104,10 +114,15 @@ describe("CodexAppServerTransport", () => {
   test("treats malformed provider output as a transport failure", async () => {
     const process = new FakeCodexProcess();
     const disconnects: CodexTransportDisconnectInfo[] = [];
-    const transport = new CodexAppServerTransport({
-      discoverExecutable: async () => foundExecutable(),
-      spawnProcess: () => process,
-    });
+    const transport = new CodexAppServerTransport(
+      {
+        executable: foundExecutable(),
+        environment: baseEnvironment(),
+      },
+      {
+        spawnProcess: () => process,
+      },
+    );
 
     transport.subscribe((event) => {
       if (event.type === "disconnect") {
@@ -132,6 +147,37 @@ describe("CodexAppServerTransport", () => {
       }),
     );
     expect(process.killed).toBeTrue();
+  });
+
+  test("spawns codex app-server with the resolved base environment", async () => {
+    const process = new FakeCodexProcess();
+    const resolvedEnvironment = {
+      PATH: "/opt/homebrew/bin:/usr/bin:/bin",
+      HOME: "/Users/tester",
+    };
+    let spawnedEnvironment: Readonly<Record<string, string>> | null = null;
+    const transport = new CodexAppServerTransport(
+      {
+        executable: foundExecutable(),
+        environment: resolvedEnvironment,
+      },
+      {
+        spawnProcess: (_executablePath, environment) => {
+          spawnedEnvironment = environment;
+          return process;
+        },
+      },
+    );
+
+    await transport.connect();
+
+    expect(spawnedEnvironment).not.toBeNull();
+    if (spawnedEnvironment === null) {
+      throw new Error("Expected transport startup to capture the resolved environment.");
+    }
+
+    const capturedEnvironment: Readonly<Record<string, string>> = spawnedEnvironment;
+    expect(capturedEnvironment).toEqual(resolvedEnvironment);
   });
 });
 
@@ -198,6 +244,14 @@ function foundExecutable() {
     status: "found" as const,
     resolvedPath: "/opt/homebrew/bin/codex",
     source: "path" as const,
+    baseEnvironmentSource: "login_probe" as const,
     checkedPaths: ["/opt/homebrew/bin/codex"],
+  };
+}
+
+function baseEnvironment() {
+  return {
+    PATH: "/usr/bin:/bin",
+    HOME: "/Users/tester",
   };
 }

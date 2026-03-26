@@ -338,6 +338,11 @@ private struct WorkspaceHeaderRow: View {
                     SidebarThreadBadge(text: syncStatusBadge.text, color: syncStatusBadge.color)
                 }
 
+                if let warningMessage = controller.bridgeEnvironmentWarningMessage {
+                    SidebarThreadBadge(text: "Env Warning", color: .orange)
+                        .help(warningMessage)
+                }
+
                 if runningCount > 0 {
                     SidebarThreadBadge(text: runningCount == 1 ? "1 running" : "\(runningCount) running", color: .blue)
                 }

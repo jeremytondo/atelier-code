@@ -277,6 +277,7 @@
 				"$(SRCROOT)/AgentBridge/src/index.ts",
 				"$(SRCROOT)/AgentBridge/src/protocol/types.ts",
 				"$(SRCROOT)/AgentBridge/src/protocol/version.ts",
+				"$(SRCROOT)/AgentBridge/src/environment/base-environment.ts",
 				"$(SRCROOT)/AgentBridge/src/discovery/executable.ts",
 				"$(SRCROOT)/AgentBridge/src/codex/codex-client.ts",
 				"$(SRCROOT)/AgentBridge/src/codex/codex-event-mapper.ts",

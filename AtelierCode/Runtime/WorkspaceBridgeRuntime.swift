@@ -162,9 +162,13 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             try await sendHello()
 
             let handshakeMessage = try await receiveInboundMessage()
-            guard case .welcome = handshakeMessage else {
+            guard case .welcome(let welcomeEnvelope) = handshakeMessage else {
                 throw WorkspaceBridgeRuntimeError.unexpectedHandshakeMessage
             }
+
+            controller.setBridgeEnvironmentDiagnostics(
+                welcomeEnvelope.payload.environment?.toWorkspaceBridgeEnvironmentDiagnostics()
+            )
 
             controller.setBridgeLifecycleState(.idle)
             controller.setConnectionStatus(.ready)
@@ -1171,6 +1175,14 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     }
 
     private func handleProviderStatus(_ payload: BridgeProviderStatusPayload) {
+        if let environment = payload.environment?.toWorkspaceBridgeEnvironmentDiagnostics() {
+            controller.setBridgeEnvironmentDiagnostics(environment)
+        }
+
+        if let executablePath = payload.executablePath {
+            controller.setProviderExecutablePath(executablePath)
+        }
+
         switch payload.status {
         case .starting:
             controller.setConnectionStatus(.connecting)

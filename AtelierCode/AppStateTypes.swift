@@ -127,6 +127,32 @@ enum BridgeLifecycleState: String, Equatable, Sendable {
     case stopping
 }
 
+enum WorkspaceBridgeEnvironmentSource: String, Equatable, Sendable {
+    case inherited
+    case loginProbe = "login_probe"
+    case fallback
+}
+
+struct WorkspaceBridgeEnvironmentDiagnostics: Equatable, Sendable {
+    let source: WorkspaceBridgeEnvironmentSource
+    let shellPath: String?
+    let probeError: String?
+    let pathDirectoryCount: Int
+    let homeDirectory: String?
+
+    var warningMessage: String? {
+        guard source == .fallback else {
+            return nil
+        }
+
+        if let probeError, probeError.isEmpty == false {
+            return "Shell environment probe failed. The bridge is using fallback PATH entries. \(probeError)"
+        }
+
+        return "Shell environment probe did not succeed. The bridge is using fallback PATH entries."
+    }
+}
+
 enum ConnectionStatus: Equatable, Sendable {
     case disconnected
     case connecting
