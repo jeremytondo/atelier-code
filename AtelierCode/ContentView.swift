@@ -430,94 +430,6 @@ private struct SidebarThreadBadge: View {
     }
 }
 
-private struct ThreadDetailHeader: View {
-    let appModel: AppModel
-    let controller: WorkspaceController
-
-    private var selectedThreadSummary: ThreadSummary? {
-        appModel.selectedThreadSummary
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let selectedThreadSummary {
-                HStack(alignment: .top, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(selectedThreadSummary.title)
-                            .font(.title2.weight(.semibold))
-
-                        Text(controller.workspace.canonicalPath)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-
-                        if selectedThreadSummary.previewText.isEmpty == false {
-                            Text(selectedThreadSummary.previewText)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(3)
-                        }
-                    }
-
-                    Spacer(minLength: 0)
-
-                    VStack(alignment: .trailing, spacing: 8) {
-                        Text(selectedThreadSummary.updatedAt.relativeThreadTimestamp)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-
-                        HStack(spacing: 6) {
-                            if selectedThreadSummary.isRunning {
-                                SidebarThreadBadge(text: "Running", color: .blue)
-                            }
-
-                            if selectedThreadSummary.lastErrorMessage != nil {
-                                SidebarThreadBadge(text: "Error", color: .red)
-                            }
-
-                            if selectedThreadSummary.isArchived {
-                                SidebarThreadBadge(text: "Read Only", color: .secondary)
-                            }
-                        }
-                    }
-                }
-
-                if selectedThreadSummary.isArchived {
-                    Text("Archived threads are read-only until you unarchive them.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } else if let lastErrorMessage = selectedThreadSummary.lastErrorMessage,
-                          lastErrorMessage.isEmpty == false {
-                    Text(lastErrorMessage)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(controller.workspace.displayName)
-                        .font(.title2.weight(.semibold))
-
-                    Text(controller.workspace.canonicalPath)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-
-                    Text(
-                        controller.visibleThreadSummaries.isEmpty
-                            ? "Send a prompt to create the first thread in this workspace."
-                            : "Select a thread from the sidebar or create a new one to continue working."
-                    )
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding(20)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-    }
-}
-
 private struct ConversationDetailView: View {
     let appModel: AppModel
     @Binding var composerText: String
@@ -567,10 +479,6 @@ private struct ActiveWorkspaceConversationView: View {
         ZStack(alignment: .bottom) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    ThreadDetailHeader(appModel: appModel, controller: controller)
-                        .frame(maxWidth: floatingComposerMaxWidth, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .center)
-
                     ConversationSurface(
                         appModel: appModel,
                         controller: controller,
