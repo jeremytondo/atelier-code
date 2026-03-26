@@ -91,7 +91,8 @@ final class AppModel {
         } ?? workspaceControllers.first?.workspace.canonicalPath
         selectedRoute = Self.initialRoute(
             selectedWorkspacePath: lastSelectedWorkspacePath,
-            controllers: workspaceControllers
+            controllers: workspaceControllers,
+            preferExistingThreadSelection: false
         )
 
         appendStartupDiagnostic(resolvedBridgeDiagnosticProvider())
@@ -197,7 +198,8 @@ final class AppModel {
             let nextWorkspacePath = recentWorkspaces.first?.canonicalPath
             selectedRoute = Self.initialRoute(
                 selectedWorkspacePath: nextWorkspacePath,
-                controllers: workspaceControllers
+                controllers: workspaceControllers,
+                preferExistingThreadSelection: true
             )
             lastSelectedWorkspacePath = selectedRoute?.workspacePath
         }
@@ -909,7 +911,8 @@ final class AppModel {
 
     private static func initialRoute(
         selectedWorkspacePath: String?,
-        controllers: [WorkspaceController]
+        controllers: [WorkspaceController],
+        preferExistingThreadSelection: Bool
     ) -> WorkspaceThreadRoute? {
         let workspacePath = selectedWorkspacePath
             ?? controllers.first?.workspace.canonicalPath
@@ -920,7 +923,7 @@ final class AppModel {
 
         return WorkspaceThreadRoute(
             workspacePath: workspacePath,
-            threadID: preferredThreadID(for: controller)
+            threadID: preferExistingThreadSelection ? preferredThreadID(for: controller) : nil
         )
     }
 
@@ -990,7 +993,9 @@ final class AppModel {
                     }
 
                     return lhs.updatedAt > rhs.updatedAt
-                }
+                },
+                lastSuccessfulActiveListAt: workspaceState.cachedThreadList.lastSuccessfulActiveListAt,
+                lastSuccessfulArchivedListAt: workspaceState.cachedThreadList.lastSuccessfulArchivedListAt
             )
         }
 

@@ -265,6 +265,17 @@ private struct WorkspaceHeaderRow: View {
         controller.threadSummaries.filter(\.isRunning).count
     }
 
+    private var syncStatusBadge: (text: String, color: Color)? {
+        switch controller.threadListSyncState {
+        case .idle:
+            return nil
+        case .syncing:
+            return ("Syncing", .teal)
+        case .failed:
+            return ("Cached", .orange)
+        }
+    }
+
     private var showsHoverActions: Bool {
         isHovering
     }
@@ -323,6 +334,10 @@ private struct WorkspaceHeaderRow: View {
             .accessibilityHint("Shows or hides the threads for this workspace")
 
             HStack(alignment: .center, spacing: 10) {
+                if let syncStatusBadge {
+                    SidebarThreadBadge(text: syncStatusBadge.text, color: syncStatusBadge.color)
+                }
+
                 if runningCount > 0 {
                     SidebarThreadBadge(text: runningCount == 1 ? "1 running" : "\(runningCount) running", color: .blue)
                 }
@@ -474,7 +489,11 @@ private struct WorkspaceThreadRow: View {
     }
 
     private var showsStatusBadges: Bool {
-        threadSummary.isRunning || threadSummary.lastErrorMessage != nil || threadSummary.isArchived
+        threadSummary.isRunning ||
+            threadSummary.lastErrorMessage != nil ||
+            threadSummary.isArchived ||
+            threadSummary.isLocalOnly ||
+            threadSummary.isStale
     }
 
     var body: some View {
@@ -589,6 +608,14 @@ private struct WorkspaceThreadRow: View {
 
                         if threadSummary.isArchived {
                             SidebarThreadBadge(text: "Archived", color: .secondary)
+                        }
+
+                        if threadSummary.isLocalOnly {
+                            SidebarThreadBadge(text: "Local", color: .teal)
+                        }
+
+                        if threadSummary.isStale {
+                            SidebarThreadBadge(text: "Stale", color: .orange)
                         }
                     }
                 }
