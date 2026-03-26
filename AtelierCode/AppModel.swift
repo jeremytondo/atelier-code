@@ -90,6 +90,7 @@ final class AppModel {
         }
 
         startInitiallySelectedWorkspaceRuntime()
+        preloadInitiallyExpandedWorkspaceThreadLists()
     }
 
     var activeWorkspaceController: WorkspaceController? {
@@ -666,6 +667,26 @@ final class AppModel {
         }
 
         startWorkspaceRuntimeIfNeeded(for: workspacePath)
+    }
+
+    private func preloadInitiallyExpandedWorkspaceThreadLists() {
+        let selectedWorkspacePath = selectedRoute?.workspacePath ?? lastSelectedWorkspacePath
+        let workspacePathsToPreload = workspaceControllers
+            .filter { controller in
+                controller.isExpanded &&
+                controller.workspace.canonicalPath != selectedWorkspacePath
+            }
+            .map(\.workspace.canonicalPath)
+
+        for workspacePath in workspacePathsToPreload {
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    return
+                }
+
+                _ = await prepareWorkspaceForBrowsing(path: workspacePath)
+            }
+        }
     }
 
     private func startRuntime(_ runtime: any WorkspaceConversationRuntime, workspacePath: String) async {

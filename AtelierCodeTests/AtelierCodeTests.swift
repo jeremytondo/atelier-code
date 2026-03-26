@@ -398,7 +398,7 @@ struct AppModelTests {
         #expect(appModel.activeWorkspaceController?.activeThreadSession?.messages.map(\.text) == ["Ship the first turn"])
     }
 
-    @Test func restoresOnlySelectedWorkspaceRuntimeUntilAnotherWorkspaceIsChosen() async throws {
+    @Test func restoredExpandedWorkspacesPreloadThreadsWithoutChangingSelection() async throws {
         let firstWorkspaceURL = try temporaryDirectory(named: "restored-runtime-a")
         let secondWorkspaceURL = try temporaryDirectory(named: "restored-runtime-b")
         let snapshot = AppPreferencesSnapshot(
@@ -423,17 +423,14 @@ struct AppModelTests {
                 runtimeCoordinator.records(for: secondWorkspaceURL.path).last?.isRunning == true
         }
 
-        #expect(runtimeCoordinator.records(for: firstWorkspaceURL.path).allSatisfy { $0.isRunning == false })
-        #expect(runtimeCoordinator.records(for: secondWorkspaceURL.path).count == 1)
-
-        appModel.selectWorkspace(path: firstWorkspaceURL.path)
-
         try await waitUntil {
-            appModel.activeWorkspaceController?.workspace.canonicalPath == firstWorkspaceURL.path &&
-                runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.isRunning == true
+            runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.isRunning == true &&
+                runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsCalls == 1
         }
 
+        #expect(appModel.activeWorkspaceController?.workspace.canonicalPath == secondWorkspaceURL.path)
         #expect(runtimeCoordinator.records(for: firstWorkspaceURL.path).count == 1)
+        #expect(runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsArchivedValues == [false])
         #expect(runtimeCoordinator.records(for: secondWorkspaceURL.path).count == 1)
     }
 
@@ -464,7 +461,7 @@ struct AppModelTests {
         #expect(runtimeCoordinator.records(for: secondWorkspaceURL.path).last?.stopCount == 0)
     }
 
-    @Test func expandingWorkspaceStartsRuntimeAndLoadsThreadsWithoutChangingSelection() async throws {
+    @Test func preparingWorkspaceForBrowsingReloadsThreadsWithoutChangingSelection() async throws {
         let firstWorkspaceURL = try temporaryDirectory(named: "expand-runtime-a")
         let secondWorkspaceURL = try temporaryDirectory(named: "expand-runtime-b")
         let snapshot = AppPreferencesSnapshot(
@@ -488,17 +485,22 @@ struct AppModelTests {
                 runtimeCoordinator.records(for: secondWorkspaceURL.path).last?.isRunning == true
         }
 
+        try await waitUntil {
+            runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.isRunning == true &&
+                runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsCalls == 1
+        }
+
         let prepared = await appModel.prepareWorkspaceForBrowsing(path: firstWorkspaceURL.path)
 
         #expect(prepared)
 
         try await waitUntil {
             runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.isRunning == true &&
-                runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsCalls == 1
+                runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsCalls == 2
         }
 
         #expect(appModel.activeWorkspaceController?.workspace.canonicalPath == secondWorkspaceURL.path)
-        #expect(runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsArchivedValues == [false])
+        #expect(runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsArchivedValues == [false, false])
     }
 
     @Test func retryKeepsOnlyNewestRuntimeRunning() async throws {
