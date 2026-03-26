@@ -271,28 +271,19 @@ final class AppModel {
 
     @discardableResult
     func createThread() async -> Bool {
-        guard let controller = selectedWorkspaceController,
-              await ensureRuntimeReady(for: controller.workspace.canonicalPath),
-              let runtime = runtime(for: controller.workspace.canonicalPath) else {
+        guard let controller = selectedWorkspaceController else {
             return false
         }
 
-        do {
-            let session = try await runtime.startThreadAndWait(title: nil)
-            controller.markThreadSelected(session.threadID)
-            selectedRoute = WorkspaceThreadRoute(
-                workspacePath: controller.workspace.canonicalPath,
-                threadID: session.threadID
-            )
-            lastSelectedWorkspacePath = controller.workspace.canonicalPath
-            persistPreferences()
-            return true
-        } catch is CancellationError {
-            return false
-        } catch {
-            controller.setConnectionStatus(.error(message: error.localizedDescription))
-            return false
-        }
+        controller.clearActiveThreadSession()
+        selectedRoute = WorkspaceThreadRoute(
+            workspacePath: controller.workspace.canonicalPath,
+            threadID: nil
+        )
+        lastSelectedWorkspacePath = controller.workspace.canonicalPath
+        startWorkspaceRuntimeIfNeeded(for: controller.workspace.canonicalPath)
+        persistPreferences()
+        return true
     }
 
     @discardableResult
@@ -576,6 +567,20 @@ final class AppModel {
                 persistPreferences()
             }
 
+            controller.setThreadSidebarVisibility(true, for: threadID)
+            controller.markThreadActivity(
+                id: threadID,
+                at: now(),
+                previewText: trimmedPrompt,
+                hasUnreadActivity: false,
+                lastErrorMessage: nil
+            )
+            controller.updateThreadSummary(id: threadID) { summary in
+                let trimmedTitle = summary.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmedTitle.isEmpty || trimmedTitle == summary.id || trimmedTitle == "New Conversation" || trimmedTitle == "Thread" {
+                    summary.title = Self.defaultDraftThreadTitle(from: trimmedPrompt)
+                }
+            }
             controller.setAwaitingTurnStart(true, for: threadID)
             try await runtime.startTurn(
                 threadID: threadID,
@@ -837,6 +842,16 @@ final class AppModel {
             workspacePath: workspacePath,
             threadID: controller.visibleThreadSummaries.first?.id
         )
+    }
+
+    private static func defaultDraftThreadTitle(from prompt: String) -> String {
+        let firstLine = prompt
+            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return firstLine?.isEmpty == false ? firstLine! : "New Conversation"
     }
 
     private static func normalizeRecentWorkspaces(_ workspaces: [WorkspaceRecord]) -> [WorkspaceRecord] {

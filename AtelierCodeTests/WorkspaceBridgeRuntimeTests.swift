@@ -619,6 +619,62 @@ struct WorkspaceBridgeRuntimeTests {
         #expect(controller.activeThreadSession?.threadID == "thread-42")
     }
 
+    @Test func paginatedThreadListAccumulatesAcrossPagesBeforeReplacingSidebarState() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-thread-pages"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4746)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Bootstrap")
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        try await runtime.listThreads(archived: false)
+        try await waitUntil { pendingCommandCount(in: runtime) == 1 }
+
+        socketClient.enqueue(
+            threadListResultJSON(
+                requestID: "ateliercode-thread-list-4",
+                threads: [
+                    (id: "thread-10", title: "First Page", previewText: "Preview 1", updatedAt: "2026-03-24T10:00:10Z")
+                ],
+                nextCursor: "cursor-2"
+            )
+        )
+
+        try await waitUntil {
+            pendingCommandCount(in: runtime) == 1 &&
+                commandPayload(from: socketClient.sentTexts.last)?["cursor"] as? String == "cursor-2"
+        }
+
+        socketClient.enqueue(
+            threadListResultJSON(
+                requestID: "ateliercode-thread-list-5",
+                threads: [
+                    (id: "thread-11", title: "Second Page", previewText: "Preview 2", updatedAt: "2026-03-24T10:00:11Z")
+                ]
+            )
+        )
+
+        try await waitUntil {
+            pendingCommandCount(in: runtime) == 0 &&
+                Set(controller.threadSummaries.map(\.id)) == Set(["thread-10", "thread-11"])
+        }
+
+        #expect(Set(controller.threadSummaries.map(\.id)) == Set(["thread-10", "thread-11"]))
+    }
+
     @Test func renameThreadSendsCommandAndUpdatesLoadedSession() async throws {
         let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-thread-rename"), lastOpenedAt: .now)
         let controller = WorkspaceController(workspace: workspace)
@@ -943,6 +999,23 @@ private func rateLimitUpdatedJSON(requestID: String) -> String {
 private func threadListResultJSON(requestID: String, threadTitle: String) -> String {
     """
     {"type":"thread.list.result","timestamp":"2026-03-24T10:00:04Z","requestID":"\(requestID)","payload":{"threads":[{"id":"thread-1","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:04Z"}],"nextCursor":null}}
+    """
+}
+
+private func threadListResultJSON(
+    requestID: String,
+    threads: [(id: String, title: String, previewText: String, updatedAt: String)],
+    nextCursor: String? = nil
+) -> String {
+    let threadsJSON = threads.map { thread in
+        """
+        {"id":"\(thread.id)","title":"\(jsonEscaped(thread.title))","previewText":"\(jsonEscaped(thread.previewText))","updatedAt":"\(thread.updatedAt)"}
+        """
+    }.joined(separator: ",")
+    let nextCursorJSON = nextCursor.map { "\"\(jsonEscaped($0))\"" } ?? "null"
+
+    return """
+    {"type":"thread.list.result","timestamp":"2026-03-24T10:00:04Z","requestID":"\(requestID)","payload":{"threads":[\(threadsJSON)],"nextCursor":\(nextCursorJSON)}}
     """
 }
 

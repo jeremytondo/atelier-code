@@ -824,6 +824,8 @@ private struct ConversationSurface: View {
                     appModel: appModel,
                     session: appModel.selectedThreadSession,
                     hasSelectedThread: appModel.selectedThreadSummary != nil,
+                    isDraftingNewThread: appModel.selectedRoute?.workspacePath == controller.workspace.canonicalPath &&
+                        appModel.selectedRoute?.threadID == nil,
                     hasVisibleThreads: controller.visibleThreadSummaries.isEmpty == false,
                     bottomInset: bottomInset
                 )
@@ -852,6 +854,7 @@ private struct ConversationTranscript: View {
     let appModel: AppModel
     let session: ThreadSession?
     let hasSelectedThread: Bool
+    let isDraftingNewThread: Bool
     let hasVisibleThreads: Bool
     let bottomInset: CGFloat
 
@@ -867,6 +870,15 @@ private struct ConversationTranscript: View {
             .padding(.bottom, bottomInset)
             .frame(maxWidth: .infinity, minHeight: 420)
             .accessibilityIdentifier("conversation-loading-empty-state")
+        } else if isDraftingNewThread || hasVisibleThreads == false {
+            ContentUnavailableView {
+                Label("Start a Thread", systemImage: "square.and.pencil")
+            } description: {
+                Text("Send your first prompt below to create a new thread for this workspace.")
+            }
+            .padding(.bottom, bottomInset)
+            .frame(maxWidth: .infinity, minHeight: 420)
+            .accessibilityIdentifier("conversation-ready-empty-state")
         } else if hasVisibleThreads {
             ContentUnavailableView {
                 Label("Select a Thread", systemImage: "text.bubble")
@@ -876,15 +888,6 @@ private struct ConversationTranscript: View {
             .padding(.bottom, bottomInset)
             .frame(maxWidth: .infinity, minHeight: 420)
             .accessibilityIdentifier("conversation-select-thread-state")
-        } else {
-            ContentUnavailableView {
-                Label("Start a Thread", systemImage: "square.and.pencil")
-            } description: {
-                Text("Send your first prompt below to create a new thread for this workspace.")
-            }
-            .padding(.bottom, bottomInset)
-            .frame(maxWidth: .infinity, minHeight: 420)
-            .accessibilityIdentifier("conversation-ready-empty-state")
         }
     }
 }
@@ -2095,7 +2098,7 @@ private final class PreviewWorkspaceRuntime: WorkspaceConversationRuntime {
     }
 
     func startThreadAndWait(title: String?) async throws -> ThreadSession {
-        controller.openThread(id: UUID().uuidString, title: title ?? "Preview Thread")
+        controller.openThread(id: UUID().uuidString, title: title ?? "Preview Thread", isVisibleInSidebar: false)
     }
 
     func resumeThreadAndWait(id: String) async throws -> ThreadSession {
@@ -2132,7 +2135,8 @@ private final class PreviewWorkspaceRuntime: WorkspaceConversationRuntime {
     }
 
     func startTurn(threadID: String, prompt: String, configuration: BridgeTurnStartConfiguration?) async throws {
-        let session = controller.threadSession(id: threadID) ?? controller.openThread(id: threadID, title: "Preview Thread")
+        let session = controller.threadSession(id: threadID)
+            ?? controller.openThread(id: threadID, title: "Preview Thread", isVisibleInSidebar: false)
         session.beginTurn(userPrompt: prompt)
         controller.setAwaitingTurnStart(false, for: threadID)
         controller.setCurrentTurnID("preview-turn", for: threadID)

@@ -52,6 +52,27 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Activity"].exists)
     }
 
+    func testStartedThreadSurvivesCollapseAndRefreshOmission() throws {
+        let app = try makeApp(scenario: "refresh-omits-thread", workspaceName: "RefreshOmission")
+        app.launch()
+
+        let composer = app.textViews["conversation-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.click()
+        composer.typeText("Keep this thread visible")
+
+        app.buttons["conversation-send-button"].click()
+
+        let threadRow = app.descendants(matching: .any)["thread-row-ui-test-thread"]
+        XCTAssertTrue(threadRow.waitForExistence(timeout: 5))
+
+        let workspaceButton = app.buttons["recent-workspace-RefreshOmission"]
+        workspaceButton.click()
+        workspaceButton.click()
+
+        XCTAssertTrue(threadRow.waitForExistence(timeout: 5))
+    }
+
     func testPhase2TurnShowsCollapsedGroupedSectionsAndApproveKeepsCompletedTurnVisible() throws {
         let app = try makeApp(scenario: "phase2", workspaceName: "Phase2ApproveWorkspace")
         app.launch()

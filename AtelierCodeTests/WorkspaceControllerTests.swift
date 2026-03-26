@@ -63,7 +63,7 @@ struct WorkspaceControllerTests {
         let session = controller.openThread(id: "thread-2", title: "Second")
         controller.clearActiveThreadSession()
 
-        #expect(controller.threadSummaries == threadSummaries)
+        #expect(Set(controller.threadSummaries.map(\.id)) == Set(threadSummaries.map(\.id)))
         #expect(session.threadID == "thread-2")
         #expect(controller.activeThreadSession == nil)
     }
@@ -124,5 +124,92 @@ struct WorkspaceControllerTests {
 
         #expect(controller.displayedThreadSummaries.count == WorkspaceController.collapsedVisibleThreadLimit)
         #expect(controller.displayedThreadSummaries.map(\.id) == Array(threadSummaries.prefix(WorkspaceController.collapsedVisibleThreadLimit)).map(\.id))
+    }
+
+    @Test func promotedThreadsSurviveListRefresh() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "workspace-draft-thread"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+
+        controller.openThread(id: "draft-thread", title: "Draft", isVisibleInSidebar: false)
+
+        #expect(controller.threadSummary(id: "draft-thread")?.isVisibleInSidebar == false)
+        #expect(controller.visibleThreadSummaries.isEmpty)
+
+        controller.setThreadSidebarVisibility(true, for: "draft-thread")
+        controller.replaceThreadList([])
+
+        #expect(controller.threadSummary(id: "draft-thread")?.isVisibleInSidebar == true)
+        #expect(controller.visibleThreadSummaries.map(\.id) == ["draft-thread"])
+    }
+
+    @Test func refreshKeepsExistingHumanTitleWhenIncomingTitleFallsBackToThreadID() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "workspace-refresh-title"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+
+        controller.openThread(id: "thread-123", title: "Start the real conversation.", isVisibleInSidebar: true)
+        controller.replaceThreadList([
+            ThreadSummary(id: "thread-123", title: "thread-123", previewText: "Preview", updatedAt: .now)
+        ])
+
+        #expect(controller.threadSummary(id: "thread-123")?.title == "Start the real conversation.")
+        #expect(controller.visibleThreadSummaries.map(\.id) == ["thread-123"])
+    }
+
+    @Test func pinnedSidebarThreadSurvivesRefreshEvenIfSessionIsCleared() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "workspace-pinned-thread"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+
+        controller.openThread(id: "thread-keep", title: "Keep Me", isVisibleInSidebar: true)
+        controller.setThreadSidebarVisibility(true, for: "thread-keep")
+        controller.clearThreadSession(id: "thread-keep")
+        controller.replaceThreadList([])
+
+        #expect(controller.threadSummary(id: "thread-keep")?.title == "Keep Me")
+        #expect(controller.visibleThreadSummaries.map(\.id) == ["thread-keep"])
+    }
+
+    @Test func selectedThreadSurvivesRefreshWhenBridgeOmitsIt() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "workspace-selected-thread"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+
+        controller.replaceThreadList([
+            ThreadSummary(id: "thread-active", title: "Active", previewText: "Current", updatedAt: .now),
+            ThreadSummary(id: "thread-other", title: "Other", previewText: "Other", updatedAt: .distantPast)
+        ])
+        controller.markThreadSelected("thread-active")
+        controller.replaceThreadList([])
+
+        #expect(controller.threadSummary(id: "thread-active")?.title == "Active")
+        #expect(controller.visibleThreadSummaries.map(\.id) == ["thread-active"])
+    }
+
+    @Test func staleRefreshKeepsNewestLocalActivityVisible() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "workspace-stale-refresh"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let baseline = Date(timeIntervalSince1970: 1_710_000_000)
+        let promotedDate = baseline.addingTimeInterval(120)
+
+        controller.replaceThreadList((0..<6).map { index in
+            ThreadSummary(
+                id: "thread-\(index)",
+                title: "Thread \(index)",
+                previewText: "Preview \(index)",
+                updatedAt: baseline.addingTimeInterval(TimeInterval(-index))
+            )
+        })
+        controller.markThreadActivity(id: "thread-5", at: promotedDate, previewText: "Fresh local work")
+
+        controller.replaceThreadList((0..<6).map { index in
+            ThreadSummary(
+                id: "thread-\(index)",
+                title: "Thread \(index)",
+                previewText: index == 5 ? "Stale bridge preview" : "Preview \(index)",
+                updatedAt: baseline.addingTimeInterval(TimeInterval(-index))
+            )
+        })
+
+        #expect(controller.displayedThreadSummaries.first?.id == "thread-5")
+        #expect(controller.threadSummary(id: "thread-5")?.previewText == "Fresh local work")
+        #expect(controller.threadSummary(id: "thread-5")?.updatedAt == promotedDate)
     }
 }

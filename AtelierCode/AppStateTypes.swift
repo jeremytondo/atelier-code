@@ -179,6 +179,7 @@ struct ThreadSummary: Equatable, Sendable, Identifiable {
     var title: String
     var previewText: String
     var updatedAt: Date
+    var isVisibleInSidebar: Bool
     var isArchived: Bool
     var isRunning: Bool
     var hasUnreadActivity: Bool
@@ -189,6 +190,7 @@ struct ThreadSummary: Equatable, Sendable, Identifiable {
         title: String,
         previewText: String,
         updatedAt: Date,
+        isVisibleInSidebar: Bool = true,
         isArchived: Bool = false,
         isRunning: Bool = false,
         hasUnreadActivity: Bool = false,
@@ -198,6 +200,7 @@ struct ThreadSummary: Equatable, Sendable, Identifiable {
         self.title = title
         self.previewText = previewText
         self.updatedAt = updatedAt
+        self.isVisibleInSidebar = isVisibleInSidebar
         self.isArchived = isArchived
         self.isRunning = isRunning
         self.hasUnreadActivity = hasUnreadActivity
