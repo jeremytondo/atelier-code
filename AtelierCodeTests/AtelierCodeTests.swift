@@ -256,6 +256,108 @@ struct AppModelTests {
         #expect(controller.threadSummary(id: threadID)?.title == "Keep this in the sidebar.")
     }
 
+    @Test func restartedAppRestoresCachedVisibleThreadsWhenRuntimeOmitsThem() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let initialRuntimeCoordinator = TestRuntimeCoordinator()
+        let initialAppModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: initialRuntimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "conversation-restart-survival")
+
+        initialAppModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { initialAppModel.activeWorkspaceController?.connectionStatus == .ready }
+
+        let didCreateThread = await initialAppModel.createThread()
+        let didSend = await initialAppModel.sendPrompt("Restore this after relaunch.")
+        let initialController = try #require(initialAppModel.activeWorkspaceController)
+        let threadID = try #require(initialController.lastActiveThreadID)
+        let persistedSnapshot = try #require(try store.loadSnapshot())
+
+        #expect(didCreateThread)
+        #expect(didSend)
+        #expect(
+            persistedSnapshot.workspaceStates.first(where: { $0.workspacePath == workspaceURL.path })?.threadSummaries.map(\.id) == [threadID]
+        )
+        #expect(
+            persistedSnapshot.workspaceStates.first(where: { $0.workspacePath == workspaceURL.path })?.pinnedThreadIDs == [threadID]
+        )
+
+        let restoredRuntimeCoordinator = TestRuntimeCoordinator()
+        let restoredAppModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: restoredRuntimeCoordinator) }
+        )
+
+        try await waitUntil { restoredAppModel.activeWorkspaceController?.connectionStatus == .ready }
+
+        let restoredController = try #require(restoredAppModel.activeWorkspaceController)
+
+        #expect(restoredAppModel.selectedRoute?.threadID == threadID)
+        #expect(restoredController.visibleThreadSummaries.map(\.id) == [threadID])
+
+        restoredRuntimeCoordinator.queuedThreadListResponses = [[]]
+        let prepared = await restoredAppModel.prepareWorkspaceForBrowsing(path: workspaceURL.path)
+
+        #expect(prepared)
+        #expect(restoredController.visibleThreadSummaries.map(\.id) == [threadID])
+        #expect(restoredController.threadSummary(id: threadID)?.title == "Restore this after relaunch.")
+    }
+
+    @Test func restoredWorkspaceStateKeepsExpandedStateAndLastActiveThread() async throws {
+        let workspaceURL = try temporaryDirectory(named: "restored-workspace-state")
+        let snapshot = AppPreferencesSnapshot(
+            recentWorkspaces: [WorkspaceRecord(url: workspaceURL, lastOpenedAt: .now)],
+            lastSelectedWorkspacePath: workspaceURL.path,
+            codexPathOverride: nil,
+            workspaceStates: [
+                PersistedWorkspaceState(
+                    workspacePath: workspaceURL.path,
+                    isExpanded: false,
+                    isShowingAllVisibleThreads: true,
+                    lastActiveThreadID: "thread-2",
+                    pinnedThreadIDs: ["thread-2"],
+                    threadSummaries: [
+                        PersistedThreadSummary(
+                            id: "thread-1",
+                            title: "First Thread",
+                            previewText: "Preview 1",
+                            updatedAt: .distantPast,
+                            isVisibleInSidebar: true,
+                            isArchived: false
+                        ),
+                        PersistedThreadSummary(
+                            id: "thread-2",
+                            title: "Second Thread",
+                            previewText: "Preview 2",
+                            updatedAt: .now,
+                            isVisibleInSidebar: true,
+                            isArchived: false
+                        ),
+                    ]
+                )
+            ]
+        )
+        let store = InMemoryAppPreferencesStore(snapshot: snapshot)
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+
+        try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
+
+        let controller = try #require(appModel.activeWorkspaceController)
+
+        #expect(controller.isExpanded == false)
+        #expect(controller.isShowingAllVisibleThreads)
+        #expect(controller.lastActiveThreadID == "thread-2")
+        #expect(appModel.selectedRoute?.threadID == "thread-2")
+    }
+
     @Test func sendAndCancelGatingTracksWorkspaceState() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
@@ -605,6 +707,7 @@ struct AppPreferencesStoreTests {
         let snapshot = try #require(loadedSnapshot)
 
         #expect(snapshot.appearancePreference == .system)
+        #expect(snapshot.workspaceStates.isEmpty)
     }
 }
 

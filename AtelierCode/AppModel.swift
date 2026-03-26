@@ -46,6 +46,7 @@ final class AppModel {
 
         let loadedSnapshot = try? resolvedPreferencesStore.loadSnapshot()
         let normalizedRecentWorkspaces = Self.normalizeRecentWorkspaces(loadedSnapshot?.recentWorkspaces ?? [])
+        let normalizedWorkspaceStatesByPath = Self.normalizeWorkspaceStates(loadedSnapshot?.workspaceStates ?? [])
         let selectedPath = loadedSnapshot?.lastSelectedWorkspacePath.map(WorkspaceRecord.canonicalizedPath(for:))
         let codexOverridePath = loadedSnapshot?.codexPathOverride
         let appearancePreference = loadedSnapshot?.appearancePreference ?? .system
@@ -71,6 +72,9 @@ final class AppModel {
             }
 
             let controller = WorkspaceController(workspace: workspace)
+            if let persistedState = normalizedWorkspaceStatesByPath[workspace.canonicalPath] {
+                controller.restorePersistedState(persistedState)
+            }
             workspaceControllers.append(controller)
             workspaceRuntimes[workspace.canonicalPath] = resolvedRuntimeFactory(controller)
         }
@@ -91,6 +95,7 @@ final class AppModel {
         )
 
         appendStartupDiagnostic(resolvedBridgeDiagnosticProvider())
+        installWorkspacePersistenceHandlers()
 
         if let loadedSnapshot, loadedSnapshot != snapshot {
             persistPreferences()
@@ -135,7 +140,8 @@ final class AppModel {
             recentWorkspaces: recentWorkspaces,
             lastSelectedWorkspacePath: lastSelectedWorkspacePath,
             codexPathOverride: codexPathOverride,
-            appearancePreference: appearancePreference
+            appearancePreference: appearancePreference,
+            workspaceStates: workspaceControllers.map(\.persistedState)
         )
     }
 
@@ -152,6 +158,7 @@ final class AppModel {
         }
 
         let controller = WorkspaceController(workspace: workspace)
+        configurePersistenceHandler(for: controller)
         workspaceControllers.append(controller)
         updateWorkspaceRecord(workspace)
 
@@ -689,6 +696,18 @@ final class AppModel {
         try? preferencesStore.saveSnapshot(snapshot)
     }
 
+    private func installWorkspacePersistenceHandlers() {
+        for controller in workspaceControllers {
+            configurePersistenceHandler(for: controller)
+        }
+    }
+
+    private func configurePersistenceHandler(for controller: WorkspaceController) {
+        controller.persistableStateDidChange = { [weak self] in
+            self?.persistPreferences()
+        }
+    }
+
     private func appendStartupDiagnostic(_ diagnostic: StartupDiagnostic) {
         guard diagnostic.severity != .info else {
             return
@@ -867,6 +886,10 @@ final class AppModel {
     }
 
     private func preferredThreadID(for controller: WorkspaceController) -> String? {
+        Self.preferredThreadID(for: controller)
+    }
+
+    private static func preferredThreadID(for controller: WorkspaceController) -> String? {
         if let lastActiveThreadID = controller.lastActiveThreadID,
            controller.visibleThreadSummaries.contains(where: { $0.id == lastActiveThreadID }) {
             return lastActiveThreadID
@@ -897,7 +920,7 @@ final class AppModel {
 
         return WorkspaceThreadRoute(
             workspacePath: workspacePath,
-            threadID: controller.visibleThreadSummaries.first?.id
+            threadID: preferredThreadID(for: controller)
         )
     }
 
@@ -934,6 +957,44 @@ final class AppModel {
         }
 
         return uniqueWorkspaces
+    }
+
+    private static func normalizeWorkspaceStates(
+        _ workspaceStates: [PersistedWorkspaceState]
+    ) -> [String: PersistedWorkspaceState] {
+        var normalizedStates: [String: PersistedWorkspaceState] = [:]
+
+        for workspaceState in workspaceStates {
+            let canonicalPath = WorkspaceRecord.canonicalizedPath(for: workspaceState.workspacePath)
+            let normalizedThreadSummaries = workspaceState.threadSummaries.reduce(into: [String: PersistedThreadSummary]()) {
+                partialResult,
+                summary in
+                partialResult[summary.id] = summary
+            }
+            let normalizedPinnedThreadIDs = Array(Set(workspaceState.pinnedThreadIDs)).sorted()
+            let normalizedLastActiveThreadID = workspaceState.lastActiveThreadID?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolvedLastActiveThreadID = normalizedLastActiveThreadID?.isEmpty == false
+                ? normalizedLastActiveThreadID
+                : nil
+
+            normalizedStates[canonicalPath] = PersistedWorkspaceState(
+                workspacePath: canonicalPath,
+                isExpanded: workspaceState.isExpanded,
+                isShowingAllVisibleThreads: workspaceState.isShowingAllVisibleThreads,
+                lastActiveThreadID: resolvedLastActiveThreadID,
+                pinnedThreadIDs: normalizedPinnedThreadIDs,
+                threadSummaries: normalizedThreadSummaries.values.sorted { lhs, rhs in
+                    if lhs.updatedAt == rhs.updatedAt {
+                        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                    }
+
+                    return lhs.updatedAt > rhs.updatedAt
+                }
+            )
+        }
+
+        return normalizedStates
     }
 
     private static func upsertingRecentWorkspace(

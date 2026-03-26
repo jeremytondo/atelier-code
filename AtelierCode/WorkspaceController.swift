@@ -9,19 +9,40 @@ final class WorkspaceController {
     private(set) var workspace: WorkspaceRecord
     private(set) var bridgeLifecycleState: BridgeLifecycleState
     private(set) var connectionStatus: ConnectionStatus
-    private(set) var threadSummaries: [ThreadSummary]
+    private(set) var threadSummaries: [ThreadSummary] {
+        didSet {
+            persistableStateDidChange?()
+        }
+    }
     private(set) var authState: AuthState
     private(set) var pendingLogin: PendingLogin?
     private(set) var rateLimitState: RateLimitState?
     private(set) var threadSessionsByID: [String: ThreadSession]
-    private(set) var lastActiveThreadID: String?
+    private(set) var lastActiveThreadID: String? {
+        didSet {
+            persistableStateDidChange?()
+        }
+    }
     private(set) var isShowingArchivedThreads: Bool
-    private(set) var isExpanded: Bool
-    private(set) var isShowingAllVisibleThreads: Bool
+    private(set) var isExpanded: Bool {
+        didSet {
+            persistableStateDidChange?()
+        }
+    }
+    private(set) var isShowingAllVisibleThreads: Bool {
+        didSet {
+            persistableStateDidChange?()
+        }
+    }
 
     @ObservationIgnored private var awaitingTurnStartThreadIDs: Set<String>
     @ObservationIgnored private var currentTurnIDsByThreadID: [String: String]
-    @ObservationIgnored private var pinnedSidebarThreadSummariesByID: [String: ThreadSummary]
+    @ObservationIgnored private var pinnedSidebarThreadSummariesByID: [String: ThreadSummary] {
+        didSet {
+            persistableStateDidChange?()
+        }
+    }
+    @ObservationIgnored var persistableStateDidChange: (() -> Void)?
 
     init(workspace: WorkspaceRecord) {
         self.workspace = workspace
@@ -83,6 +104,17 @@ final class WorkspaceController {
         threadSummaries.contains(where: \.isRunning)
     }
 
+    var persistedState: PersistedWorkspaceState {
+        PersistedWorkspaceState(
+            workspacePath: workspace.canonicalPath,
+            isExpanded: isExpanded,
+            isShowingAllVisibleThreads: isShowingAllVisibleThreads,
+            lastActiveThreadID: lastActiveThreadID,
+            pinnedThreadIDs: pinnedSidebarThreadSummariesByID.keys.sorted(),
+            threadSummaries: threadSummaries.map(\.persistedSummary)
+        )
+    }
+
     func activate(workspace: WorkspaceRecord) {
         self.workspace = workspace
         resetWorkspace()
@@ -139,6 +171,26 @@ final class WorkspaceController {
 
     func setShowingAllVisibleThreads(_ isShowingAllVisibleThreads: Bool) {
         self.isShowingAllVisibleThreads = isShowingAllVisibleThreads
+    }
+
+    func restorePersistedState(_ persistedState: PersistedWorkspaceState) {
+        let summariesByID = persistedState.threadSummaries.reduce(into: [String: PersistedThreadSummary]()) { partialResult, summary in
+            partialResult[summary.id] = summary
+        }
+        let restoredThreadSummaries = Self.sortedThreadSummaries(
+            summariesByID.values.map(ThreadSummary.init(persistedSummary:))
+        )
+        let restoredThreadSummariesByID = Dictionary(uniqueKeysWithValues: restoredThreadSummaries.map { ($0.id, $0) })
+
+        threadSummaries = restoredThreadSummaries
+        isExpanded = persistedState.isExpanded
+        isShowingAllVisibleThreads = persistedState.isShowingAllVisibleThreads
+        lastActiveThreadID = persistedState.lastActiveThreadID.flatMap { restoredThreadSummariesByID[$0] != nil ? $0 : nil }
+        pinnedSidebarThreadSummariesByID = Dictionary(
+            uniqueKeysWithValues: persistedState.pinnedThreadIDs.compactMap { threadID in
+                restoredThreadSummariesByID[threadID].map { (threadID, $0) }
+            }
+        )
     }
 
     func replaceThreadList(_ threadSummaries: [ThreadSummary], archived: Bool = false) {

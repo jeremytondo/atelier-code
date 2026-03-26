@@ -10,17 +10,20 @@ struct AppPreferencesSnapshot: Codable, Equatable, Sendable {
     var lastSelectedWorkspacePath: String?
     var codexPathOverride: String?
     var appearancePreference: AppAppearancePreference
+    var workspaceStates: [PersistedWorkspaceState]
 
     init(
         recentWorkspaces: [WorkspaceRecord],
         lastSelectedWorkspacePath: String?,
         codexPathOverride: String?,
-        appearancePreference: AppAppearancePreference = .system
+        appearancePreference: AppAppearancePreference = .system,
+        workspaceStates: [PersistedWorkspaceState] = []
     ) {
         self.recentWorkspaces = recentWorkspaces
         self.lastSelectedWorkspacePath = lastSelectedWorkspacePath
         self.codexPathOverride = codexPathOverride
         self.appearancePreference = appearancePreference
+        self.workspaceStates = workspaceStates
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -28,6 +31,7 @@ struct AppPreferencesSnapshot: Codable, Equatable, Sendable {
         case lastSelectedWorkspacePath
         case codexPathOverride
         case appearancePreference
+        case workspaceStates
     }
 
     init(from decoder: any Decoder) throws {
@@ -36,6 +40,7 @@ struct AppPreferencesSnapshot: Codable, Equatable, Sendable {
         lastSelectedWorkspacePath = try container.decodeIfPresent(String.self, forKey: .lastSelectedWorkspacePath)
         codexPathOverride = try container.decodeIfPresent(String.self, forKey: .codexPathOverride)
         appearancePreference = try container.decodeIfPresent(AppAppearancePreference.self, forKey: .appearancePreference) ?? .system
+        workspaceStates = try container.decodeIfPresent([PersistedWorkspaceState].self, forKey: .workspaceStates) ?? []
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -44,6 +49,7 @@ struct AppPreferencesSnapshot: Codable, Equatable, Sendable {
         try container.encodeIfPresent(lastSelectedWorkspacePath, forKey: .lastSelectedWorkspacePath)
         try container.encodeIfPresent(codexPathOverride, forKey: .codexPathOverride)
         try container.encode(appearancePreference, forKey: .appearancePreference)
+        try container.encode(workspaceStates, forKey: .workspaceStates)
     }
 }
 

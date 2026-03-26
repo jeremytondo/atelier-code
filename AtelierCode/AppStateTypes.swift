@@ -208,6 +208,66 @@ struct ThreadSummary: Equatable, Sendable, Identifiable {
     }
 }
 
+struct PersistedThreadSummary: Codable, Equatable, Sendable, Identifiable {
+    let id: String
+    var title: String
+    var previewText: String
+    var updatedAt: Date
+    var isVisibleInSidebar: Bool
+    var isArchived: Bool
+}
+
+struct PersistedWorkspaceState: Codable, Equatable, Sendable, Identifiable {
+    let workspacePath: String
+    var isExpanded: Bool
+    var isShowingAllVisibleThreads: Bool
+    var lastActiveThreadID: String?
+    var pinnedThreadIDs: [String]
+    var threadSummaries: [PersistedThreadSummary]
+
+    var id: String { workspacePath }
+
+    init(
+        workspacePath: String,
+        isExpanded: Bool = true,
+        isShowingAllVisibleThreads: Bool = false,
+        lastActiveThreadID: String? = nil,
+        pinnedThreadIDs: [String] = [],
+        threadSummaries: [PersistedThreadSummary] = []
+    ) {
+        self.workspacePath = workspacePath
+        self.isExpanded = isExpanded
+        self.isShowingAllVisibleThreads = isShowingAllVisibleThreads
+        self.lastActiveThreadID = lastActiveThreadID
+        self.pinnedThreadIDs = pinnedThreadIDs
+        self.threadSummaries = threadSummaries
+    }
+}
+
+extension ThreadSummary {
+    init(persistedSummary: PersistedThreadSummary) {
+        self.init(
+            id: persistedSummary.id,
+            title: persistedSummary.title,
+            previewText: persistedSummary.previewText,
+            updatedAt: persistedSummary.updatedAt,
+            isVisibleInSidebar: persistedSummary.isVisibleInSidebar,
+            isArchived: persistedSummary.isArchived
+        )
+    }
+
+    var persistedSummary: PersistedThreadSummary {
+        PersistedThreadSummary(
+            id: id,
+            title: title,
+            previewText: previewText,
+            updatedAt: updatedAt,
+            isVisibleInSidebar: isVisibleInSidebar,
+            isArchived: isArchived
+        )
+    }
+}
+
 struct WorkspaceThreadRoute: Equatable, Sendable {
     var workspacePath: String
     var threadID: String?
