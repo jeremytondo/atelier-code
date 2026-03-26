@@ -55,6 +55,8 @@ struct AppModelTests {
         #expect(appModel.lastSelectedWorkspacePath == workspaceURL.path)
         #expect(appModel.activeWorkspaceController?.workspace.canonicalPath == workspaceURL.path)
         #expect(appModel.activeWorkspaceController?.connectionStatus == .ready)
+        #expect(appModel.selectedRoute?.workspacePath == workspaceURL.path)
+        #expect(appModel.selectedRoute?.threadID == nil)
         #expect(appModel.startupDiagnostics.isEmpty)
         #expect(runtimeCoordinator.startCount == 1)
     }
@@ -295,7 +297,9 @@ struct AppModelTests {
 
         let restoredController = try #require(restoredAppModel.activeWorkspaceController)
 
-        #expect(restoredAppModel.selectedRoute?.threadID == threadID)
+        #expect(restoredAppModel.selectedRoute?.workspacePath == workspaceURL.path)
+        #expect(restoredAppModel.selectedRoute?.threadID == nil)
+        #expect(restoredController.lastActiveThreadID == threadID)
         #expect(restoredController.visibleThreadSummaries.map(\.id) == [threadID])
 
         restoredRuntimeCoordinator.queuedThreadListResponses = [[]]
@@ -355,7 +359,8 @@ struct AppModelTests {
         #expect(controller.isExpanded == false)
         #expect(controller.isShowingAllVisibleThreads)
         #expect(controller.lastActiveThreadID == "thread-2")
-        #expect(appModel.selectedRoute?.threadID == "thread-2")
+        #expect(appModel.selectedRoute?.workspacePath == workspaceURL.path)
+        #expect(appModel.selectedRoute?.threadID == nil)
     }
 
     @Test func sendAndCancelGatingTracksWorkspaceState() async throws {

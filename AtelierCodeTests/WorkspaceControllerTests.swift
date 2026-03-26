@@ -126,7 +126,7 @@ struct WorkspaceControllerTests {
         #expect(controller.displayedThreadSummaries.map(\.id) == Array(threadSummaries.prefix(WorkspaceController.collapsedVisibleThreadLimit)).map(\.id))
     }
 
-    @Test func promotedThreadsSurviveListRefresh() async throws {
+    @Test func locallyPromotedThreadsSurviveListRefreshWithoutBecomingStale() async throws {
         let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "workspace-draft-thread"), lastOpenedAt: .now)
         let controller = WorkspaceController(workspace: workspace)
 
@@ -140,6 +140,8 @@ struct WorkspaceControllerTests {
 
         #expect(controller.threadSummary(id: "draft-thread")?.isVisibleInSidebar == true)
         #expect(controller.visibleThreadSummaries.map(\.id) == ["draft-thread"])
+        #expect(controller.threadSummary(id: "draft-thread")?.isLocalOnly == true)
+        #expect(controller.threadSummary(id: "draft-thread")?.isStale == false)
     }
 
     @Test func refreshKeepsExistingHumanTitleWhenIncomingTitleFallsBackToThreadID() async throws {
@@ -155,8 +157,8 @@ struct WorkspaceControllerTests {
         #expect(controller.visibleThreadSummaries.map(\.id) == ["thread-123"])
     }
 
-    @Test func pinnedSidebarThreadSurvivesRefreshEvenIfSessionIsCleared() async throws {
-        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "workspace-pinned-thread"), lastOpenedAt: .now)
+    @Test func locallyCreatedSidebarThreadSurvivesRefreshEvenIfSessionIsCleared() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "workspace-local-thread"), lastOpenedAt: .now)
         let controller = WorkspaceController(workspace: workspace)
 
         controller.openThread(id: "thread-keep", title: "Keep Me", isVisibleInSidebar: true)
@@ -166,9 +168,11 @@ struct WorkspaceControllerTests {
 
         #expect(controller.threadSummary(id: "thread-keep")?.title == "Keep Me")
         #expect(controller.visibleThreadSummaries.map(\.id) == ["thread-keep"])
+        #expect(controller.threadSummary(id: "thread-keep")?.isLocalOnly == true)
+        #expect(controller.threadSummary(id: "thread-keep")?.isStale == false)
     }
 
-    @Test func selectedThreadSurvivesRefreshWhenBridgeOmitsIt() async throws {
+    @Test func selectedThreadSurvivesRefreshWhenBridgeOmitsItAndBecomesStale() async throws {
         let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "workspace-selected-thread"), lastOpenedAt: .now)
         let controller = WorkspaceController(workspace: workspace)
 
@@ -181,6 +185,7 @@ struct WorkspaceControllerTests {
 
         #expect(controller.threadSummary(id: "thread-active")?.title == "Active")
         #expect(controller.visibleThreadSummaries.map(\.id) == ["thread-active"])
+        #expect(controller.threadSummary(id: "thread-active")?.isStale == true)
     }
 
     @Test func staleRefreshKeepsNewestLocalActivityVisible() async throws {
@@ -196,7 +201,7 @@ struct WorkspaceControllerTests {
                 previewText: "Preview \(index)",
                 updatedAt: baseline.addingTimeInterval(TimeInterval(-index))
             )
-        })
+        }, listedAt: baseline)
         controller.markThreadActivity(id: "thread-5", at: promotedDate, previewText: "Fresh local work")
 
         controller.replaceThreadList((0..<6).map { index in
@@ -206,7 +211,7 @@ struct WorkspaceControllerTests {
                 previewText: index == 5 ? "Stale bridge preview" : "Preview \(index)",
                 updatedAt: baseline.addingTimeInterval(TimeInterval(-index))
             )
-        })
+        }, listedAt: baseline.addingTimeInterval(180))
 
         #expect(controller.displayedThreadSummaries.first?.id == "thread-5")
         #expect(controller.threadSummary(id: "thread-5")?.previewText == "Fresh local work")

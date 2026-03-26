@@ -675,6 +675,42 @@ struct WorkspaceBridgeRuntimeTests {
         #expect(Set(controller.threadSummaries.map(\.id)) == Set(["thread-10", "thread-11"]))
     }
 
+    @Test func bridgeFailureDuringListRefreshPreservesCachedRowsAndMarksSyncFailed() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-thread-list-failure"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4745)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Bootstrap")
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready && controller.threadSummaries.count == 1 }
+
+        try await runtime.listThreads(archived: false)
+        try await waitUntil { controller.threadListSyncState == .syncing }
+
+        processHandle.exit(code: 9)
+
+        try await waitUntil {
+            controller.connectionStatus == .error(message: "The embedded bridge exited unexpectedly with status 9.") &&
+                controller.threadListSyncState == .failed
+        }
+
+        #expect(controller.threadSummaries.map(\.id) == ["thread-1"])
+        #expect(controller.threadSummary(id: "thread-1")?.title == "Bootstrap")
+        #expect(controller.threadListSyncState == .failed)
+    }
+
     @Test func renameThreadSendsCommandAndUpdatesLoadedSession() async throws {
         let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-thread-rename"), lastOpenedAt: .now)
         let controller = WorkspaceController(workspace: workspace)

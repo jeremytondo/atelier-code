@@ -14,6 +14,12 @@ final class WorkspaceController {
             persistableStateDidChange?()
         }
     }
+    private(set) var threadListSyncState: ThreadListSyncState
+    private(set) var lastSuccessfulThreadListAt: Date? {
+        didSet {
+            persistableStateDidChange?()
+        }
+    }
     private(set) var authState: AuthState
     private(set) var pendingLogin: PendingLogin?
     private(set) var rateLimitState: RateLimitState?
@@ -35,13 +41,9 @@ final class WorkspaceController {
         }
     }
 
+    @ObservationIgnored private let threadListRepository: WorkspaceThreadListRepository
     @ObservationIgnored private var awaitingTurnStartThreadIDs: Set<String>
     @ObservationIgnored private var currentTurnIDsByThreadID: [String: String]
-    @ObservationIgnored private var pinnedSidebarThreadSummariesByID: [String: ThreadSummary] {
-        didSet {
-            persistableStateDidChange?()
-        }
-    }
     @ObservationIgnored var persistableStateDidChange: (() -> Void)?
 
     init(workspace: WorkspaceRecord) {
@@ -49,6 +51,8 @@ final class WorkspaceController {
         self.bridgeLifecycleState = .idle
         self.connectionStatus = .disconnected
         self.threadSummaries = []
+        self.threadListSyncState = .idle
+        self.lastSuccessfulThreadListAt = nil
         self.authState = .unknown
         self.pendingLogin = nil
         self.rateLimitState = nil
@@ -57,9 +61,9 @@ final class WorkspaceController {
         self.isShowingArchivedThreads = false
         self.isExpanded = true
         self.isShowingAllVisibleThreads = false
+        self.threadListRepository = WorkspaceThreadListRepository()
         self.awaitingTurnStartThreadIDs = []
         self.currentTurnIDsByThreadID = [:]
-        self.pinnedSidebarThreadSummariesByID = [:]
     }
 
     var activeThreadSession: ThreadSession? {
@@ -80,7 +84,7 @@ final class WorkspaceController {
 
     var visibleThreadSummaries: [ThreadSummary] {
         threadSummaries.filter { summary in
-            summary.isVisibleInSidebar && (isShowingArchivedThreads || summary.isArchived == false)
+            summary.isVisibleInSidebar && summary.isArchived == isShowingArchivedThreads
         }
     }
 
@@ -107,11 +111,12 @@ final class WorkspaceController {
     var persistedState: PersistedWorkspaceState {
         PersistedWorkspaceState(
             workspacePath: workspace.canonicalPath,
-            isExpanded: isExpanded,
-            isShowingAllVisibleThreads: isShowingAllVisibleThreads,
-            lastActiveThreadID: lastActiveThreadID,
-            pinnedThreadIDs: pinnedSidebarThreadSummariesByID.keys.sorted(),
-            threadSummaries: threadSummaries.map(\.persistedSummary)
+            uiState: PersistedWorkspaceUIState(
+                isExpanded: isExpanded,
+                isShowingAllVisibleThreads: isShowingAllVisibleThreads,
+                lastActiveThreadID: lastActiveThreadID
+            ),
+            cachedThreadList: threadListRepository.persistedState()
         )
     }
 
@@ -123,7 +128,7 @@ final class WorkspaceController {
     func resetWorkspace() {
         bridgeLifecycleState = .idle
         connectionStatus = .disconnected
-        threadSummaries.removeAll()
+        threadListRepository.reset()
         authState = .unknown
         pendingLogin = nil
         rateLimitState = nil
@@ -134,7 +139,7 @@ final class WorkspaceController {
         isShowingAllVisibleThreads = false
         awaitingTurnStartThreadIDs.removeAll()
         currentTurnIDsByThreadID.removeAll()
-        pinnedSidebarThreadSummariesByID.removeAll()
+        refreshThreadListProjection()
     }
 
     func setBridgeLifecycleState(_ state: BridgeLifecycleState) {
@@ -163,6 +168,7 @@ final class WorkspaceController {
 
     func setShowingArchivedThreads(_ isShowingArchivedThreads: Bool) {
         self.isShowingArchivedThreads = isShowingArchivedThreads
+        refreshThreadListProjection()
     }
 
     func setExpanded(_ isExpanded: Bool) {
@@ -174,69 +180,53 @@ final class WorkspaceController {
     }
 
     func restorePersistedState(_ persistedState: PersistedWorkspaceState) {
-        let summariesByID = persistedState.threadSummaries.reduce(into: [String: PersistedThreadSummary]()) { partialResult, summary in
-            partialResult[summary.id] = summary
-        }
-        let restoredThreadSummaries = Self.sortedThreadSummaries(
-            summariesByID.values.map(ThreadSummary.init(persistedSummary:))
-        )
-        let restoredThreadSummariesByID = Dictionary(uniqueKeysWithValues: restoredThreadSummaries.map { ($0.id, $0) })
+        threadListRepository.restorePersistedState(persistedState.cachedThreadList)
+        refreshThreadListProjection()
 
-        threadSummaries = restoredThreadSummaries
-        isExpanded = persistedState.isExpanded
-        isShowingAllVisibleThreads = persistedState.isShowingAllVisibleThreads
-        lastActiveThreadID = persistedState.lastActiveThreadID.flatMap { restoredThreadSummariesByID[$0] != nil ? $0 : nil }
-        pinnedSidebarThreadSummariesByID = Dictionary(
-            uniqueKeysWithValues: persistedState.pinnedThreadIDs.compactMap { threadID in
-                restoredThreadSummariesByID[threadID].map { (threadID, $0) }
-            }
-        )
+        isExpanded = persistedState.uiState.isExpanded
+        isShowingAllVisibleThreads = persistedState.uiState.isShowingAllVisibleThreads
+        lastActiveThreadID = persistedState.uiState.lastActiveThreadID.flatMap { threadID in
+            threadListRepository.threadSummary(id: threadID) != nil ? threadID : nil
+        }
     }
 
-    func replaceThreadList(_ threadSummaries: [ThreadSummary], archived: Bool = false) {
-        let existingByID = Dictionary(uniqueKeysWithValues: self.threadSummaries.map { ($0.id, $0) })
-        let incomingIDs = Set(threadSummaries.map(\.id))
-        var merged = self.threadSummaries.filter { $0.isArchived != archived }
-        let mergedIDs = Set(merged.map(\.id))
-        merged.append(
-            contentsOf: pinnedSidebarThreadSummariesByID.values.filter { summary in
-                summary.isArchived == archived &&
-                incomingIDs.contains(summary.id) == false &&
-                mergedIDs.contains(summary.id) == false
-            }
+    func beginThreadListSync(archived: Bool) {
+        threadListRepository.setSyncing(archived: archived)
+        refreshThreadListProjection()
+    }
+
+    func markThreadListSyncFailed(archived: Bool) {
+        threadListRepository.setSyncFailed(archived: archived)
+        refreshThreadListProjection()
+    }
+
+    func replaceThreadList(
+        _ threadSummaries: [ThreadSummary],
+        archived: Bool = false,
+        listedAt: Date = .now
+    ) {
+        threadListRepository.replaceThreadList(
+            threadSummaries,
+            archived: archived,
+            listedAt: listedAt,
+            selectedThreadID: lastActiveThreadID,
+            loadedThreadIDs: Set(threadSessionsByID.keys)
         )
-
-        for summary in threadSummaries {
-            let existing = existingByID[summary.id]
-            merged.append(Self.mergeRefreshedThreadSummary(summary, existing: existing, archived: archived))
-        }
-
-        self.threadSummaries = Self.sortedThreadSummaries(merged)
+        refreshThreadListProjection()
     }
 
     func upsertThreadSummary(_ threadSummary: ThreadSummary) {
-        if let index = threadSummaries.firstIndex(where: { $0.id == threadSummary.id }) {
-            threadSummaries[index] = Self.mergeThreadSummary(threadSummary, existing: threadSummaries[index])
-        } else {
-            threadSummaries.append(threadSummary)
-        }
-
-        syncPinnedSidebarThreadSummary(id: threadSummary.id)
-        threadSummaries = Self.sortedThreadSummaries(threadSummaries)
+        threadListRepository.upsertThreadSummary(threadSummary, clearsStale: true)
+        refreshThreadListProjection()
     }
 
-    func updateThreadSummary(id: String, mutate: (inout ThreadSummary) -> Void) {
-        guard let index = threadSummaries.firstIndex(where: { $0.id == id }) else {
-            return
-        }
-
-        mutate(&threadSummaries[index])
-        syncPinnedSidebarThreadSummary(id: id)
-        threadSummaries = Self.sortedThreadSummaries(threadSummaries)
+    func updateThreadSummary(id: String, clearsStale: Bool = false, mutate: (inout ThreadSummary) -> Void) {
+        threadListRepository.updateThreadSummary(id: id, clearsStale: clearsStale, mutate: mutate)
+        refreshThreadListProjection()
     }
 
     func threadSummary(id: String) -> ThreadSummary? {
-        threadSummaries.first(where: { $0.id == id })
+        threadListRepository.threadSummary(id: id)
     }
 
     func markThreadSelected(_ id: String?) {
@@ -246,10 +236,10 @@ final class WorkspaceController {
             return
         }
 
-        updateThreadSummary(id: id) { summary in
+        threadListRepository.updateThreadSummary(id: id) { summary in
             summary.hasUnreadActivity = false
         }
-        pinThreadSummaryInSidebar(threadID: id)
+        refreshThreadListProjection()
     }
 
     func threadSession(id: String) -> ThreadSession? {
@@ -394,36 +384,32 @@ final class WorkspaceController {
     }
 
     func setThreadArchived(_ isArchived: Bool, for threadID: String) {
-        updateThreadSummary(id: threadID) { summary in
+        updateThreadSummary(id: threadID, clearsStale: true) { summary in
             summary.isArchived = isArchived
             summary.updatedAt = .now
         }
     }
 
     func setThreadSidebarVisibility(_ isVisibleInSidebar: Bool, for threadID: String) {
-        if threadSummary(id: threadID) == nil,
-           isVisibleInSidebar {
-            let fallbackTitle = threadSession(id: threadID)?.title ?? "New Conversation"
-            upsertThreadSummary(
-                ThreadSummary(
-                    id: threadID,
-                    title: fallbackTitle,
-                    previewText: "",
-                    updatedAt: .now,
-                    isVisibleInSidebar: true
-                )
+        let fallbackTitle = threadSession(id: threadID)?.title ?? "New Conversation"
+        let defaultSummary = isVisibleInSidebar
+            ? ThreadSummary(
+                id: threadID,
+                title: fallbackTitle,
+                previewText: "",
+                updatedAt: .now,
+                isVisibleInSidebar: true
             )
-        }
+            : nil
 
-        updateThreadSummary(id: threadID) { summary in
+        threadListRepository.updateThreadSummary(
+            id: threadID,
+            defaultSummary: defaultSummary,
+            clearsStale: isVisibleInSidebar
+        ) { summary in
             summary.isVisibleInSidebar = isVisibleInSidebar
         }
-
-        if isVisibleInSidebar {
-            pinThreadSummaryInSidebar(threadID: threadID)
-        } else {
-            pinnedSidebarThreadSummariesByID.removeValue(forKey: threadID)
-        }
+        refreshThreadListProjection()
     }
 
     func markThreadActivity(
@@ -434,7 +420,7 @@ final class WorkspaceController {
         hasUnreadActivity: Bool? = nil,
         lastErrorMessage: String? = nil
     ) {
-        updateThreadSummary(id: id) { summary in
+        updateThreadSummary(id: id, clearsStale: true) { summary in
             summary.updatedAt = date
             if let previewText, previewText.isEmpty == false {
                 summary.previewText = previewText
@@ -449,127 +435,9 @@ final class WorkspaceController {
         }
     }
 
-    private static func sortedThreadSummaries(_ threadSummaries: [ThreadSummary]) -> [ThreadSummary] {
-        threadSummaries.sorted { lhs, rhs in
-            if lhs.updatedAt == rhs.updatedAt {
-                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-            }
-
-            return lhs.updatedAt > rhs.updatedAt
-        }
-    }
-
-    private static func mergeThreadSummary(_ incoming: ThreadSummary, existing: ThreadSummary) -> ThreadSummary {
-        ThreadSummary(
-            id: incoming.id,
-            title: preferredThreadTitle(incoming: incoming.title, existing: existing.title, threadID: incoming.id),
-            previewText: preferredThreadPreview(
-                incoming: incoming.previewText,
-                existing: existing.previewText,
-                preferExisting: incoming.updatedAt < existing.updatedAt
-            ),
-            updatedAt: preferredThreadUpdatedAt(incoming: incoming.updatedAt, existing: existing.updatedAt),
-            isVisibleInSidebar: incoming.isVisibleInSidebar || existing.isVisibleInSidebar,
-            isArchived: incoming.isArchived,
-            isRunning: incoming.isRunning || existing.isRunning,
-            hasUnreadActivity: incoming.hasUnreadActivity || existing.hasUnreadActivity,
-            lastErrorMessage: incoming.lastErrorMessage ?? existing.lastErrorMessage
-        )
-    }
-
-    private static func mergeRefreshedThreadSummary(
-        _ incoming: ThreadSummary,
-        existing: ThreadSummary?,
-        archived: Bool
-    ) -> ThreadSummary {
-        let shouldPreferExistingActivity = existing.map { $0.updatedAt > incoming.updatedAt } ?? false
-
-        return ThreadSummary(
-            id: incoming.id,
-            title: preferredThreadTitle(incoming: incoming.title, existing: existing?.title, threadID: incoming.id),
-            previewText: preferredThreadPreview(
-                incoming: incoming.previewText,
-                existing: existing?.previewText,
-                preferExisting: shouldPreferExistingActivity
-            ),
-            updatedAt: preferredThreadUpdatedAt(incoming: incoming.updatedAt, existing: existing?.updatedAt),
-            isVisibleInSidebar: incoming.isVisibleInSidebar || existing?.isVisibleInSidebar == true,
-            isArchived: archived,
-            isRunning: incoming.isRunning || existing?.isRunning == true,
-            hasUnreadActivity: existing?.hasUnreadActivity ?? false,
-            lastErrorMessage: incoming.lastErrorMessage ?? existing?.lastErrorMessage
-        )
-    }
-
-    private func pinThreadSummaryInSidebar(threadID: String) {
-        guard let summary = threadSummary(id: threadID) else {
-            return
-        }
-
-        pinnedSidebarThreadSummariesByID[threadID] = summary
-    }
-
-    private func syncPinnedSidebarThreadSummary(id: String) {
-        guard pinnedSidebarThreadSummariesByID[id] != nil else {
-            return
-        }
-
-        if let summary = threadSummary(id: id) {
-            pinnedSidebarThreadSummariesByID[id] = summary
-        } else {
-            pinnedSidebarThreadSummariesByID.removeValue(forKey: id)
-        }
-    }
-
-    private static func preferredThreadTitle(incoming: String, existing: String?, threadID: String) -> String {
-        guard let existing else {
-            return incoming
-        }
-
-        let normalizedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedExisting = existing.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard normalizedExisting.isEmpty == false else {
-            return incoming
-        }
-
-        if isPlaceholderThreadTitle(normalizedIncoming, threadID: threadID) &&
-            isPlaceholderThreadTitle(normalizedExisting, threadID: threadID) == false {
-            return existing
-        }
-
-        return incoming
-    }
-
-    private static func preferredThreadPreview(incoming: String, existing: String?, preferExisting: Bool) -> String {
-        guard let existing else {
-            return incoming
-        }
-
-        let normalizedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedExisting = existing.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if preferExisting, normalizedExisting.isEmpty == false {
-            return existing
-        }
-
-        if normalizedIncoming.isEmpty, normalizedExisting.isEmpty == false {
-            return existing
-        }
-
-        return incoming
-    }
-
-    private static func preferredThreadUpdatedAt(incoming: Date, existing: Date?) -> Date {
-        guard let existing else {
-            return incoming
-        }
-
-        return max(incoming, existing)
-    }
-
-    private static func isPlaceholderThreadTitle(_ title: String, threadID: String) -> Bool {
-        let normalized = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return normalized.isEmpty || normalized == threadID || normalized == "Thread" || normalized == "New Conversation"
+    private func refreshThreadListProjection() {
+        threadSummaries = threadListRepository.threadSummaries
+        threadListSyncState = threadListRepository.syncState(for: isShowingArchivedThreads)
+        lastSuccessfulThreadListAt = threadListRepository.lastSuccessfulListAt(for: isShowingArchivedThreads)
     }
 }

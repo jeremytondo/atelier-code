@@ -184,6 +184,8 @@ struct ThreadSummary: Equatable, Sendable, Identifiable {
     var isRunning: Bool
     var hasUnreadActivity: Bool
     var lastErrorMessage: String?
+    var isLocalOnly: Bool
+    var isStale: Bool
 
     init(
         id: String,
@@ -194,7 +196,9 @@ struct ThreadSummary: Equatable, Sendable, Identifiable {
         isArchived: Bool = false,
         isRunning: Bool = false,
         hasUnreadActivity: Bool = false,
-        lastErrorMessage: String? = nil
+        lastErrorMessage: String? = nil,
+        isLocalOnly: Bool = false,
+        isStale: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -205,6 +209,8 @@ struct ThreadSummary: Equatable, Sendable, Identifiable {
         self.isRunning = isRunning
         self.hasUnreadActivity = hasUnreadActivity
         self.lastErrorMessage = lastErrorMessage
+        self.isLocalOnly = isLocalOnly
+        self.isStale = isStale
     }
 }
 
@@ -215,17 +221,128 @@ struct PersistedThreadSummary: Codable, Equatable, Sendable, Identifiable {
     var updatedAt: Date
     var isVisibleInSidebar: Bool
     var isArchived: Bool
+    var isLocalOnly: Bool
+    var isStale: Bool
+
+    init(
+        id: String,
+        title: String,
+        previewText: String,
+        updatedAt: Date,
+        isVisibleInSidebar: Bool,
+        isArchived: Bool,
+        isLocalOnly: Bool = false,
+        isStale: Bool = false
+    ) {
+        self.id = id
+        self.title = title
+        self.previewText = previewText
+        self.updatedAt = updatedAt
+        self.isVisibleInSidebar = isVisibleInSidebar
+        self.isArchived = isArchived
+        self.isLocalOnly = isLocalOnly
+        self.isStale = isStale
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case previewText
+        case updatedAt
+        case isVisibleInSidebar
+        case isArchived
+        case isLocalOnly
+        case isStale
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        previewText = try container.decode(String.self, forKey: .previewText)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        isVisibleInSidebar = try container.decode(Bool.self, forKey: .isVisibleInSidebar)
+        isArchived = try container.decode(Bool.self, forKey: .isArchived)
+        isLocalOnly = try container.decodeIfPresent(Bool.self, forKey: .isLocalOnly) ?? false
+        isStale = try container.decodeIfPresent(Bool.self, forKey: .isStale) ?? false
+    }
+}
+
+struct PersistedWorkspaceUIState: Codable, Equatable, Sendable {
+    var isExpanded: Bool
+    var isShowingAllVisibleThreads: Bool
+    var lastActiveThreadID: String?
+
+    init(
+        isExpanded: Bool = true,
+        isShowingAllVisibleThreads: Bool = false,
+        lastActiveThreadID: String? = nil
+    ) {
+        self.isExpanded = isExpanded
+        self.isShowingAllVisibleThreads = isShowingAllVisibleThreads
+        self.lastActiveThreadID = lastActiveThreadID
+    }
+}
+
+struct PersistedCachedThreadListState: Codable, Equatable, Sendable {
+    var threadSummaries: [PersistedThreadSummary]
+    var lastSuccessfulActiveListAt: Date?
+    var lastSuccessfulArchivedListAt: Date?
+
+    init(
+        threadSummaries: [PersistedThreadSummary] = [],
+        lastSuccessfulActiveListAt: Date? = nil,
+        lastSuccessfulArchivedListAt: Date? = nil
+    ) {
+        self.threadSummaries = threadSummaries
+        self.lastSuccessfulActiveListAt = lastSuccessfulActiveListAt
+        self.lastSuccessfulArchivedListAt = lastSuccessfulArchivedListAt
+    }
 }
 
 struct PersistedWorkspaceState: Codable, Equatable, Sendable, Identifiable {
     let workspacePath: String
-    var isExpanded: Bool
-    var isShowingAllVisibleThreads: Bool
-    var lastActiveThreadID: String?
-    var pinnedThreadIDs: [String]
-    var threadSummaries: [PersistedThreadSummary]
+    var uiState: PersistedWorkspaceUIState
+    var cachedThreadList: PersistedCachedThreadListState
 
     var id: String { workspacePath }
+
+    var isExpanded: Bool {
+        get { uiState.isExpanded }
+        set { uiState.isExpanded = newValue }
+    }
+
+    var isShowingAllVisibleThreads: Bool {
+        get { uiState.isShowingAllVisibleThreads }
+        set { uiState.isShowingAllVisibleThreads = newValue }
+    }
+
+    var lastActiveThreadID: String? {
+        get { uiState.lastActiveThreadID }
+        set { uiState.lastActiveThreadID = newValue }
+    }
+
+    var pinnedThreadIDs: [String] {
+        cachedThreadList.threadSummaries
+            .filter(\.isLocalOnly)
+            .map(\.id)
+            .sorted()
+    }
+
+    var threadSummaries: [PersistedThreadSummary] {
+        get { cachedThreadList.threadSummaries }
+        set { cachedThreadList.threadSummaries = newValue }
+    }
+
+    init(
+        workspacePath: String,
+        uiState: PersistedWorkspaceUIState = PersistedWorkspaceUIState(),
+        cachedThreadList: PersistedCachedThreadListState = PersistedCachedThreadListState()
+    ) {
+        self.workspacePath = workspacePath
+        self.uiState = uiState
+        self.cachedThreadList = cachedThreadList
+    }
 
     init(
         workspacePath: String,
@@ -233,14 +350,83 @@ struct PersistedWorkspaceState: Codable, Equatable, Sendable, Identifiable {
         isShowingAllVisibleThreads: Bool = false,
         lastActiveThreadID: String? = nil,
         pinnedThreadIDs: [String] = [],
-        threadSummaries: [PersistedThreadSummary] = []
+        threadSummaries: [PersistedThreadSummary] = [],
+        lastSuccessfulActiveListAt: Date? = nil,
+        lastSuccessfulArchivedListAt: Date? = nil
     ) {
-        self.workspacePath = workspacePath
-        self.isExpanded = isExpanded
-        self.isShowingAllVisibleThreads = isShowingAllVisibleThreads
-        self.lastActiveThreadID = lastActiveThreadID
-        self.pinnedThreadIDs = pinnedThreadIDs
-        self.threadSummaries = threadSummaries
+        let pinnedThreadIDSet = Set(pinnedThreadIDs)
+        let cachedThreadSummaries = threadSummaries.map { summary in
+            var summary = summary
+            if pinnedThreadIDSet.contains(summary.id) {
+                summary.isLocalOnly = true
+            }
+            return summary
+        }
+
+        self.init(
+            workspacePath: workspacePath,
+            uiState: PersistedWorkspaceUIState(
+                isExpanded: isExpanded,
+                isShowingAllVisibleThreads: isShowingAllVisibleThreads,
+                lastActiveThreadID: lastActiveThreadID
+            ),
+            cachedThreadList: PersistedCachedThreadListState(
+                threadSummaries: cachedThreadSummaries,
+                lastSuccessfulActiveListAt: lastSuccessfulActiveListAt,
+                lastSuccessfulArchivedListAt: lastSuccessfulArchivedListAt
+            )
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case workspacePath
+        case uiState
+        case cachedThreadList
+        case isExpanded
+        case isShowingAllVisibleThreads
+        case lastActiveThreadID
+        case pinnedThreadIDs
+        case threadSummaries
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let workspacePath = try container.decode(String.self, forKey: .workspacePath)
+
+        if let uiState = try container.decodeIfPresent(PersistedWorkspaceUIState.self, forKey: .uiState) {
+            let cachedThreadList = try container.decodeIfPresent(
+                PersistedCachedThreadListState.self,
+                forKey: .cachedThreadList
+            ) ?? PersistedCachedThreadListState()
+            self.init(
+                workspacePath: workspacePath,
+                uiState: uiState,
+                cachedThreadList: cachedThreadList
+            )
+            return
+        }
+
+        let isExpanded = try container.decodeIfPresent(Bool.self, forKey: .isExpanded) ?? true
+        let isShowingAllVisibleThreads = try container.decodeIfPresent(Bool.self, forKey: .isShowingAllVisibleThreads) ?? false
+        let lastActiveThreadID = try container.decodeIfPresent(String.self, forKey: .lastActiveThreadID)
+        let pinnedThreadIDs = try container.decodeIfPresent([String].self, forKey: .pinnedThreadIDs) ?? []
+        let threadSummaries = try container.decodeIfPresent([PersistedThreadSummary].self, forKey: .threadSummaries) ?? []
+
+        self.init(
+            workspacePath: workspacePath,
+            isExpanded: isExpanded,
+            isShowingAllVisibleThreads: isShowingAllVisibleThreads,
+            lastActiveThreadID: lastActiveThreadID,
+            pinnedThreadIDs: pinnedThreadIDs,
+            threadSummaries: threadSummaries
+        )
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(workspacePath, forKey: .workspacePath)
+        try container.encode(uiState, forKey: .uiState)
+        try container.encode(cachedThreadList, forKey: .cachedThreadList)
     }
 }
 
@@ -252,7 +438,9 @@ extension ThreadSummary {
             previewText: persistedSummary.previewText,
             updatedAt: persistedSummary.updatedAt,
             isVisibleInSidebar: persistedSummary.isVisibleInSidebar,
-            isArchived: persistedSummary.isArchived
+            isArchived: persistedSummary.isArchived,
+            isLocalOnly: persistedSummary.isLocalOnly,
+            isStale: persistedSummary.isStale
         )
     }
 
@@ -263,7 +451,9 @@ extension ThreadSummary {
             previewText: previewText,
             updatedAt: updatedAt,
             isVisibleInSidebar: isVisibleInSidebar,
-            isArchived: isArchived
+            isArchived: isArchived,
+            isLocalOnly: isLocalOnly,
+            isStale: isStale
         )
     }
 }
