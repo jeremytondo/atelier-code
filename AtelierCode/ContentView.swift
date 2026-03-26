@@ -22,7 +22,7 @@ struct ContentView: View {
                 isShowingWorkspacePicker: $isShowingWorkspacePicker
             )
         } detail: {
-            ConversationDetailView(
+            AppDetailView(
                 appModel: appModel,
                 composerText: $composerText,
                 isShowingWorkspacePicker: $isShowingWorkspacePicker
@@ -48,67 +48,138 @@ private struct WorkspaceSidebar: View {
     @Binding var isShowingWorkspacePicker: Bool
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack(spacing: 10) {
-                    Button {
-                        isShowingWorkspacePicker = true
-                    } label: {
-                        Label("Open Workspace", systemImage: "folder.badge.plus")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .accessibilityIdentifier("open-workspace-button")
-
-                    if appModel.selectedWorkspaceController != nil {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    HStack(spacing: 10) {
                         Button {
-                            Task {
-                                _ = await appModel.createThread()
-                            }
+                            isShowingWorkspacePicker = true
                         } label: {
-                            Label("New Thread", systemImage: "square.and.pencil")
+                            Label("Open Workspace", systemImage: "folder.badge.plus")
                                 .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.bordered)
                         .controlSize(.large)
-                        .accessibilityIdentifier("sidebar-new-thread-button")
-                    }
-                }
+                        .accessibilityIdentifier("open-workspace-button")
 
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Workspaces")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-                        .tracking(0.6)
-
-                    if appModel.workspaceControllers.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("No workspaces yet.")
-                                .font(.subheadline.weight(.semibold))
-
-                            Text("Open a folder to start a workspace.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        if appModel.selectedWorkspaceController != nil {
+                            Button {
+                                Task {
+                                    _ = await appModel.createThread()
+                                }
+                            } label: {
+                                Label("New Thread", systemImage: "square.and.pencil")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.large)
+                            .accessibilityIdentifier("sidebar-new-thread-button")
                         }
-                        .padding(14)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .accessibilityIdentifier("recent-workspaces-empty-state")
-                    } else {
-                        LazyVStack(alignment: .leading, spacing: 12) {
-                            ForEach(appModel.workspaceControllers, id: \.workspace.canonicalPath) { controller in
-                                WorkspaceTreeRow(appModel: appModel, controller: controller)
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Workspaces")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .textCase(.uppercase)
+                            .tracking(0.6)
+
+                        if appModel.workspaceControllers.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("No workspaces yet.")
+                                    .font(.subheadline.weight(.semibold))
+
+                                Text("Open a folder to start a workspace.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .accessibilityIdentifier("recent-workspaces-empty-state")
+                        } else {
+                            LazyVStack(alignment: .leading, spacing: 12) {
+                                ForEach(appModel.workspaceControllers, id: \.workspace.canonicalPath) { controller in
+                                    WorkspaceTreeRow(appModel: appModel, controller: controller)
+                                }
                             }
                         }
                     }
                 }
+                .padding(16)
+            }
+
+            SidebarDestinationButton(
+                title: "Settings",
+                systemImage: "gearshape",
+                isSelected: appModel.primaryView == .settings
+            ) {
+                appModel.showSettings()
             }
             .padding(16)
+            .accessibilityIdentifier("sidebar-settings-button")
         }
-        .navigationTitle("Workspaces")
         .frame(minWidth: 340)
+    }
+}
+
+private struct AppDetailView: View {
+    let appModel: AppModel
+    @Binding var composerText: String
+    @Binding var isShowingWorkspacePicker: Bool
+
+    var body: some View {
+        Group {
+            switch appModel.primaryView {
+            case .conversations:
+                ConversationDetailView(
+                    appModel: appModel,
+                    composerText: $composerText,
+                    isShowingWorkspacePicker: $isShowingWorkspacePicker
+                )
+            case .settings:
+                SettingsDetailView(appModel: appModel)
+            }
+        }
+    }
+}
+
+private struct SidebarDestinationButton: View {
+    let title: String
+    let systemImage: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.headline)
+                    .frame(width: 20, height: 20)
+
+                Text(title)
+                    .font(.body.weight(.semibold))
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(backgroundColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(borderColor, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var backgroundColor: Color {
+        isSelected ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.04)
+    }
+
+    private var borderColor: Color {
+        isSelected ? Color.accentColor.opacity(0.22) : Color(nsColor: .separatorColor).opacity(0.14)
     }
 }
 
@@ -646,6 +717,142 @@ private struct ConversationDetailView: View {
             }
         }
         .navigationTitle(appModel.selectedThreadSummary?.title ?? appModel.selectedWorkspaceController?.workspace.displayName ?? "AtelierCode")
+    }
+}
+
+private struct SettingsDetailView: View {
+    let appModel: AppModel
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Settings")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                        .tracking(0.6)
+
+                    ForEach(SettingsSection.allCases) { section in
+                        SidebarDestinationButton(
+                            title: section.title,
+                            systemImage: section.systemImage,
+                            isSelected: appModel.selectedSettingsSection == section
+                        ) {
+                            appModel.selectSettingsSection(section)
+                        }
+                        .accessibilityIdentifier("settings-section-\(section.rawValue)")
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(24)
+            .frame(width: 260)
+            .frame(maxHeight: .infinity, alignment: .topLeading)
+            .background(Color.secondary.opacity(0.04))
+            .overlay(alignment: .trailing) {
+                Rectangle()
+                    .fill(Color(nsColor: .separatorColor).opacity(0.2))
+                    .frame(width: 1)
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 28) {
+                    Text(appModel.selectedSettingsSection.title)
+                        .font(.largeTitle.weight(.semibold))
+
+                    Text("Manage how AtelierCode looks and behaves.")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+
+                    switch appModel.selectedSettingsSection {
+                    case .general:
+                        SettingsGeneralSection(appModel: appModel)
+                    }
+                }
+                .padding(32)
+                .frame(maxWidth: 760, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .navigationTitle("Settings")
+    }
+}
+
+private struct SettingsGeneralSection: View {
+    let appModel: AppModel
+
+    var body: some View {
+        SettingsCard(
+            title: "Dark Mode",
+            description: "Choose whether AtelierCode follows the system appearance or always uses light or dark mode."
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                Picker(
+                    "Dark Mode",
+                    selection: Binding(
+                        get: { appModel.appearancePreference },
+                        set: { appModel.setAppearancePreference($0) }
+                    )
+                ) {
+                    ForEach(AppAppearancePreference.allCases) { preference in
+                        Text(preference.title)
+                            .tag(preference)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityIdentifier("settings-dark-mode-picker")
+
+                Text(appModel.appearancePreference.description)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("settings-dark-mode-description")
+            }
+        }
+    }
+}
+
+private struct SettingsCard<Content: View>: View {
+    let title: String
+    let description: String
+    let content: Content
+
+    init(
+        title: String,
+        description: String,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.description = description
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+
+                Text(description)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            content
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("settings-card-\(title)")
     }
 }
 

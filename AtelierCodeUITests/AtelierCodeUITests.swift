@@ -193,6 +193,27 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Connection Error"].exists)
     }
 
+    func testSettingsScreenShowsGeneralSectionAndReturnsToConversation() throws {
+        let app = try makeApp(scenario: "ready", workspaceName: "SettingsWorkspace")
+        app.launch()
+
+        let settingsButton = app.buttons["sidebar-settings-button"]
+        XCTAssertTrue(settingsButton.waitForExistence(timeout: 5))
+
+        settingsButton.click()
+
+        XCTAssertTrue(app.staticTexts["Dark Mode"].exists)
+        XCTAssertTrue(app.buttons["System"].exists)
+        XCTAssertTrue(app.buttons["Light"].exists)
+        XCTAssertTrue(app.buttons["Dark"].exists)
+
+        app.buttons["Dark"].click()
+        XCTAssertTrue(app.staticTexts["Always use the dark appearance."].waitForExistence(timeout: 2))
+
+        app.buttons["recent-workspace-SettingsWorkspace"].click()
+        XCTAssertTrue(app.textViews["conversation-composer"].waitForExistence(timeout: 5))
+    }
+
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {

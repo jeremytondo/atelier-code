@@ -20,6 +20,20 @@ struct AtelierCodeApp: App {
         WindowGroup {
             ContentView()
                 .environment(appModel)
+                .preferredColorScheme(appModel.appearancePreference.preferredColorScheme)
+        }
+    }
+}
+
+private extension AppAppearancePreference {
+    var preferredColorScheme: ColorScheme? {
+        switch self {
+        case .system:
+            return nil
+        case .light:
+            return .light
+        case .dark:
+            return .dark
         }
     }
 }

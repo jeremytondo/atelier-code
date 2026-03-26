@@ -127,6 +127,48 @@ struct AppModelTests {
         #expect(restoredModel.codexPathOverride == codexURL.path)
     }
 
+    @Test func roundTripsAppearancePreference() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+
+        appModel.setAppearancePreference(.dark)
+
+        let restoredModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+
+        #expect(restoredModel.appearancePreference == .dark)
+    }
+
+    @Test func selectingWorkspaceReturnsFromSettingsToConversationView() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "settings-navigation")
+
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
+
+        appModel.showSettings()
+        #expect(appModel.primaryView == .settings)
+
+        appModel.selectWorkspace(path: workspaceURL.path)
+
+        #expect(appModel.primaryView == .conversations)
+        #expect(appModel.activeWorkspaceController?.workspace.canonicalPath == workspaceURL.path)
+    }
+
     @Test func firstSendCreatesThreadBeforeStartingTurn() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
@@ -528,6 +570,41 @@ struct AppModelTests {
         }
 
         #expect(runtimeCoordinator.records(for: workspaceURL.path).count == 3)
+    }
+}
+
+struct AppPreferencesStoreTests {
+    @Test func missingAppearancePreferenceDefaultsToSystem() throws {
+        let suiteName = "AtelierCodeTests.\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: suiteName))
+        defer {
+            userDefaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let workspaceURL = try temporaryDirectory(named: "legacy-preferences")
+        let isoFormatter = ISO8601DateFormatter()
+        let snapshotData = Data(
+            """
+            {
+              "recentWorkspaces": [
+                {
+                  "canonicalPath": "\(workspaceURL.path)",
+                  "displayName": "\(workspaceURL.lastPathComponent)",
+                  "lastOpenedAt": "\(isoFormatter.string(from: .now))"
+                }
+              ],
+              "lastSelectedWorkspacePath": "\(workspaceURL.path)"
+            }
+            """.utf8
+        )
+
+        userDefaults.set(snapshotData, forKey: "ateliercode.app-preferences")
+
+        let store = UserDefaultsAppPreferencesStore(userDefaults: userDefaults)
+        let loadedSnapshot = try store.loadSnapshot()
+        let snapshot = try #require(loadedSnapshot)
+
+        #expect(snapshot.appearancePreference == .system)
     }
 }
 
