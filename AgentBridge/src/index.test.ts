@@ -7,6 +7,7 @@ import type {
   ThreadArchivePayload,
   ThreadForkPayload,
   ThreadListPayload,
+  ThreadRenamePayload,
   ThreadReadPayload,
   ThreadRollbackPayload,
   ThreadResumePayload,
@@ -21,6 +22,7 @@ import type {
   CodexLoginResult,
   CodexThreadForkResult,
   CodexThreadListResult,
+  CodexThreadRenameResult,
   CodexThreadReadResult,
   CodexThreadResumeResult,
   CodexThreadRollbackResult,
@@ -171,6 +173,30 @@ describe("executeBridgeCommand", () => {
         type: "thread.started",
         requestID: "req-unarchive",
         threadID: "thread-1",
+      }),
+    ]);
+
+    const renameEvents = await executeBridgeCommand(client, {
+      id: "req-rename",
+      type: "thread.rename",
+      timestamp: new Date().toISOString(),
+      provider: "codex",
+      threadID: "thread-1",
+      payload: {
+        title: "Renamed Thread",
+      },
+    });
+
+    expect(renameEvents).toEqual([
+      expect.objectContaining({
+        type: "thread.started",
+        requestID: "req-rename",
+        threadID: "thread-1",
+        payload: expect.objectContaining({
+          thread: expect.objectContaining({
+            title: "Renamed Thread",
+          }),
+        }),
       }),
     ]);
   });
@@ -330,6 +356,23 @@ class FakeCodexClient implements CodexClientAdapter {
     _threadID: string,
     _payload: ThreadArchivePayload,
   ): Promise<void> {}
+
+  async renameThread(
+    _requestID: string,
+    threadID: string,
+    payload: ThreadRenamePayload,
+  ): Promise<CodexThreadRenameResult> {
+    return {
+      thread: {
+        id: threadID,
+        preview: "Renamed preview",
+        updatedAt: 1_700_000_005,
+        name: payload.title,
+        status: { type: "idle" },
+        turns: [],
+      },
+    };
+  }
 
   async unarchiveThread(
     _requestID: string,

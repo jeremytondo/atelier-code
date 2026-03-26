@@ -49,6 +49,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         case threadResume
         case threadRead
         case threadFork
+        case threadRename(threadID: String)
         case threadArchive(threadID: String)
         case threadUnarchive
         case threadRollback
@@ -59,6 +60,11 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         case accountRead
         case accountLogin
         case accountLogout
+    }
+
+    private struct PendingThreadListRequest {
+        let archived: Bool
+        var summariesByID: [String: ThreadSummary]
     }
 
     private static let encoder = JSONEncoder()
@@ -84,6 +90,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     private var pendingThreadSessions: [String: CheckedContinuation<ThreadSession, Error>] = [:]
     private var pendingVoidResponses: [String: CheckedContinuation<Void, Error>] = [:]
     private var pendingApprovalResolutions: [String: CheckedContinuation<Void, Error>] = [:]
+    private var pendingThreadListsByRequestID: [String: PendingThreadListRequest] = [:]
     private var abandonedThreadRequestIDs: Set<String> = []
     private var requestCounter = 0
     private var runningActivityStartedAt: [String: Date] = [:]
@@ -193,6 +200,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         self.pendingVoidResponses.removeAll()
         let pendingApprovalResolutions = self.pendingApprovalResolutions
         self.pendingApprovalResolutions.removeAll()
+        pendingThreadListsByRequestID.removeAll()
         abandonedThreadRequestIDs.removeAll()
         for summary in controller.threadSummaries {
             controller.setCurrentTurnID(nil, for: summary.id)
@@ -217,17 +225,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     }
 
     func listThreads(archived: Bool) async throws {
-        let requestID = nextRequestID(prefix: archived ? "thread-list-archived" : "thread-list")
-        pendingCommands[requestID] = .threadList(archived: archived)
-        try await sendCommand(
-            id: requestID,
-            type: .threadList,
-            payload: BridgeThreadListPayload(
-                workspacePath: controller.workspace.canonicalPath,
-                cursor: nil,
-                limit: nil,
-                archived: archived ? .only : .exclude
-            )
+        try await sendThreadListRequest(
+            archived: archived,
+            cursor: nil,
+            accumulatedSummariesByID: [:]
         )
     }
 
@@ -355,6 +356,24 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 type: .threadFork,
                 threadID: id,
                 payload: BridgeThreadForkPayload(workspacePath: self.controller.workspace.canonicalPath)
+            )
+        }
+    }
+
+    func renameThread(id: String, title: String) async throws {
+        let requestID = nextRequestID(prefix: "thread-rename")
+        pendingCommands[requestID] = .threadRename(threadID: id)
+
+        try await awaitVoidResponse(requestID: requestID) { [weak self] in
+            guard let self else {
+                throw CancellationError()
+            }
+
+            try await self.sendCommand(
+                id: requestID,
+                type: .threadRename,
+                threadID: id,
+                payload: BridgeThreadRenamePayload(title: title)
             )
         }
     }
@@ -549,7 +568,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 case .welcome:
                     continue
                 case .event(let event):
-                    handleEvent(event)
+                    await handleEvent(event)
                 }
             }
         } catch is CancellationError {
@@ -563,7 +582,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         }
     }
 
-    private func handleEvent(_ event: BridgeEventEnvelope) {
+    private func handleEvent(_ event: BridgeEventEnvelope) async {
         adoptTurnContextIfNeeded(from: event)
 
         switch event.payload {
@@ -817,16 +836,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         case .turnCompleted(let payload):
             handleTurnCompleted(payload, event: event)
         case .threadListResult(let payload):
-            let archived: Bool
-            if let requestID = event.requestID,
-               let pendingCommand = pendingCommands.removeValue(forKey: requestID),
-               case .threadList(let requestArchived) = pendingCommand {
-                archived = requestArchived
-            } else {
-                archived = false
-            }
-
-            controller.replaceThreadList(payload.threads.map { $0.toThreadSummary() }, archived: archived)
+            await handleThreadListResult(payload, requestID: event.requestID)
         case .accountLoginResult(let payload):
             if let requestID = event.requestID {
                 pendingCommands.removeValue(forKey: requestID)
@@ -850,7 +860,14 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     }
 
     private func handleThreadStarted(_ payload: BridgeThreadStartedPayload, requestID: String?) {
-        let summary = payload.thread.toThreadSummary()
+        let pendingCommand = requestID.flatMap { pendingCommands[$0] }
+        var summary = payload.thread.toThreadSummary()
+
+        if case .threadStart? = pendingCommand,
+           payload.thread.messages?.isEmpty != false {
+            summary.isVisibleInSidebar = controller.threadSummary(id: summary.id)?.isVisibleInSidebar ?? false
+        }
+
         controller.upsertThreadSummary(summary)
 
         if let requestID, abandonedThreadRequestIDs.remove(requestID) != nil {
@@ -877,8 +894,18 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                         messages: messages.map { $0.toConversationMessage() }
                     )
                 } else {
-                    session = controller.openThread(id: summary.id, title: summary.title)
+                    session = controller.openThread(
+                        id: summary.id,
+                        title: summary.title,
+                        isVisibleInSidebar: summary.isVisibleInSidebar
+                    )
                 }
+            case .threadRename(let threadID):
+                if let session = controller.threadSession(id: threadID) {
+                    session.updateThreadIdentity(id: summary.id, title: summary.title)
+                }
+                pendingVoidResponses.removeValue(forKey: requestID)?.resume()
+                return
             default:
                 session = controller.ensureThreadSession(id: summary.id, title: summary.title, markSelected: false)
             }
@@ -890,6 +917,42 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         }
 
         _ = controller.ensureThreadSession(id: summary.id, title: summary.title, markSelected: false)
+    }
+
+    private func handleThreadListResult(_ payload: BridgeThreadListResultPayload, requestID: String?) async {
+        let archived: Bool
+        let requestState: PendingThreadListRequest?
+
+        if let requestID,
+           let pendingCommand = pendingCommands.removeValue(forKey: requestID),
+           case .threadList(let requestArchived) = pendingCommand {
+            archived = requestArchived
+            requestState = pendingThreadListsByRequestID.removeValue(forKey: requestID)
+        } else {
+            archived = false
+            requestState = requestID.flatMap { pendingThreadListsByRequestID.removeValue(forKey: $0) }
+        }
+
+        var accumulatedSummariesByID = requestState?.summariesByID ?? [:]
+        for summary in payload.threads.map({ $0.toThreadSummary() }) {
+            accumulatedSummariesByID[summary.id] = summary
+        }
+
+        if let nextCursor = payload.nextCursor,
+           nextCursor.isEmpty == false {
+            do {
+                try await sendThreadListRequest(
+                    archived: archived,
+                    cursor: nextCursor,
+                    accumulatedSummariesByID: accumulatedSummariesByID
+                )
+            } catch {
+                handleBridgeFailure(message: error.localizedDescription)
+            }
+            return
+        }
+
+        controller.replaceThreadList(Array(accumulatedSummariesByID.values), archived: archived)
     }
 
     private func handleThreadArchived(_ payload: BridgeThreadArchivedPayload, requestID: String?) {
@@ -941,6 +1004,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
 
         controller.setCurrentTurnID(event.turnID, for: threadID)
         controller.setAwaitingTurnStart(false, for: threadID)
+        controller.setThreadSidebarVisibility(true, for: threadID)
         controller.markThreadActivity(
             id: threadID,
             at: bridgeDate(from: event.timestamp) ?? now(),
@@ -1051,6 +1115,12 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 pendingThreadSessions.removeValue(forKey: requestID)?.resume(
                     throwing: RuntimeBridgeError.requestFailed(message: payload.message)
                 )
+            case .threadList:
+                pendingThreadListsByRequestID.removeValue(forKey: requestID)
+            case .threadRename:
+                pendingVoidResponses.removeValue(forKey: requestID)?.resume(
+                    throwing: RuntimeBridgeError.requestFailed(message: payload.message)
+                )
             case .threadArchive(let threadID):
                 if shouldTreatArchiveErrorAsLocalSuccess(message: payload.message, threadID: threadID) {
                     pendingVoidResponses.removeValue(forKey: requestID)?.resume()
@@ -1111,6 +1181,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
 
         controller.setCurrentTurnID(turnID, for: threadID)
         controller.setAwaitingTurnStart(false, for: threadID)
+        controller.setThreadSidebarVisibility(true, for: threadID)
         controller.markThreadActivity(
             id: threadID,
             at: bridgeDate(from: event.timestamp) ?? now(),
@@ -1193,6 +1264,29 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         pendingActivityCompletions.values.forEach { $0.cancel() }
         pendingActivityCompletions.removeAll()
         runningActivityStartedAt.removeAll()
+    }
+
+    private func sendThreadListRequest(
+        archived: Bool,
+        cursor: String?,
+        accumulatedSummariesByID: [String: ThreadSummary]
+    ) async throws {
+        let requestID = nextRequestID(prefix: archived ? "thread-list-archived" : "thread-list")
+        pendingCommands[requestID] = .threadList(archived: archived)
+        pendingThreadListsByRequestID[requestID] = PendingThreadListRequest(
+            archived: archived,
+            summariesByID: accumulatedSummariesByID
+        )
+        try await sendCommand(
+            id: requestID,
+            type: .threadList,
+            payload: BridgeThreadListPayload(
+                workspacePath: controller.workspace.canonicalPath,
+                cursor: cursor,
+                limit: nil,
+                archived: archived ? .only : .exclude
+            )
+        )
     }
 
     private func sendHello() async throws {
@@ -1316,6 +1410,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         self.pendingVoidResponses.removeAll()
         let pendingApprovalResolutions = self.pendingApprovalResolutions
         self.pendingApprovalResolutions.removeAll()
+        pendingThreadListsByRequestID.removeAll()
         abandonedThreadRequestIDs.removeAll()
         controller.setBridgeLifecycleState(.idle)
 

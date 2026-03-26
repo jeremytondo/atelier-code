@@ -33,6 +33,7 @@ private struct UITestScenario {
         case ready
         case retry
         case phase2
+        case refreshOmitsThread = "refresh-omits-thread"
         case repeatedWaiting = "repeated-waiting"
     }
 
@@ -132,10 +133,14 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
 
     func listThreads(archived: Bool) async throws {
         controller.setShowingArchivedThreads(archived)
+
+        if coordinator.scenario == .refreshOmitsThread {
+            controller.replaceThreadList([], archived: archived)
+        }
     }
 
     func startThreadAndWait(title: String?) async throws -> ThreadSession {
-        controller.openThread(id: "ui-test-thread", title: title ?? "New Conversation")
+        controller.openThread(id: "ui-test-thread", title: title ?? "New Conversation", isVisibleInSidebar: false)
     }
 
     func resumeThreadAndWait(id: String) async throws -> ThreadSession {
@@ -160,6 +165,13 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
         )
     }
 
+    func renameThread(id: String, title: String) async throws {
+        controller.updateThreadSummary(id: id) { summary in
+            summary.title = title
+        }
+        controller.threadSession(id: id)?.updateThreadIdentity(id: id, title: title)
+    }
+
     func archiveThread(id: String) async throws {
         controller.setThreadArchived(true, for: id)
     }
@@ -180,7 +192,8 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
     }
 
     func startTurn(threadID: String, prompt: String, configuration: BridgeTurnStartConfiguration?) async throws {
-        let session = controller.threadSession(id: threadID) ?? controller.openThread(id: threadID, title: "New Conversation")
+        let session = controller.threadSession(id: threadID)
+            ?? controller.openThread(id: threadID, title: "New Conversation", isVisibleInSidebar: false)
         let turnNumber = coordinator.nextTurnCount()
 
         session.beginTurn(userPrompt: prompt)

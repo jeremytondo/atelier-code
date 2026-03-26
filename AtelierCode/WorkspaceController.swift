@@ -21,6 +21,7 @@ final class WorkspaceController {
 
     @ObservationIgnored private var awaitingTurnStartThreadIDs: Set<String>
     @ObservationIgnored private var currentTurnIDsByThreadID: [String: String]
+    @ObservationIgnored private var pinnedSidebarThreadSummariesByID: [String: ThreadSummary]
 
     init(workspace: WorkspaceRecord) {
         self.workspace = workspace
@@ -37,6 +38,7 @@ final class WorkspaceController {
         self.isShowingAllVisibleThreads = false
         self.awaitingTurnStartThreadIDs = []
         self.currentTurnIDsByThreadID = [:]
+        self.pinnedSidebarThreadSummariesByID = [:]
     }
 
     var activeThreadSession: ThreadSession? {
@@ -57,7 +59,7 @@ final class WorkspaceController {
 
     var visibleThreadSummaries: [ThreadSummary] {
         threadSummaries.filter { summary in
-            isShowingArchivedThreads || summary.isArchived == false
+            summary.isVisibleInSidebar && (isShowingArchivedThreads || summary.isArchived == false)
         }
     }
 
@@ -100,6 +102,7 @@ final class WorkspaceController {
         isShowingAllVisibleThreads = false
         awaitingTurnStartThreadIDs.removeAll()
         currentTurnIDsByThreadID.removeAll()
+        pinnedSidebarThreadSummariesByID.removeAll()
     }
 
     func setBridgeLifecycleState(_ state: BridgeLifecycleState) {
@@ -140,22 +143,20 @@ final class WorkspaceController {
 
     func replaceThreadList(_ threadSummaries: [ThreadSummary], archived: Bool = false) {
         let existingByID = Dictionary(uniqueKeysWithValues: self.threadSummaries.map { ($0.id, $0) })
+        let incomingIDs = Set(threadSummaries.map(\.id))
         var merged = self.threadSummaries.filter { $0.isArchived != archived }
+        let mergedIDs = Set(merged.map(\.id))
+        merged.append(
+            contentsOf: pinnedSidebarThreadSummariesByID.values.filter { summary in
+                summary.isArchived == archived &&
+                incomingIDs.contains(summary.id) == false &&
+                mergedIDs.contains(summary.id) == false
+            }
+        )
 
         for summary in threadSummaries {
             let existing = existingByID[summary.id]
-            merged.append(
-                ThreadSummary(
-                    id: summary.id,
-                    title: summary.title,
-                    previewText: summary.previewText,
-                    updatedAt: summary.updatedAt,
-                    isArchived: archived,
-                    isRunning: summary.isRunning || existing?.isRunning == true,
-                    hasUnreadActivity: existing?.hasUnreadActivity ?? false,
-                    lastErrorMessage: summary.lastErrorMessage ?? existing?.lastErrorMessage
-                )
-            )
+            merged.append(Self.mergeRefreshedThreadSummary(summary, existing: existing, archived: archived))
         }
 
         self.threadSummaries = Self.sortedThreadSummaries(merged)
@@ -168,6 +169,7 @@ final class WorkspaceController {
             threadSummaries.append(threadSummary)
         }
 
+        syncPinnedSidebarThreadSummary(id: threadSummary.id)
         threadSummaries = Self.sortedThreadSummaries(threadSummaries)
     }
 
@@ -177,6 +179,7 @@ final class WorkspaceController {
         }
 
         mutate(&threadSummaries[index])
+        syncPinnedSidebarThreadSummary(id: id)
         threadSummaries = Self.sortedThreadSummaries(threadSummaries)
     }
 
@@ -194,6 +197,7 @@ final class WorkspaceController {
         updateThreadSummary(id: id) { summary in
             summary.hasUnreadActivity = false
         }
+        pinThreadSummaryInSidebar(threadID: id)
     }
 
     func threadSession(id: String) -> ThreadSession? {
@@ -201,24 +205,25 @@ final class WorkspaceController {
     }
 
     @discardableResult
-    func openThread(id: String, title: String) -> ThreadSession {
+    func openThread(id: String, title: String, isVisibleInSidebar: Bool = true) -> ThreadSession {
         let existingSummary = threadSummary(id: id)
         let session = threadSessionsByID[id] ?? ThreadSession(threadID: id, title: title)
         session.startThread(id: id, title: title)
         threadSessionsByID[id] = session
-        markThreadSelected(id)
         upsertThreadSummary(
             ThreadSummary(
                 id: id,
                 title: title,
                 previewText: existingSummary?.previewText ?? "",
                 updatedAt: existingSummary?.updatedAt ?? .now,
+                isVisibleInSidebar: existingSummary?.isVisibleInSidebar ?? isVisibleInSidebar,
                 isArchived: existingSummary?.isArchived ?? false,
                 isRunning: existingSummary?.isRunning ?? false,
                 hasUnreadActivity: false,
                 lastErrorMessage: existingSummary?.lastErrorMessage
             )
         )
+        markThreadSelected(id)
         return session
     }
 
@@ -232,19 +237,20 @@ final class WorkspaceController {
         let session = threadSessionsByID[id] ?? ThreadSession(threadID: id, title: title)
         session.resumeThread(id: id, title: title, messages: messages)
         threadSessionsByID[id] = session
-        markThreadSelected(id)
         upsertThreadSummary(
             ThreadSummary(
                 id: id,
                 title: title,
                 previewText: messages.last?.text ?? existingSummary?.previewText ?? "",
                 updatedAt: existingSummary?.updatedAt ?? .now,
+                isVisibleInSidebar: existingSummary?.isVisibleInSidebar ?? true,
                 isArchived: existingSummary?.isArchived ?? false,
                 isRunning: existingSummary?.isRunning ?? false,
                 hasUnreadActivity: false,
                 lastErrorMessage: existingSummary?.lastErrorMessage
             )
         )
+        markThreadSelected(id)
         return session
     }
 
@@ -342,6 +348,32 @@ final class WorkspaceController {
         }
     }
 
+    func setThreadSidebarVisibility(_ isVisibleInSidebar: Bool, for threadID: String) {
+        if threadSummary(id: threadID) == nil,
+           isVisibleInSidebar {
+            let fallbackTitle = threadSession(id: threadID)?.title ?? "New Conversation"
+            upsertThreadSummary(
+                ThreadSummary(
+                    id: threadID,
+                    title: fallbackTitle,
+                    previewText: "",
+                    updatedAt: .now,
+                    isVisibleInSidebar: true
+                )
+            )
+        }
+
+        updateThreadSummary(id: threadID) { summary in
+            summary.isVisibleInSidebar = isVisibleInSidebar
+        }
+
+        if isVisibleInSidebar {
+            pinThreadSummaryInSidebar(threadID: threadID)
+        } else {
+            pinnedSidebarThreadSummariesByID.removeValue(forKey: threadID)
+        }
+    }
+
     func markThreadActivity(
         id: String,
         at date: Date = .now,
@@ -378,13 +410,114 @@ final class WorkspaceController {
     private static func mergeThreadSummary(_ incoming: ThreadSummary, existing: ThreadSummary) -> ThreadSummary {
         ThreadSummary(
             id: incoming.id,
-            title: incoming.title,
-            previewText: incoming.previewText,
-            updatedAt: incoming.updatedAt,
+            title: preferredThreadTitle(incoming: incoming.title, existing: existing.title, threadID: incoming.id),
+            previewText: preferredThreadPreview(
+                incoming: incoming.previewText,
+                existing: existing.previewText,
+                preferExisting: incoming.updatedAt < existing.updatedAt
+            ),
+            updatedAt: preferredThreadUpdatedAt(incoming: incoming.updatedAt, existing: existing.updatedAt),
+            isVisibleInSidebar: incoming.isVisibleInSidebar || existing.isVisibleInSidebar,
             isArchived: incoming.isArchived,
             isRunning: incoming.isRunning || existing.isRunning,
             hasUnreadActivity: incoming.hasUnreadActivity || existing.hasUnreadActivity,
             lastErrorMessage: incoming.lastErrorMessage ?? existing.lastErrorMessage
         )
+    }
+
+    private static func mergeRefreshedThreadSummary(
+        _ incoming: ThreadSummary,
+        existing: ThreadSummary?,
+        archived: Bool
+    ) -> ThreadSummary {
+        let shouldPreferExistingActivity = existing.map { $0.updatedAt > incoming.updatedAt } ?? false
+
+        return ThreadSummary(
+            id: incoming.id,
+            title: preferredThreadTitle(incoming: incoming.title, existing: existing?.title, threadID: incoming.id),
+            previewText: preferredThreadPreview(
+                incoming: incoming.previewText,
+                existing: existing?.previewText,
+                preferExisting: shouldPreferExistingActivity
+            ),
+            updatedAt: preferredThreadUpdatedAt(incoming: incoming.updatedAt, existing: existing?.updatedAt),
+            isVisibleInSidebar: incoming.isVisibleInSidebar || existing?.isVisibleInSidebar == true,
+            isArchived: archived,
+            isRunning: incoming.isRunning || existing?.isRunning == true,
+            hasUnreadActivity: existing?.hasUnreadActivity ?? false,
+            lastErrorMessage: incoming.lastErrorMessage ?? existing?.lastErrorMessage
+        )
+    }
+
+    private func pinThreadSummaryInSidebar(threadID: String) {
+        guard let summary = threadSummary(id: threadID) else {
+            return
+        }
+
+        pinnedSidebarThreadSummariesByID[threadID] = summary
+    }
+
+    private func syncPinnedSidebarThreadSummary(id: String) {
+        guard pinnedSidebarThreadSummariesByID[id] != nil else {
+            return
+        }
+
+        if let summary = threadSummary(id: id) {
+            pinnedSidebarThreadSummariesByID[id] = summary
+        } else {
+            pinnedSidebarThreadSummariesByID.removeValue(forKey: id)
+        }
+    }
+
+    private static func preferredThreadTitle(incoming: String, existing: String?, threadID: String) -> String {
+        guard let existing else {
+            return incoming
+        }
+
+        let normalizedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedExisting = existing.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard normalizedExisting.isEmpty == false else {
+            return incoming
+        }
+
+        if isPlaceholderThreadTitle(normalizedIncoming, threadID: threadID) &&
+            isPlaceholderThreadTitle(normalizedExisting, threadID: threadID) == false {
+            return existing
+        }
+
+        return incoming
+    }
+
+    private static func preferredThreadPreview(incoming: String, existing: String?, preferExisting: Bool) -> String {
+        guard let existing else {
+            return incoming
+        }
+
+        let normalizedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedExisting = existing.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if preferExisting, normalizedExisting.isEmpty == false {
+            return existing
+        }
+
+        if normalizedIncoming.isEmpty, normalizedExisting.isEmpty == false {
+            return existing
+        }
+
+        return incoming
+    }
+
+    private static func preferredThreadUpdatedAt(incoming: Date, existing: Date?) -> Date {
+        guard let existing else {
+            return incoming
+        }
+
+        return max(incoming, existing)
+    }
+
+    private static func isPlaceholderThreadTitle(_ title: String, threadID: String) -> Bool {
+        let normalized = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty || normalized == threadID || normalized == "Thread" || normalized == "New Conversation"
     }
 }

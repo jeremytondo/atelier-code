@@ -17,6 +17,7 @@ export type BridgeCommandType =
   | "thread.list"
   | "thread.read"
   | "thread.fork"
+  | "thread.rename"
   | "thread.archive"
   | "thread.unarchive"
   | "thread.rollback"
@@ -213,6 +214,10 @@ export interface ThreadForkPayload {
   workspacePath: string;
 }
 
+export interface ThreadRenamePayload {
+  title: string;
+}
+
 export interface ThreadArchivePayload {}
 
 export interface ThreadUnarchivePayload {}
@@ -265,6 +270,10 @@ export interface ThreadForkCommand extends BridgeCommandEnvelope<"thread.fork", 
   threadID: string;
 }
 
+export interface ThreadRenameCommand extends BridgeCommandEnvelope<"thread.rename", ThreadRenamePayload> {
+  threadID: string;
+}
+
 export interface ThreadArchiveCommand extends BridgeCommandEnvelope<"thread.archive", ThreadArchivePayload> {
   threadID: string;
 }
@@ -305,6 +314,7 @@ export type BridgeCommand =
   | ThreadListCommand
   | ThreadReadCommand
   | ThreadForkCommand
+  | ThreadRenameCommand
   | ThreadArchiveCommand
   | ThreadUnarchiveCommand
   | ThreadRollbackCommand

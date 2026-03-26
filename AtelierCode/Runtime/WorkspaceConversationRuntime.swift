@@ -9,6 +9,7 @@ protocol WorkspaceConversationRuntime: AnyObject {
     func resumeThreadAndWait(id: String) async throws -> ThreadSession
     func readThreadAndWait(id: String, includeTurns: Bool) async throws -> ThreadSession
     func forkThreadAndWait(id: String) async throws -> ThreadSession
+    func renameThread(id: String, title: String) async throws
     func archiveThread(id: String) async throws
     func unarchiveThreadAndWait(id: String) async throws -> ThreadSession
     func rollbackThreadAndWait(id: String, numTurns: Int) async throws -> ThreadSession

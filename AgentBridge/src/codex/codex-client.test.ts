@@ -75,6 +75,54 @@ describe("CodexClient", () => {
     ]);
   });
 
+  test("renames a thread and rereads it for the updated summary", async () => {
+    const transport = new FakeTransport([
+      { userAgent: "Codex/Test" },
+      {},
+      {
+        thread: {
+          id: "thread-1",
+          preview: "Renamed preview",
+          updatedAt: 1_700_000_010,
+          name: "Renamed Thread",
+        },
+      },
+    ]);
+    const client = new CodexClient(transport);
+
+    await client.connect();
+    const result = await client.renameThread("req-rename", "thread-1", {
+      title: "  Renamed Thread  ",
+    });
+
+    expect(result.thread).toEqual({
+      id: "thread-1",
+      preview: "Renamed preview",
+      updatedAt: 1_700_000_010,
+      name: "Renamed Thread",
+      status: undefined,
+      turns: [],
+      archived: false,
+    });
+    expect(transport.sent.slice(1)).toEqual([
+      {
+        id: "req-rename:set-name",
+        method: "thread/name/set",
+        params: {
+          threadId: "thread-1",
+          name: "Renamed Thread",
+        },
+      },
+      {
+        id: "req-rename",
+        method: "thread/read",
+        params: {
+          threadId: "thread-1",
+        },
+      },
+    ]);
+  });
+
   test("maps turn interruption approval resolution and account reads", async () => {
     const transport = new FakeTransport([
       { userAgent: "Codex/Test" },

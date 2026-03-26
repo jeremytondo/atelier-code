@@ -649,6 +649,10 @@ export async function executeBridgeCommand(
         const result = await client.forkThread(command.id, command.threadID, command.payload);
         return [buildThreadStartedEvent(command.id, result.thread)];
       }
+      case "thread.rename": {
+        const result = await client.renameThread(command.id, command.threadID, command.payload);
+        return [buildThreadStartedEvent(command.id, result.thread)];
+      }
       case "thread.archive":
         await client.archiveThread(command.id, command.threadID, command.payload);
         return [buildThreadArchivedEvent(command.threadID, command.id)];

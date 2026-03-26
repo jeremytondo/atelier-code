@@ -149,6 +149,71 @@ struct AppModelTests {
         #expect(appModel.activeWorkspaceController?.connectionStatus == .streaming)
     }
 
+    @Test func draftThreadsStayHiddenUntilFirstPromptStartsConversation() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "conversation-draft-thread")
+
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
+
+        let didCreateThread = await appModel.createThread()
+        let controller = try #require(appModel.activeWorkspaceController)
+
+        #expect(didCreateThread)
+        #expect(runtimeCoordinator.startThreadCount == 0)
+        #expect(appModel.selectedRoute?.threadID == nil)
+        #expect(controller.lastActiveThreadID == nil)
+        #expect(controller.visibleThreadSummaries.isEmpty)
+
+        let didSend = await appModel.sendPrompt("Start the real conversation.")
+        let threadID = try #require(controller.lastActiveThreadID)
+
+        #expect(didSend)
+        #expect(controller.threadSummary(id: threadID)?.isVisibleInSidebar == true)
+        #expect(controller.visibleThreadSummaries.map(\.id) == [threadID])
+        #expect(controller.threadSummary(id: threadID)?.title == "Start the real conversation.")
+
+        controller.replaceThreadList([])
+
+        #expect(controller.visibleThreadSummaries.map(\.id) == [threadID])
+    }
+
+    @Test func startedThreadsSurviveWorkspaceRefreshWhenRuntimeOmitsThem() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "conversation-refresh-survival")
+
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
+
+        let didCreateThread = await appModel.createThread()
+        let didSend = await appModel.sendPrompt("Keep this in the sidebar.")
+        let controller = try #require(appModel.activeWorkspaceController)
+        let threadID = try #require(controller.lastActiveThreadID)
+
+        #expect(didCreateThread)
+        #expect(didSend)
+        #expect(controller.visibleThreadSummaries.map(\.id) == [threadID])
+
+        runtimeCoordinator.queuedThreadListResponses = [[]]
+        let prepared = await appModel.prepareWorkspaceForBrowsing(path: workspaceURL.path)
+
+        #expect(prepared)
+        #expect(controller.visibleThreadSummaries.map(\.id) == [threadID])
+        #expect(controller.threadSummary(id: threadID)?.title == "Keep this in the sidebar.")
+    }
+
     @Test func sendAndCancelGatingTracksWorkspaceState() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
@@ -333,7 +398,7 @@ struct AppModelTests {
         #expect(appModel.activeWorkspaceController?.activeThreadSession?.messages.map(\.text) == ["Ship the first turn"])
     }
 
-    @Test func restoresOnlySelectedWorkspaceRuntimeUntilAnotherWorkspaceIsChosen() async throws {
+    @Test func restoredExpandedWorkspacesPreloadThreadsWithoutChangingSelection() async throws {
         let firstWorkspaceURL = try temporaryDirectory(named: "restored-runtime-a")
         let secondWorkspaceURL = try temporaryDirectory(named: "restored-runtime-b")
         let snapshot = AppPreferencesSnapshot(
@@ -358,17 +423,14 @@ struct AppModelTests {
                 runtimeCoordinator.records(for: secondWorkspaceURL.path).last?.isRunning == true
         }
 
-        #expect(runtimeCoordinator.records(for: firstWorkspaceURL.path).isEmpty)
-        #expect(runtimeCoordinator.records(for: secondWorkspaceURL.path).count == 1)
-
-        appModel.selectWorkspace(path: firstWorkspaceURL.path)
-
         try await waitUntil {
-            appModel.activeWorkspaceController?.workspace.canonicalPath == firstWorkspaceURL.path &&
-                runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.isRunning == true
+            runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.isRunning == true &&
+                runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsCalls == 1
         }
 
+        #expect(appModel.activeWorkspaceController?.workspace.canonicalPath == secondWorkspaceURL.path)
         #expect(runtimeCoordinator.records(for: firstWorkspaceURL.path).count == 1)
+        #expect(runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsArchivedValues == [false])
         #expect(runtimeCoordinator.records(for: secondWorkspaceURL.path).count == 1)
     }
 
@@ -399,7 +461,7 @@ struct AppModelTests {
         #expect(runtimeCoordinator.records(for: secondWorkspaceURL.path).last?.stopCount == 0)
     }
 
-    @Test func expandingWorkspaceStartsRuntimeAndLoadsThreadsWithoutChangingSelection() async throws {
+    @Test func preparingWorkspaceForBrowsingReloadsThreadsWithoutChangingSelection() async throws {
         let firstWorkspaceURL = try temporaryDirectory(named: "expand-runtime-a")
         let secondWorkspaceURL = try temporaryDirectory(named: "expand-runtime-b")
         let snapshot = AppPreferencesSnapshot(
@@ -423,17 +485,22 @@ struct AppModelTests {
                 runtimeCoordinator.records(for: secondWorkspaceURL.path).last?.isRunning == true
         }
 
+        try await waitUntil {
+            runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.isRunning == true &&
+                runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsCalls == 1
+        }
+
         let prepared = await appModel.prepareWorkspaceForBrowsing(path: firstWorkspaceURL.path)
 
         #expect(prepared)
 
         try await waitUntil {
             runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.isRunning == true &&
-                runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsCalls == 1
+                runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsCalls == 2
         }
 
         #expect(appModel.activeWorkspaceController?.workspace.canonicalPath == secondWorkspaceURL.path)
-        #expect(runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsArchivedValues == [false])
+        #expect(runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsArchivedValues == [false, false])
     }
 
     @Test func retryKeepsOnlyNewestRuntimeRunning() async throws {
@@ -495,6 +562,7 @@ private final class TestRuntimeCoordinator {
     var startTurnConfigurations: [BridgeTurnStartConfiguration?] = []
     var cancelCount = 0
     var resolveApprovalCalls: [(String, ApprovalResolution)] = []
+    var queuedThreadListResponses: [[ThreadSummary]] = []
     var shouldDelayTurnStart = false
     var shouldDelayApprovalResolution = false
     private var pendingDelayedTurnStarts: [CheckedContinuation<Void, Never>] = []
@@ -555,13 +623,17 @@ private final class TestWorkspaceRuntime: WorkspaceConversationRuntime {
 
     func listThreads(archived: Bool) async throws {
         controller.setShowingArchivedThreads(archived)
+        if coordinator.queuedThreadListResponses.isEmpty == false {
+            controller.replaceThreadList(coordinator.queuedThreadListResponses.removeFirst(), archived: archived)
+        }
     }
 
     func startThreadAndWait(title: String?) async throws -> ThreadSession {
         coordinator.startThreadCount += 1
         return controller.openThread(
             id: "thread-\(coordinator.startThreadCount)",
-            title: title ?? "New Conversation"
+            title: title ?? "New Conversation",
+            isVisibleInSidebar: false
         )
     }
 
@@ -580,6 +652,13 @@ private final class TestWorkspaceRuntime: WorkspaceConversationRuntime {
             title: "Forked Conversation",
             messages: controller.threadSession(id: id)?.messages ?? []
         )
+    }
+
+    func renameThread(id: String, title: String) async throws {
+        controller.updateThreadSummary(id: id) { summary in
+            summary.title = title
+        }
+        controller.threadSession(id: id)?.updateThreadIdentity(id: id, title: title)
     }
 
     func archiveThread(id: String) async throws {
@@ -606,7 +685,8 @@ private final class TestWorkspaceRuntime: WorkspaceConversationRuntime {
             }
         }
 
-        let session = controller.threadSession(id: threadID) ?? controller.openThread(id: threadID, title: "New Conversation")
+        let session = controller.threadSession(id: threadID)
+            ?? controller.openThread(id: threadID, title: "New Conversation", isVisibleInSidebar: false)
         session.beginTurn(userPrompt: prompt)
         controller.setAwaitingTurnStart(false, for: threadID)
         controller.setCurrentTurnID("test-turn", for: threadID)
@@ -715,7 +795,7 @@ private final class LifecycleProbeRuntime: WorkspaceConversationRuntime {
     }
 
     func startThreadAndWait(title: String?) async throws -> ThreadSession {
-        controller.openThread(id: UUID().uuidString, title: title ?? "New Conversation")
+        controller.openThread(id: UUID().uuidString, title: title ?? "New Conversation", isVisibleInSidebar: false)
     }
 
     func resumeThreadAndWait(id: String) async throws -> ThreadSession {
@@ -728,6 +808,13 @@ private final class LifecycleProbeRuntime: WorkspaceConversationRuntime {
 
     func forkThreadAndWait(id: String) async throws -> ThreadSession {
         controller.resumeThread(id: "\(id)-fork", title: "Recovered Conversation")
+    }
+
+    func renameThread(id: String, title: String) async throws {
+        controller.updateThreadSummary(id: id) { summary in
+            summary.title = title
+        }
+        controller.threadSession(id: id)?.updateThreadIdentity(id: id, title: title)
     }
 
     func archiveThread(id: String) async throws {
@@ -745,7 +832,8 @@ private final class LifecycleProbeRuntime: WorkspaceConversationRuntime {
     }
 
     func startTurn(threadID: String, prompt: String, configuration: BridgeTurnStartConfiguration?) async throws {
-        let session = controller.threadSession(id: threadID) ?? controller.openThread(id: threadID, title: "New Conversation")
+        let session = controller.threadSession(id: threadID)
+            ?? controller.openThread(id: threadID, title: "New Conversation", isVisibleInSidebar: false)
         session.beginTurn(userPrompt: prompt)
         controller.setAwaitingTurnStart(false, for: threadID)
         controller.setCurrentTurnID("probe-turn", for: threadID)
