@@ -79,15 +79,15 @@ private struct WorkspaceSidebar: View {
 
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Workspaces")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                             .textCase(.uppercase)
-                            .tracking(0.6)
+                            .tracking(0.8)
 
                         if appModel.workspaceControllers.isEmpty {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("No workspaces yet.")
-                                    .font(.subheadline.weight(.semibold))
+                                    .font(.subheadline)
 
                                 Text("Open a folder to start a workspace.")
                                     .font(.caption)
@@ -154,11 +154,11 @@ private struct SidebarDestinationButton: View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Image(systemName: systemImage)
-                    .font(.headline)
+                    .font(.subheadline)
                     .frame(width: 20, height: 20)
 
                 Text(title)
-                    .font(.body.weight(.semibold))
+                    .font(.subheadline)
 
                 Spacer(minLength: 0)
             }
@@ -195,7 +195,7 @@ private struct WorkspaceTreeRow: View {
             )
 
             if controller.isExpanded {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 3) {
                     if controller.visibleThreadSummaries.isEmpty {
                         Text("No active threads yet.")
                             .font(.caption)
@@ -308,7 +308,7 @@ private struct WorkspaceHeaderRow: View {
                             .opacity(isHovering ? 0 : 1)
 
                         Image(systemName: disclosureIconName)
-                            .font(.caption.weight(.semibold))
+                            .font(.caption.weight(.medium))
                             .opacity(isHovering ? 1 : 0)
                     }
                     .foregroundStyle(.secondary)
@@ -516,7 +516,7 @@ private struct WorkspaceThreadRow: View {
                 threadActionMenuItems
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.headline.weight(.semibold))
+                    .font(.caption)
                     .foregroundStyle(showsHoverActions ? Color.secondary : Color.clear)
                     .frame(width: 28, height: 28)
                     .background(
@@ -542,7 +542,7 @@ private struct WorkspaceThreadRow: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(rowBorderColor, lineWidth: 1)
         }
-        .shadow(color: isHovering ? Color.black.opacity(0.04) : .clear, radius: 6, y: 2)
+        .shadow(color: .clear, radius: 0)
         .onAppear {
             draftTitle = threadSummary.title
         }
@@ -567,13 +567,13 @@ private struct WorkspaceThreadRow: View {
             }
             .frame(width: 24, height: 24)
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .center, spacing: 8) {
                     if isRenaming {
                         HStack(spacing: 8) {
                             TextField("Thread title", text: $draftTitle)
                                 .textFieldStyle(.plain)
-                                .font(.subheadline.weight(.semibold))
+                                .font(.subheadline)
                                 .focused($isRenameFieldFocused)
                                 .onSubmit(commitRename)
                                 .onExitCommand(perform: cancelRename)
@@ -595,8 +595,8 @@ private struct WorkspaceThreadRow: View {
                         }
                     } else {
                         Text(threadSummary.title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 }
@@ -626,7 +626,7 @@ private struct WorkspaceThreadRow: View {
                 }
             }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 5)
         .padding(.leading, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
@@ -714,9 +714,9 @@ private struct SidebarThreadBadge: View {
 
     var body: some View {
         Text(text)
-            .font(.caption2.weight(.semibold))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .font(.caption2.weight(.medium))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
             .foregroundStyle(color)
             .background(color.opacity(0.12), in: Capsule())
     }
