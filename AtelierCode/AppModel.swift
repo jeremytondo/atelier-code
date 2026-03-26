@@ -89,7 +89,7 @@ final class AppModel {
             persistPreferences()
         }
 
-        startAllWorkspaceRuntimes()
+        startInitiallySelectedWorkspaceRuntime()
     }
 
     var activeWorkspaceController: WorkspaceController? {
@@ -210,20 +210,45 @@ final class AppModel {
             threadID: threadID
         )
         lastSelectedWorkspacePath = canonicalPath
+        startWorkspaceRuntimeIfNeeded(for: canonicalPath)
         persistPreferences()
+    }
+
+    @discardableResult
+    func prepareWorkspaceForBrowsing(path: String) async -> Bool {
+        let canonicalPath = WorkspaceRecord.canonicalizedPath(for: path)
+        guard let controller = workspaceController(for: canonicalPath),
+              await ensureRuntimeReady(for: canonicalPath),
+              let runtime = runtime(for: canonicalPath) else {
+            return false
+        }
+
+        do {
+            try await runtime.listThreads(archived: controller.isShowingArchivedThreads)
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            controller.setConnectionStatus(.error(message: error.localizedDescription))
+            return false
+        }
     }
 
     @discardableResult
     func openThread(workspacePath: String, threadID: String) async -> Bool {
         let canonicalPath = WorkspaceRecord.canonicalizedPath(for: workspacePath)
         guard let controller = workspaceController(for: canonicalPath),
-              let runtime = runtime(for: canonicalPath),
               let summary = controller.threadSummary(id: threadID) else {
             return false
         }
 
         do {
             if controller.threadSession(id: threadID) == nil {
+                guard await ensureRuntimeReady(for: canonicalPath),
+                      let runtime = runtime(for: canonicalPath) else {
+                    return false
+                }
+
                 if summary.isArchived {
                     _ = try await runtime.readThreadAndWait(id: threadID, includeTurns: true)
                 } else {
@@ -247,6 +272,7 @@ final class AppModel {
     @discardableResult
     func createThread() async -> Bool {
         guard let controller = selectedWorkspaceController,
+              await ensureRuntimeReady(for: controller.workspace.canonicalPath),
               let runtime = runtime(for: controller.workspace.canonicalPath) else {
             return false
         }
@@ -572,18 +598,12 @@ final class AppModel {
         startupDiagnostics.append(diagnostic)
     }
 
-    private func startAllWorkspaceRuntimes() {
-        for controller in workspaceControllers {
-            guard let runtime = workspaceRuntimes[controller.workspace.canonicalPath] else {
-                continue
-            }
-
-            scheduleRuntimeLifecycle(
-                workspacePath: controller.workspace.canonicalPath,
-                previousRuntime: nil,
-                nextRuntime: runtime
-            )
+    private func startInitiallySelectedWorkspaceRuntime() {
+        guard let workspacePath = selectedRoute?.workspacePath ?? lastSelectedWorkspacePath else {
+            return
         }
+
+        startWorkspaceRuntimeIfNeeded(for: workspacePath)
     }
 
     private func startRuntime(_ runtime: any WorkspaceConversationRuntime, workspacePath: String) async {
@@ -666,6 +686,48 @@ final class AppModel {
             }
 
             await self.startRuntime(nextRuntime, workspacePath: workspacePath)
+        }
+    }
+
+    private func startWorkspaceRuntimeIfNeeded(for workspacePath: String) {
+        guard let controller = workspaceController(for: workspacePath),
+              let runtime = runtime(for: workspacePath) else {
+            return
+        }
+
+        guard controller.connectionStatus == .disconnected else {
+            return
+        }
+
+        scheduleRuntimeLifecycle(
+            workspacePath: workspacePath,
+            previousRuntime: nil,
+            nextRuntime: runtime
+        )
+    }
+
+    private func ensureRuntimeReady(for workspacePath: String) async -> Bool {
+        guard let controller = workspaceController(for: workspacePath) else {
+            return false
+        }
+
+        switch controller.connectionStatus {
+        case .ready, .streaming, .cancelling:
+            return true
+        case .error:
+            return false
+        case .disconnected:
+            startWorkspaceRuntimeIfNeeded(for: workspacePath)
+            await runtimeLifecycleTasks[workspacePath]?.value
+        case .connecting:
+            await runtimeLifecycleTasks[workspacePath]?.value
+        }
+
+        switch controller.connectionStatus {
+        case .ready, .streaming, .cancelling:
+            return true
+        case .connecting, .disconnected, .error:
+            return false
         }
     }
 

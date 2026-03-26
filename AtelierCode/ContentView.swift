@@ -116,16 +116,11 @@ private struct WorkspaceTreeRow: View {
     let appModel: AppModel
     let controller: WorkspaceController
 
-    private var isSelectedWorkspace: Bool {
-        appModel.selectedRoute?.workspacePath == controller.workspace.canonicalPath
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             WorkspaceHeaderRow(
                 appModel: appModel,
-                controller: controller,
-                isSelectedWorkspace: isSelectedWorkspace
+                controller: controller
             )
 
             if controller.isExpanded {
@@ -177,13 +172,13 @@ private struct WorkspaceTreeRow: View {
         }
         .padding(12)
         .background(
-            isSelectedWorkspace ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.04),
+            Color.secondary.opacity(0.04),
             in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(
-                    isSelectedWorkspace ? Color.accentColor.opacity(0.22) : Color(nsColor: .separatorColor).opacity(0.14),
+                    Color(nsColor: .separatorColor).opacity(0.14),
                     lineWidth: 1
                 )
         }
@@ -193,10 +188,18 @@ private struct WorkspaceTreeRow: View {
 private struct WorkspaceHeaderRow: View {
     let appModel: AppModel
     let controller: WorkspaceController
-    let isSelectedWorkspace: Bool
+    @State private var isHovering = false
 
     private var runningCount: Int {
         controller.threadSummaries.filter(\.isRunning).count
+    }
+
+    private var showsHoverActions: Bool {
+        isHovering
+    }
+
+    private var disclosureIconName: String {
+        controller.isExpanded ? "chevron.down" : "chevron.right"
     }
 
     private var canRetryConnection: Bool {
@@ -209,61 +212,109 @@ private struct WorkspaceHeaderRow: View {
     }
 
     var body: some View {
-        Button {
-            toggleExpansion()
-        } label: {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "chevron.right")
-                    .rotationEffect(.degrees(controller.isExpanded ? 90 : 0))
-                    .font(.caption.weight(.semibold))
+        HStack(alignment: .center, spacing: 10) {
+            Button {
+                toggleExpansion()
+            } label: {
+                HStack(alignment: .center, spacing: 10) {
+                    ZStack {
+                        Image(controller.isExpanded ? "workspace-folder-open" : "workspace-folder-closed")
+                            .renderingMode(.template)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 18, height: 18)
+                            .opacity(isHovering ? 0 : 1)
+
+                        Image(systemName: disclosureIconName)
+                            .font(.caption.weight(.semibold))
+                            .opacity(isHovering ? 1 : 0)
+                    }
                     .foregroundStyle(.secondary)
-                    .frame(width: 18, height: 18)
                     .frame(width: 24, height: 24)
                     .animation(.easeInOut(duration: 0.16), value: controller.isExpanded)
+                    .animation(.easeInOut(duration: 0.16), value: isHovering)
+                        .accessibilityIdentifier("workspace-expand-\(controller.workspace.displayName)")
 
-                Image(systemName: "folder.fill")
-                    .foregroundStyle(isSelectedWorkspace ? Color.accentColor : Color.secondary)
-                    .padding(.top, 2)
-
-                VStack(alignment: .leading, spacing: 4) {
                     Text(controller.workspace.displayName)
                         .font(.headline)
                         .foregroundStyle(.primary)
 
-                    Text(controller.workspace.canonicalPath)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                }
+                .frame(minHeight: 28)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("recent-workspace-\(controller.workspace.displayName)")
+            .accessibilityLabel(controller.workspace.displayName)
+            .accessibilityValue(controller.isExpanded ? "Expanded" : "Collapsed")
+            .accessibilityHint("Shows or hides the threads for this workspace")
+
+            HStack(alignment: .center, spacing: 10) {
+                if runningCount > 0 {
+                    SidebarThreadBadge(text: runningCount == 1 ? "1 running" : "\(runningCount) running", color: .blue)
                 }
 
-                Spacer(minLength: 0)
-
-                VStack(alignment: .trailing, spacing: 8) {
-                    ConnectionBadge(status: controller.connectionStatus)
-
-                    if runningCount > 0 {
-                        SidebarThreadBadge(text: runningCount == 1 ? "1 running" : "\(runningCount) running", color: .blue)
+                HStack(spacing: 8) {
+                    Button {
+                        appModel.selectWorkspace(path: controller.workspace.canonicalPath)
+                        Task {
+                            _ = await appModel.createThread()
+                        }
+                    } label: {
+                        Image(systemName: "square.and.pencil")
+                            .frame(width: 28, height: 28)
                     }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("recent-workspace-\(controller.workspace.displayName)")
-        .accessibilityLabel(controller.workspace.displayName)
-        .accessibilityValue(controller.isExpanded ? "Expanded" : "Collapsed")
-        .accessibilityHint("Shows or hides the threads for this workspace")
-        .contextMenu {
-            Button("Select Workspace") {
-                appModel.selectWorkspace(path: controller.workspace.canonicalPath)
-            }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("workspace-new-thread-\(controller.workspace.displayName)")
+                    .help("Create a new thread")
 
+                    Menu {
+                        Button("Open in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([controller.workspace.url])
+                        }
+
+                        if canRetryConnection {
+                            Button("Retry Connection") {
+                                appModel.selectWorkspace(path: controller.workspace.canonicalPath)
+                                appModel.retryActiveWorkspaceConnection()
+                            }
+                        }
+
+                        Divider()
+
+                        Button("Remove Workspace") {
+                            appModel.removeWorkspace(path: controller.workspace.canonicalPath)
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .frame(width: 28, height: 28)
+                    }
+                    .menuStyle(BorderlessButtonMenuStyle())
+                    .menuIndicator(.hidden)
+                    .accessibilityIdentifier("workspace-menu-\(controller.workspace.displayName)")
+                    .help("Workspace options")
+                }
+                .foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .trailing)
+                .opacity(showsHoverActions ? 1 : 0)
+                .allowsHitTesting(showsHoverActions)
+                .animation(.easeInOut(duration: 0.16), value: showsHoverActions)
+            }
+        }
+        .onHover { isHovering = $0 }
+        .accessibilityElement(children: .contain)
+        .contextMenu {
             Button("New Thread") {
                 appModel.selectWorkspace(path: controller.workspace.canonicalPath)
                 Task {
                     _ = await appModel.createThread()
                 }
+            }
+
+            Button("Open in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([controller.workspace.url])
             }
 
             if canRetryConnection {
@@ -291,6 +342,14 @@ private struct WorkspaceHeaderRow: View {
         withAnimation(.easeInOut(duration: 0.16)) {
             controller.setExpanded(shouldExpand)
         }
+
+        guard shouldExpand else {
+            return
+        }
+
+        Task {
+            _ = await appModel.prepareWorkspaceForBrowsing(path: controller.workspace.canonicalPath)
+        }
     }
 }
 
@@ -303,20 +362,6 @@ private struct WorkspaceThreadRow: View {
         appModel.selectedRoute?.workspacePath == workspacePath && appModel.selectedRoute?.threadID == threadSummary.id
     }
 
-    private var previewText: String {
-        let trimmedPreview = threadSummary.previewText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedPreview.isEmpty == false {
-            return trimmedPreview
-        }
-
-        if let lastErrorMessage = threadSummary.lastErrorMessage,
-           lastErrorMessage.isEmpty == false {
-            return lastErrorMessage
-        }
-
-        return "No transcript preview yet."
-    }
-
     var body: some View {
         Button {
             Task {
@@ -326,31 +371,21 @@ private struct WorkspaceThreadRow: View {
                 )
             }
         } label: {
-            HStack(alignment: .top, spacing: 10) {
-                Circle()
-                    .fill(threadSummary.hasUnreadActivity ? Color.accentColor : Color.clear)
-                    .frame(width: 8, height: 8)
-                    .padding(.top, 6)
+            HStack(alignment: .center, spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(threadSummary.hasUnreadActivity ? Color.accentColor : Color.clear)
+                        .frame(width: 8, height: 8)
+                }
+                .frame(width: 24, height: 24)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    HStack(alignment: .center, spacing: 8) {
                         Text(threadSummary.title)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
-
-                        Spacer(minLength: 0)
-
-                        Text(threadSummary.updatedAt.relativeThreadTimestamp)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
                     }
-
-                    Text(previewText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
 
                     HStack(spacing: 6) {
                         if threadSummary.isRunning {
@@ -368,7 +403,7 @@ private struct WorkspaceThreadRow: View {
                 }
             }
             .padding(.vertical, 8)
-            .padding(.horizontal, 10)
+            .padding(.trailing, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 isSelected ? Color.accentColor.opacity(0.12) : Color.clear,
@@ -377,7 +412,6 @@ private struct WorkspaceThreadRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.leading, 34)
         .accessibilityIdentifier("thread-row-\(threadSummary.id)")
     }
 }
@@ -1879,12 +1913,14 @@ private struct ConnectionBadge: View {
     let status: ConnectionStatus
 
     var body: some View {
-        Text(status.shortLabel)
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .foregroundStyle(status.accentColor)
-            .background(status.accentColor.opacity(0.14), in: Capsule())
+        if status != .ready {
+            Text(status.shortLabel)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .foregroundStyle(status.accentColor)
+                .background(status.accentColor.opacity(0.14), in: Capsule())
+        }
     }
 }
 

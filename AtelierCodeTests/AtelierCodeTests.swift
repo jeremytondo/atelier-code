@@ -333,6 +333,45 @@ struct AppModelTests {
         #expect(appModel.activeWorkspaceController?.activeThreadSession?.messages.map(\.text) == ["Ship the first turn"])
     }
 
+    @Test func restoresOnlySelectedWorkspaceRuntimeUntilAnotherWorkspaceIsChosen() async throws {
+        let firstWorkspaceURL = try temporaryDirectory(named: "restored-runtime-a")
+        let secondWorkspaceURL = try temporaryDirectory(named: "restored-runtime-b")
+        let snapshot = AppPreferencesSnapshot(
+            recentWorkspaces: [
+                WorkspaceRecord(url: firstWorkspaceURL, lastOpenedAt: .distantPast),
+                WorkspaceRecord(url: secondWorkspaceURL, lastOpenedAt: .now),
+            ],
+            lastSelectedWorkspacePath: secondWorkspaceURL.path,
+            codexPathOverride: nil
+        )
+        let store = InMemoryAppPreferencesStore(snapshot: snapshot)
+        let runtimeCoordinator = LifecycleProbeCoordinator(startDelayNanoseconds: 80_000_000)
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { LifecycleProbeRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+
+        try await waitUntil {
+            appModel.activeWorkspaceController?.workspace.canonicalPath == secondWorkspaceURL.path &&
+                appModel.activeWorkspaceController?.connectionStatus == .ready &&
+                runtimeCoordinator.records(for: secondWorkspaceURL.path).last?.isRunning == true
+        }
+
+        #expect(runtimeCoordinator.records(for: firstWorkspaceURL.path).isEmpty)
+        #expect(runtimeCoordinator.records(for: secondWorkspaceURL.path).count == 1)
+
+        appModel.selectWorkspace(path: firstWorkspaceURL.path)
+
+        try await waitUntil {
+            appModel.activeWorkspaceController?.workspace.canonicalPath == firstWorkspaceURL.path &&
+                runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.isRunning == true
+        }
+
+        #expect(runtimeCoordinator.records(for: firstWorkspaceURL.path).count == 1)
+        #expect(runtimeCoordinator.records(for: secondWorkspaceURL.path).count == 1)
+    }
+
     @Test func switchingWorkspacesKeepsEachWorkspaceRuntimeRunning() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = LifecycleProbeCoordinator(startDelayNanoseconds: 80_000_000)
@@ -358,6 +397,43 @@ struct AppModelTests {
         #expect(runtimeCoordinator.records(for: secondWorkspaceURL.path).count == 1)
         #expect(runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.stopCount == 0)
         #expect(runtimeCoordinator.records(for: secondWorkspaceURL.path).last?.stopCount == 0)
+    }
+
+    @Test func expandingWorkspaceStartsRuntimeAndLoadsThreadsWithoutChangingSelection() async throws {
+        let firstWorkspaceURL = try temporaryDirectory(named: "expand-runtime-a")
+        let secondWorkspaceURL = try temporaryDirectory(named: "expand-runtime-b")
+        let snapshot = AppPreferencesSnapshot(
+            recentWorkspaces: [
+                WorkspaceRecord(url: firstWorkspaceURL, lastOpenedAt: .distantPast),
+                WorkspaceRecord(url: secondWorkspaceURL, lastOpenedAt: .now),
+            ],
+            lastSelectedWorkspacePath: secondWorkspaceURL.path,
+            codexPathOverride: nil
+        )
+        let store = InMemoryAppPreferencesStore(snapshot: snapshot)
+        let runtimeCoordinator = LifecycleProbeCoordinator(startDelayNanoseconds: 80_000_000)
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { LifecycleProbeRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+
+        try await waitUntil {
+            appModel.activeWorkspaceController?.workspace.canonicalPath == secondWorkspaceURL.path &&
+                runtimeCoordinator.records(for: secondWorkspaceURL.path).last?.isRunning == true
+        }
+
+        let prepared = await appModel.prepareWorkspaceForBrowsing(path: firstWorkspaceURL.path)
+
+        #expect(prepared)
+
+        try await waitUntil {
+            runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.isRunning == true &&
+                runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsCalls == 1
+        }
+
+        #expect(appModel.activeWorkspaceController?.workspace.canonicalPath == secondWorkspaceURL.path)
+        #expect(runtimeCoordinator.records(for: firstWorkspaceURL.path).last?.listThreadsArchivedValues == [false])
     }
 
     @Test func retryKeepsOnlyNewestRuntimeRunning() async throws {
@@ -560,6 +636,8 @@ private final class LifecycleProbeCoordinator {
         private(set) var startCount = 0
         private(set) var stopCount = 0
         private(set) var isRunning = false
+        private(set) var listThreadsCalls = 0
+        private(set) var listThreadsArchivedValues: [Bool] = []
 
         init(workspacePath: String) {
             self.workspacePath = workspacePath
@@ -573,6 +651,11 @@ private final class LifecycleProbeCoordinator {
         func recordStop() {
             stopCount += 1
             isRunning = false
+        }
+
+        func recordListThreads(archived: Bool) {
+            listThreadsCalls += 1
+            listThreadsArchivedValues.append(archived)
         }
     }
 
@@ -627,6 +710,7 @@ private final class LifecycleProbeRuntime: WorkspaceConversationRuntime {
     }
 
     func listThreads(archived: Bool) async throws {
+        record.recordListThreads(archived: archived)
         controller.setShowingArchivedThreads(archived)
     }
 

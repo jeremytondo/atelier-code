@@ -22,7 +22,7 @@ final class AtelierCodeUITests: XCTestCase {
         // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
-    func testSelectingRecentWorkspaceShowsConversationShell() throws {
+    func testExpandingRecentWorkspaceShowsWorkspaceContents() throws {
         let app = try makeApp(scenario: "recent-selection", workspaceName: "RecentSelection")
         app.launch()
 
@@ -30,10 +30,8 @@ final class AtelierCodeUITests: XCTestCase {
 
         app.buttons["recent-workspace-RecentSelection"].click()
 
-        let readyState = app.staticTexts["Ready"]
-        XCTAssertTrue(readyState.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Start a Thread"].exists)
-        XCTAssertFalse(app.staticTexts["Start the First Turn"].exists)
+        XCTAssertTrue(app.staticTexts["No active threads yet."].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Start a Thread"].exists)
     }
 
     func testSendingPromptRendersTranscript() throws {
@@ -170,7 +168,8 @@ final class AtelierCodeUITests: XCTestCase {
 
         let composer = app.textViews["conversation-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Ready"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["conversation-send-button"].exists)
+        XCTAssertFalse(app.staticTexts["Connection Error"].exists)
     }
 
     func testLaunchPerformance() throws {
