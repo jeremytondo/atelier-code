@@ -3,9 +3,14 @@ import type {
   AccountLoginPayload,
   ApprovalResolvePayload,
   ThreadArchiveFilter,
+  ThreadArchivePayload,
+  ThreadForkPayload,
   ThreadListPayload,
+  ThreadReadPayload,
+  ThreadRollbackPayload,
   ThreadResumePayload,
   ThreadStartPayload,
+  ThreadUnarchivePayload,
   TurnStartPayload,
 } from "../protocol/types";
 import type {
@@ -23,6 +28,9 @@ export interface CodexThread {
   preview: string;
   updatedAt: number;
   name: string | null;
+  status?: unknown;
+  turns?: unknown[];
+  archived?: boolean;
 }
 
 export interface CodexThreadListResult {
@@ -35,6 +43,22 @@ export interface CodexThreadStartResult {
 }
 
 export interface CodexThreadResumeResult {
+  thread: CodexThread;
+}
+
+export interface CodexThreadReadResult {
+  thread: CodexThread;
+}
+
+export interface CodexThreadForkResult {
+  thread: CodexThread;
+}
+
+export interface CodexThreadUnarchiveResult {
+  thread: CodexThread;
+}
+
+export interface CodexThreadRollbackResult {
   thread: CodexThread;
 }
 
@@ -87,6 +111,31 @@ export interface CodexClientAdapter {
     threadID: string,
     payload: ThreadResumePayload,
   ): Promise<CodexThreadResumeResult>;
+  readThread(
+    requestID: CodexTransportRequestID,
+    threadID: string,
+    payload: ThreadReadPayload,
+  ): Promise<CodexThreadReadResult>;
+  forkThread(
+    requestID: CodexTransportRequestID,
+    threadID: string,
+    payload: ThreadForkPayload,
+  ): Promise<CodexThreadForkResult>;
+  archiveThread(
+    requestID: CodexTransportRequestID,
+    threadID: string,
+    _payload: ThreadArchivePayload,
+  ): Promise<void>;
+  unarchiveThread(
+    requestID: CodexTransportRequestID,
+    threadID: string,
+    _payload: ThreadUnarchivePayload,
+  ): Promise<CodexThreadUnarchiveResult>;
+  rollbackThread(
+    requestID: CodexTransportRequestID,
+    threadID: string,
+    payload: ThreadRollbackPayload,
+  ): Promise<CodexThreadRollbackResult>;
   listThreads(
     requestID: CodexTransportRequestID,
     payload: ThreadListPayload,
@@ -185,6 +234,95 @@ export class CodexClient implements CodexClientAdapter {
         threadId: threadID,
         cwd: payload.workspacePath,
         persistExtendedHistory: true,
+      },
+    });
+
+    return {
+      thread: toCodexThread(response.thread),
+    };
+  }
+
+  async readThread(
+    requestID: CodexTransportRequestID,
+    threadID: string,
+    payload: ThreadReadPayload,
+  ): Promise<CodexThreadReadResult> {
+    const response = await this.transport.send<{ thread: unknown }>({
+      id: requestID,
+      method: "thread/read",
+      params: {
+        threadId: threadID,
+        includeTurns: payload.includeTurns === true ? true : undefined,
+      },
+    });
+
+    return {
+      thread: toCodexThread(response.thread),
+    };
+  }
+
+  async forkThread(
+    requestID: CodexTransportRequestID,
+    threadID: string,
+    payload: ThreadForkPayload,
+  ): Promise<CodexThreadForkResult> {
+    const response = await this.transport.send<{ thread: unknown }>({
+      id: requestID,
+      method: "thread/fork",
+      params: {
+        threadId: threadID,
+        cwd: payload.workspacePath,
+      },
+    });
+
+    return {
+      thread: toCodexThread(response.thread),
+    };
+  }
+
+  async archiveThread(
+    requestID: CodexTransportRequestID,
+    threadID: string,
+    _payload: ThreadArchivePayload,
+  ): Promise<void> {
+    await this.transport.send({
+      id: requestID,
+      method: "thread/archive",
+      params: {
+        threadId: threadID,
+      },
+    });
+  }
+
+  async unarchiveThread(
+    requestID: CodexTransportRequestID,
+    threadID: string,
+    _payload: ThreadUnarchivePayload,
+  ): Promise<CodexThreadUnarchiveResult> {
+    const response = await this.transport.send<{ thread: unknown }>({
+      id: requestID,
+      method: "thread/unarchive",
+      params: {
+        threadId: threadID,
+      },
+    });
+
+    return {
+      thread: toCodexThread(response.thread),
+    };
+  }
+
+  async rollbackThread(
+    requestID: CodexTransportRequestID,
+    threadID: string,
+    payload: ThreadRollbackPayload,
+  ): Promise<CodexThreadRollbackResult> {
+    const response = await this.transport.send<{ thread: unknown }>({
+      id: requestID,
+      method: "thread/rollback",
+      params: {
+        threadId: threadID,
+        numTurns: payload.numTurns,
       },
     });
 
@@ -494,6 +632,9 @@ function toCodexThread(value: unknown): CodexThread {
     preview: typeof value.preview === "string" ? value.preview : "",
     updatedAt: typeof value.updatedAt === "number" ? value.updatedAt : 0,
     name: typeof value.name === "string" ? value.name : null,
+    status: value.status,
+    turns: Array.isArray(value.turns) ? value.turns : [],
+    archived: value.archived === true,
   };
 }
 

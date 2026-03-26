@@ -94,4 +94,35 @@ struct WorkspaceControllerTests {
         #expect(controller.threadSummaries.map(\.id) == ["thread-1", "thread-2"])
         #expect(controller.threadSummaries.first?.title == "Updated")
     }
+
+    @Test func displayedThreadSummariesDefaultToFiveAndCanExpandAndCollapse() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "workspace-display-limit"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let threadSummaries = (0..<7).map { index in
+            ThreadSummary(
+                id: "thread-\(index)",
+                title: "Thread \(index)",
+                previewText: "Preview \(index)",
+                updatedAt: .now.addingTimeInterval(TimeInterval(-index))
+            )
+        }
+
+        controller.replaceThreadList(threadSummaries)
+
+        #expect(controller.displayedThreadSummaries.count == WorkspaceController.collapsedVisibleThreadLimit)
+        #expect(controller.displayedThreadSummaries.map(\.id) == Array(threadSummaries.prefix(WorkspaceController.collapsedVisibleThreadLimit)).map(\.id))
+        #expect(controller.canShowMoreVisibleThreads)
+        #expect(controller.canShowLessVisibleThreads == false)
+
+        controller.setShowingAllVisibleThreads(true)
+
+        #expect(controller.displayedThreadSummaries.map(\.id) == threadSummaries.map(\.id))
+        #expect(controller.canShowMoreVisibleThreads == false)
+        #expect(controller.canShowLessVisibleThreads)
+
+        controller.setShowingAllVisibleThreads(false)
+
+        #expect(controller.displayedThreadSummaries.count == WorkspaceController.collapsedVisibleThreadLimit)
+        #expect(controller.displayedThreadSummaries.map(\.id) == Array(threadSummaries.prefix(WorkspaceController.collapsedVisibleThreadLimit)).map(\.id))
+    }
 }

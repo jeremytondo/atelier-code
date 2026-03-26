@@ -48,52 +48,473 @@ private struct WorkspaceSidebar: View {
     @Binding var isShowingWorkspacePicker: Bool
 
     var body: some View {
-        List {
-            Section {
-                Button("Open Workspace...") {
-                    isShowingWorkspacePicker = true
-                }
-                .accessibilityIdentifier("open-workspace-button")
-            }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(spacing: 10) {
+                    Button {
+                        isShowingWorkspacePicker = true
+                    } label: {
+                        Label("Open Workspace", systemImage: "folder.badge.plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .accessibilityIdentifier("open-workspace-button")
 
-            Section("Recent Workspaces") {
-                if appModel.recentWorkspaces.isEmpty {
-                    Text("No recent workspaces yet.")
-                        .foregroundStyle(.secondary)
-                        .accessibilityIdentifier("recent-workspaces-empty-state")
-                } else {
-                    ForEach(appModel.recentWorkspaces) { workspace in
+                    if appModel.selectedWorkspaceController != nil {
                         Button {
-                            appModel.reopenWorkspace(workspace)
-                        } label: {
-                            HStack(alignment: .top, spacing: 12) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(workspace.displayName)
-                                        .font(.headline)
-                                    Text(workspace.canonicalPath)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(2)
-                                }
-
-                                Spacer(minLength: 0)
-
-                                if appModel.activeWorkspaceController?.workspace.canonicalPath == workspace.canonicalPath {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.tint)
-                                }
+                            Task {
+                                _ = await appModel.createThread()
                             }
-                            .padding(.vertical, 4)
-                            .contentShape(Rectangle())
+                        } label: {
+                            Label("New Thread", systemImage: "square.and.pencil")
+                                .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("recent-workspace-\(workspace.displayName)")
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .accessibilityIdentifier("sidebar-new-thread-button")
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Workspaces")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                        .tracking(0.6)
+
+                    if appModel.workspaceControllers.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("No workspaces yet.")
+                                .font(.subheadline.weight(.semibold))
+
+                            Text("Open a folder to start a workspace.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .accessibilityIdentifier("recent-workspaces-empty-state")
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(appModel.workspaceControllers, id: \.workspace.canonicalPath) { controller in
+                                WorkspaceTreeRow(appModel: appModel, controller: controller)
+                            }
+                        }
                     }
                 }
             }
+            .padding(16)
         }
         .navigationTitle("Workspaces")
-        .frame(minWidth: 300)
+        .frame(minWidth: 340)
+    }
+}
+
+private struct WorkspaceTreeRow: View {
+    let appModel: AppModel
+    let controller: WorkspaceController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            WorkspaceHeaderRow(
+                appModel: appModel,
+                controller: controller
+            )
+
+            if controller.isExpanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    if controller.visibleThreadSummaries.isEmpty {
+                        Text("No active threads yet.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 34)
+                    } else {
+                        ForEach(controller.displayedThreadSummaries) { threadSummary in
+                            WorkspaceThreadRow(
+                                appModel: appModel,
+                                workspacePath: controller.workspace.canonicalPath,
+                                threadSummary: threadSummary
+                            )
+                        }
+                    }
+
+                    HStack(spacing: 12) {
+                        if controller.canShowMoreVisibleThreads {
+                            Button("Show More") {
+                                withAnimation(.easeInOut(duration: 0.16)) {
+                                    controller.setShowingAllVisibleThreads(true)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("show-more-threads-\(controller.workspace.displayName)")
+                        } else if controller.canShowLessVisibleThreads {
+                            Button("Show Less") {
+                                withAnimation(.easeInOut(duration: 0.16)) {
+                                    controller.setShowingAllVisibleThreads(false)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("show-less-threads-\(controller.workspace.displayName)")
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.leading, 34)
+                    .padding(.top, 2)
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            Color.secondary.opacity(0.04),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(
+                    Color(nsColor: .separatorColor).opacity(0.14),
+                    lineWidth: 1
+                )
+        }
+    }
+}
+
+private struct WorkspaceHeaderRow: View {
+    let appModel: AppModel
+    let controller: WorkspaceController
+    @State private var isHovering = false
+
+    private var runningCount: Int {
+        controller.threadSummaries.filter(\.isRunning).count
+    }
+
+    private var showsHoverActions: Bool {
+        isHovering
+    }
+
+    private var disclosureIconName: String {
+        controller.isExpanded ? "chevron.down" : "chevron.right"
+    }
+
+    private var canRetryConnection: Bool {
+        switch controller.connectionStatus {
+        case .disconnected, .error:
+            return true
+        case .connecting, .ready, .streaming, .cancelling:
+            return false
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Button {
+                toggleExpansion()
+            } label: {
+                HStack(alignment: .center, spacing: 10) {
+                    ZStack {
+                        Image(controller.isExpanded ? "workspace-folder-open" : "workspace-folder-closed")
+                            .renderingMode(.template)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 18, height: 18)
+                            .opacity(isHovering ? 0 : 1)
+
+                        Image(systemName: disclosureIconName)
+                            .font(.caption.weight(.semibold))
+                            .opacity(isHovering ? 1 : 0)
+                    }
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+                    .animation(.easeInOut(duration: 0.16), value: controller.isExpanded)
+                    .animation(.easeInOut(duration: 0.16), value: isHovering)
+                        .accessibilityIdentifier("workspace-expand-\(controller.workspace.displayName)")
+
+                    Text(controller.workspace.displayName)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+
+                    Spacer(minLength: 0)
+                }
+                .frame(minHeight: 28)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("recent-workspace-\(controller.workspace.displayName)")
+            .accessibilityLabel(controller.workspace.displayName)
+            .accessibilityValue(controller.isExpanded ? "Expanded" : "Collapsed")
+            .accessibilityHint("Shows or hides the threads for this workspace")
+
+            HStack(alignment: .center, spacing: 10) {
+                if runningCount > 0 {
+                    SidebarThreadBadge(text: runningCount == 1 ? "1 running" : "\(runningCount) running", color: .blue)
+                }
+
+                HStack(spacing: 8) {
+                    Button {
+                        appModel.selectWorkspace(path: controller.workspace.canonicalPath)
+                        Task {
+                            _ = await appModel.createThread()
+                        }
+                    } label: {
+                        Image(systemName: "square.and.pencil")
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("workspace-new-thread-\(controller.workspace.displayName)")
+                    .help("Create a new thread")
+
+                    Menu {
+                        Button("Open in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([controller.workspace.url])
+                        }
+
+                        if canRetryConnection {
+                            Button("Retry Connection") {
+                                appModel.selectWorkspace(path: controller.workspace.canonicalPath)
+                                appModel.retryActiveWorkspaceConnection()
+                            }
+                        }
+
+                        Divider()
+
+                        Button("Remove Workspace") {
+                            appModel.removeWorkspace(path: controller.workspace.canonicalPath)
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .frame(width: 28, height: 28)
+                    }
+                    .menuStyle(BorderlessButtonMenuStyle())
+                    .menuIndicator(.hidden)
+                    .accessibilityIdentifier("workspace-menu-\(controller.workspace.displayName)")
+                    .help("Workspace options")
+                }
+                .foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .trailing)
+                .opacity(showsHoverActions ? 1 : 0)
+                .allowsHitTesting(showsHoverActions)
+                .animation(.easeInOut(duration: 0.16), value: showsHoverActions)
+            }
+        }
+        .onHover { isHovering = $0 }
+        .accessibilityElement(children: .contain)
+        .contextMenu {
+            Button("New Thread") {
+                appModel.selectWorkspace(path: controller.workspace.canonicalPath)
+                Task {
+                    _ = await appModel.createThread()
+                }
+            }
+
+            Button("Open in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([controller.workspace.url])
+            }
+
+            if canRetryConnection {
+                Button("Retry Connection") {
+                    appModel.selectWorkspace(path: controller.workspace.canonicalPath)
+                    appModel.retryActiveWorkspaceConnection()
+                }
+            }
+
+            Divider()
+
+            Button("Remove Workspace") {
+                appModel.removeWorkspace(path: controller.workspace.canonicalPath)
+            }
+        }
+    }
+
+    private func toggleExpansion() {
+        let shouldExpand = controller.isExpanded == false
+
+        guard controller.isExpanded != shouldExpand else {
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.16)) {
+            controller.setExpanded(shouldExpand)
+        }
+
+        guard shouldExpand else {
+            return
+        }
+
+        Task {
+            _ = await appModel.prepareWorkspaceForBrowsing(path: controller.workspace.canonicalPath)
+        }
+    }
+}
+
+private struct WorkspaceThreadRow: View {
+    let appModel: AppModel
+    let workspacePath: String
+    let threadSummary: ThreadSummary
+
+    private var isSelected: Bool {
+        appModel.selectedRoute?.workspacePath == workspacePath && appModel.selectedRoute?.threadID == threadSummary.id
+    }
+
+    var body: some View {
+        Button {
+            Task {
+                _ = await appModel.openThread(
+                    workspacePath: workspacePath,
+                    threadID: threadSummary.id
+                )
+            }
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(threadSummary.hasUnreadActivity ? Color.accentColor : Color.clear)
+                        .frame(width: 8, height: 8)
+                }
+                .frame(width: 24, height: 24)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .center, spacing: 8) {
+                        Text(threadSummary.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                    }
+
+                    HStack(spacing: 6) {
+                        if threadSummary.isRunning {
+                            SidebarThreadBadge(text: "Running", color: .blue)
+                        }
+
+                        if threadSummary.lastErrorMessage != nil {
+                            SidebarThreadBadge(text: "Error", color: .red)
+                        }
+
+                        if threadSummary.isArchived {
+                            SidebarThreadBadge(text: "Archived", color: .secondary)
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 8)
+            .padding(.trailing, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                isSelected ? Color.accentColor.opacity(0.12) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("thread-row-\(threadSummary.id)")
+    }
+}
+
+private struct SidebarThreadBadge: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .foregroundStyle(color)
+            .background(color.opacity(0.12), in: Capsule())
+    }
+}
+
+private struct ThreadDetailHeader: View {
+    let appModel: AppModel
+    let controller: WorkspaceController
+
+    private var selectedThreadSummary: ThreadSummary? {
+        appModel.selectedThreadSummary
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let selectedThreadSummary {
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(selectedThreadSummary.title)
+                            .font(.title2.weight(.semibold))
+
+                        Text(controller.workspace.canonicalPath)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+
+                        if selectedThreadSummary.previewText.isEmpty == false {
+                            Text(selectedThreadSummary.previewText)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(3)
+                        }
+                    }
+
+                    Spacer(minLength: 0)
+
+                    VStack(alignment: .trailing, spacing: 8) {
+                        Text(selectedThreadSummary.updatedAt.relativeThreadTimestamp)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+
+                        HStack(spacing: 6) {
+                            if selectedThreadSummary.isRunning {
+                                SidebarThreadBadge(text: "Running", color: .blue)
+                            }
+
+                            if selectedThreadSummary.lastErrorMessage != nil {
+                                SidebarThreadBadge(text: "Error", color: .red)
+                            }
+
+                            if selectedThreadSummary.isArchived {
+                                SidebarThreadBadge(text: "Read Only", color: .secondary)
+                            }
+                        }
+                    }
+                }
+
+                if selectedThreadSummary.isArchived {
+                    Text("Archived threads are read-only until you unarchive them.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else if let lastErrorMessage = selectedThreadSummary.lastErrorMessage,
+                          lastErrorMessage.isEmpty == false {
+                    Text(lastErrorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(controller.workspace.displayName)
+                        .font(.title2.weight(.semibold))
+
+                    Text(controller.workspace.canonicalPath)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+
+                    Text(
+                        controller.visibleThreadSummaries.isEmpty
+                            ? "Send a prompt to create the first thread in this workspace."
+                            : "Select a thread from the sidebar or create a new one to continue working."
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(20)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 }
 
@@ -104,7 +525,7 @@ private struct ConversationDetailView: View {
 
     var body: some View {
         Group {
-            if let controller = appModel.activeWorkspaceController {
+            if let controller = appModel.selectedWorkspaceController {
                 ActiveWorkspaceConversationView(
                     appModel: appModel,
                     controller: controller,
@@ -123,7 +544,7 @@ private struct ConversationDetailView: View {
                 .accessibilityIdentifier("conversation-empty-state")
             }
         }
-        .navigationTitle(appModel.activeWorkspaceController?.workspace.displayName ?? "AtelierCode")
+        .navigationTitle(appModel.selectedThreadSummary?.title ?? appModel.selectedWorkspaceController?.workspace.displayName ?? "AtelierCode")
     }
 }
 
@@ -146,6 +567,10 @@ private struct ActiveWorkspaceConversationView: View {
         ZStack(alignment: .bottom) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    ThreadDetailHeader(appModel: appModel, controller: controller)
+                        .frame(maxWidth: floatingComposerMaxWidth, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .center)
+
                     ConversationSurface(
                         appModel: appModel,
                         controller: controller,
@@ -183,10 +608,65 @@ private struct ActiveWorkspaceConversationView: View {
                 .padding(.bottom, floatingComposerBottomPadding)
         }
         .onPreferenceChange(ComposerHeightPreferenceKey.self) { composerHeight = $0 }
+        .task(id: selectedThreadLoadKey) {
+            guard let selectedRoute = appModel.selectedRoute,
+                  selectedRoute.workspacePath == controller.workspace.canonicalPath,
+                  let threadID = selectedRoute.threadID,
+                  appModel.selectedThreadSession == nil else {
+                return
+            }
+
+            _ = await appModel.openThread(
+                workspacePath: selectedRoute.workspacePath,
+                threadID: threadID
+            )
+        }
         .toolbar {
             ToolbarItemGroup {
                 ConnectionBadge(status: controller.connectionStatus)
                     .accessibilityIdentifier("workspace-connection-status")
+
+                Button("New Thread") {
+                    Task {
+                        _ = await appModel.createThread()
+                    }
+                }
+                .accessibilityIdentifier("new-thread-button")
+
+                if appModel.selectedThreadSummary != nil {
+                    Button("Fork") {
+                        Task {
+                            _ = await appModel.forkSelectedThread()
+                        }
+                    }
+                    .accessibilityIdentifier("fork-thread-button")
+                }
+
+                if let selectedThreadSummary = appModel.selectedThreadSummary {
+                    if selectedThreadSummary.isArchived {
+                        Button("Unarchive") {
+                            Task {
+                                _ = await appModel.unarchiveSelectedThread()
+                            }
+                        }
+                        .accessibilityIdentifier("unarchive-thread-button")
+                    } else {
+                        Button("Archive") {
+                            Task {
+                                _ = await appModel.archiveSelectedThread()
+                            }
+                        }
+                        .accessibilityIdentifier("archive-thread-button")
+
+                        Button("Rollback") {
+                            Task {
+                                _ = await appModel.rollbackSelectedThread()
+                            }
+                        }
+                        .disabled(appModel.selectedThreadSession?.turnState.phase == .inProgress)
+                        .accessibilityIdentifier("rollback-thread-button")
+                    }
+                }
 
                 if appModel.canRetryActiveWorkspace {
                     Button("Retry Connection") {
@@ -202,6 +682,16 @@ private struct ActiveWorkspaceConversationView: View {
             }
         }
     }
+
+    private var selectedThreadLoadKey: String? {
+        guard let selectedRoute = appModel.selectedRoute,
+              selectedRoute.workspacePath == controller.workspace.canonicalPath,
+              let threadID = selectedRoute.threadID else {
+            return nil
+        }
+
+        return "\(selectedRoute.workspacePath)#\(threadID)"
+    }
 }
 
 private struct ConversationSurface: View {
@@ -211,42 +701,41 @@ private struct ConversationSurface: View {
 
     var body: some View {
         Group {
-            switch conversationState {
-            case .connecting:
+            if isLoadingSelectedThread {
+                StateCard(
+                    title: "Loading Thread",
+                    message: "Restoring the selected conversation in this workspace."
+                )
+                .padding(.bottom, bottomInset)
+                .accessibilityIdentifier("conversation-loading-thread-state")
+            } else if case .connecting = controller.connectionStatus, hasTranscript == false {
                 StateCard(
                     title: "Connecting to the Bridge",
                     message: "The selected workspace has been restored and the runtime is starting."
                 )
                 .padding(.bottom, bottomInset)
                 .accessibilityIdentifier("conversation-connecting-state")
-            case .error(let message):
+            } else if case .error(let message) = controller.connectionStatus, hasTranscript == false {
                 StateCard(
                     title: "Connection Error",
                     message: message
                 )
                 .padding(.bottom, bottomInset)
                 .accessibilityIdentifier("workspace-error-state")
-            case .ready:
+            } else {
                 ConversationTranscript(
                     appModel: appModel,
-                    session: controller.activeThreadSession,
+                    session: appModel.selectedThreadSession,
+                    hasSelectedThread: appModel.selectedThreadSummary != nil,
+                    hasVisibleThreads: controller.visibleThreadSummaries.isEmpty == false,
                     bottomInset: bottomInset
                 )
             }
         }
     }
 
-    private var conversationState: ConversationSurfaceState {
-        switch controller.connectionStatus {
-        case .error(let message) where hasTranscript == false:
-            return .error(message)
-        default:
-            return .ready
-        }
-    }
-
     private var hasTranscript: Bool {
-        guard let session = controller.activeThreadSession else {
+        guard let session = appModel.selectedThreadSession else {
             return false
         }
 
@@ -256,22 +745,40 @@ private struct ConversationSurface: View {
             session.planState != nil ||
             session.aggregatedDiff != nil
     }
-}
 
-private enum ConversationSurfaceState {
-    case connecting
-    case ready
-    case error(String)
+    private var isLoadingSelectedThread: Bool {
+        appModel.selectedThreadSummary != nil && appModel.selectedThreadSession == nil
+    }
 }
 
 private struct ConversationTranscript: View {
     let appModel: AppModel
     let session: ThreadSession?
+    let hasSelectedThread: Bool
+    let hasVisibleThreads: Bool
     let bottomInset: CGFloat
 
     var body: some View {
         if let session {
             TranscriptBody(appModel: appModel, session: session, bottomInset: bottomInset)
+        } else if hasSelectedThread {
+            ContentUnavailableView {
+                Label("Loading Thread", systemImage: "arrow.triangle.2.circlepath")
+            } description: {
+                Text("Restoring the selected thread history.")
+            }
+            .padding(.bottom, bottomInset)
+            .frame(maxWidth: .infinity, minHeight: 420)
+            .accessibilityIdentifier("conversation-loading-empty-state")
+        } else if hasVisibleThreads {
+            ContentUnavailableView {
+                Label("Select a Thread", systemImage: "text.bubble")
+            } description: {
+                Text("Choose a thread from the sidebar to inspect or continue it.")
+            }
+            .padding(.bottom, bottomInset)
+            .frame(maxWidth: .infinity, minHeight: 420)
+            .accessibilityIdentifier("conversation-select-thread-state")
         } else {
             ContentUnavailableView {
                 Label("Start a Thread", systemImage: "square.and.pencil")
@@ -1181,12 +1688,16 @@ private struct ComposerBar: View {
     let appModel: AppModel
     @Binding var composerText: String
 
+    private var isComposerEnabled: Bool {
+        appModel.selectedWorkspaceController != nil && appModel.selectedThreadSummary?.isArchived != true
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             ZStack(alignment: .topLeading) {
                 ComposerTextView(
                     text: $composerText,
-                    isEnabled: appModel.activeWorkspaceController != nil,
+                    isEnabled: isComposerEnabled,
                     onSubmit: sendPrompt
                 )
                 .frame(minHeight: 84, maxHeight: 180)
@@ -1238,17 +1749,36 @@ private struct ComposerBar: View {
     }
 
     private var composerHint: String {
-        guard let controller = appModel.activeWorkspaceController else {
+        guard let controller = appModel.selectedWorkspaceController else {
             return "Pick a workspace to start a conversation."
+        }
+
+        if appModel.selectedThreadSummary?.isArchived == true {
+            return "Archived threads are read-only. Unarchive this thread or create a new one to continue."
+        }
+
+        if appModel.selectedThreadSession?.turnState.phase == .inProgress {
+            return "This thread is streaming. Cancel if you need to stop it."
         }
 
         switch controller.connectionStatus {
         case .ready:
-            return controller.isAwaitingTurnStart
+            let isAwaitingSelectedTurnStart: Bool
+            if let selectedRoute = appModel.selectedRoute,
+               selectedRoute.workspacePath == controller.workspace.canonicalPath,
+               let threadID = selectedRoute.threadID {
+                isAwaitingSelectedTurnStart = controller.isAwaitingTurnStart(threadID: threadID)
+            } else {
+                isAwaitingSelectedTurnStart = false
+            }
+
+            return isAwaitingSelectedTurnStart
                 ? "Waiting for the bridge to acknowledge the new turn."
-                : "Press Enter to send. Press Shift-Enter for a new line."
+                : appModel.selectedThreadSummary == nil
+                    ? "Press Enter to start a new thread. Press Shift-Enter for a new line."
+                    : "Press Enter to send. Press Shift-Enter for a new line."
         case .streaming:
-            return "A turn is streaming. Cancel if you need to stop it."
+            return "Another thread in this workspace is still running. You can keep working here."
         case .cancelling:
             return "Waiting for the runtime to cancel the active turn."
         case .connecting:
@@ -1383,16 +1913,25 @@ private struct ConnectionBadge: View {
     let status: ConnectionStatus
 
     var body: some View {
-        Text(status.shortLabel)
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .foregroundStyle(status.accentColor)
-            .background(status.accentColor.opacity(0.14), in: Capsule())
+        if status != .ready {
+            Text(status.shortLabel)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .foregroundStyle(status.accentColor)
+                .background(status.accentColor.opacity(0.14), in: Capsule())
+        }
     }
 }
 
 #Preview {
+    ContentView()
+        .environment(makePreviewAppModel())
+        .frame(width: 1180, height: 760)
+}
+
+@MainActor
+private func makePreviewAppModel() -> AppModel {
     let workspaceRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("AtelierCodePreview", isDirectory: true)
     try? FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
@@ -1425,9 +1964,7 @@ private struct ConnectionBadge: View {
         session.completeTurn()
     }
 
-    return ContentView()
-        .environment(appModel)
-        .frame(width: 1180, height: 760)
+    return appModel
 }
 
 private final class PreviewPreferencesStore: AppPreferencesStore {
@@ -1456,6 +1993,10 @@ private final class PreviewWorkspaceRuntime: WorkspaceConversationRuntime {
         controller.setAwaitingTurnStart(false)
     }
 
+    func listThreads(archived: Bool) async throws {
+        controller.setShowingArchivedThreads(archived)
+    }
+
     func startThreadAndWait(title: String?) async throws -> ThreadSession {
         controller.openThread(id: UUID().uuidString, title: title ?? "Preview Thread")
     }
@@ -1464,23 +2005,48 @@ private final class PreviewWorkspaceRuntime: WorkspaceConversationRuntime {
         controller.resumeThread(id: id, title: "Preview Thread")
     }
 
-    func startTurn(prompt: String, configuration: BridgeTurnStartConfiguration?) async throws {
-        let session = controller.activeThreadSession ?? controller.openThread(id: UUID().uuidString, title: "Preview Thread")
+    func readThreadAndWait(id: String, includeTurns: Bool) async throws -> ThreadSession {
+        controller.resumeThread(id: id, title: "Preview Thread")
+    }
+
+    func forkThreadAndWait(id: String) async throws -> ThreadSession {
+        controller.resumeThread(id: "\(id)-fork", title: "Preview Thread")
+    }
+
+    func archiveThread(id: String) async throws {
+        controller.setThreadArchived(true, for: id)
+    }
+
+    func unarchiveThreadAndWait(id: String) async throws -> ThreadSession {
+        controller.setThreadArchived(false, for: id)
+        return controller.resumeThread(id: id, title: "Preview Thread")
+    }
+
+    func rollbackThreadAndWait(id: String, numTurns: Int) async throws -> ThreadSession {
+        let messages = Array((controller.threadSession(id: id)?.messages ?? []).dropLast(max(0, numTurns)))
+        return controller.resumeThread(id: id, title: "Preview Thread", messages: messages)
+    }
+
+    func startTurn(threadID: String, prompt: String, configuration: BridgeTurnStartConfiguration?) async throws {
+        let session = controller.threadSession(id: threadID) ?? controller.openThread(id: threadID, title: "Preview Thread")
         session.beginTurn(userPrompt: prompt)
-        controller.setAwaitingTurnStart(false)
+        controller.setAwaitingTurnStart(false, for: threadID)
+        controller.setCurrentTurnID("preview-turn", for: threadID)
         session.appendAssistantTextDelta("Preview assistant response.")
         session.completeTurn()
+        controller.setCurrentTurnID(nil, for: threadID)
         controller.setConnectionStatus(.ready)
     }
 
-    func cancelTurn(reason: String?) async throws {
-        controller.setAwaitingTurnStart(false)
-        controller.activeThreadSession?.cancelTurn()
+    func cancelTurn(threadID: String, reason: String?) async throws {
+        controller.setAwaitingTurnStart(false, for: threadID)
+        controller.threadSession(id: threadID)?.cancelTurn()
+        controller.setCurrentTurnID(nil, for: threadID)
         controller.setConnectionStatus(.ready)
     }
 
-    func resolveApproval(id: String, resolution: ApprovalResolution) async throws {
-        controller.activeThreadSession?.resolveApprovalRequest(id: id, resolution: resolution)
+    func resolveApproval(threadID: String, id: String, resolution: ApprovalResolution) async throws {
+        controller.threadSession(id: threadID)?.resolveApprovalRequest(id: id, resolution: resolution)
     }
 }
 
@@ -1691,6 +2257,14 @@ private extension TranscriptActivitySection {
         }
 
         return "\(itemCount) \(itemCount == 1 ? "item" : "items"), \(status.countLabel)"
+    }
+}
+
+private extension Date {
+    var relativeThreadTimestamp: String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: self, relativeTo: .now)
     }
 }
 

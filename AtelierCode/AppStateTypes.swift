@@ -179,9 +179,38 @@ struct ThreadSummary: Equatable, Sendable, Identifiable {
     var title: String
     var previewText: String
     var updatedAt: Date
+    var isArchived: Bool
+    var isRunning: Bool
+    var hasUnreadActivity: Bool
+    var lastErrorMessage: String?
+
+    init(
+        id: String,
+        title: String,
+        previewText: String,
+        updatedAt: Date,
+        isArchived: Bool = false,
+        isRunning: Bool = false,
+        hasUnreadActivity: Bool = false,
+        lastErrorMessage: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.previewText = previewText
+        self.updatedAt = updatedAt
+        self.isArchived = isArchived
+        self.isRunning = isRunning
+        self.hasUnreadActivity = hasUnreadActivity
+        self.lastErrorMessage = lastErrorMessage
+    }
 }
 
-enum ConversationRole: String, Equatable, Sendable {
+struct WorkspaceThreadRoute: Equatable, Sendable {
+    var workspacePath: String
+    var threadID: String?
+}
+
+enum ConversationRole: String, Codable, Equatable, Sendable {
     case system
     case user
     case assistant

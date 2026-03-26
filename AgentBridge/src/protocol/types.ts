@@ -15,6 +15,11 @@ export type BridgeCommandType =
   | "thread.start"
   | "thread.resume"
   | "thread.list"
+  | "thread.read"
+  | "thread.fork"
+  | "thread.archive"
+  | "thread.unarchive"
+  | "thread.rollback"
   | "turn.start"
   | "turn.cancel"
   | "approval.resolve"
@@ -23,6 +28,8 @@ export type BridgeCommandType =
   | "account.logout";
 export type BridgeEventType =
   | "thread.started"
+  | "thread.archived"
+  | "thread.unarchived"
   | "turn.started"
   | "message.delta"
   | "thinking.delta"
@@ -44,6 +51,7 @@ export type BridgeEventType =
   | "provider.status";
 export type BridgeMessageType = BridgeHandshakeType | BridgeCommandType | BridgeEventType;
 export type ThreadArchiveFilter = "exclude" | "include" | "only";
+export type ThreadRuntimeState = "notLoaded" | "idle" | "running" | "error";
 export type TurnCompletionStatus = "completed" | "failed" | "cancelled" | "interrupted";
 export type ActivityStatus = "running" | "completed" | "failed" | "cancelled";
 export type ToolKind = "command" | "mcp" | "webSearch" | "other";
@@ -94,7 +102,16 @@ export interface ThreadSummary {
   title: string;
   previewText: string;
   updatedAt: ISO8601Timestamp;
-  archivedAt?: ISO8601Timestamp | null;
+  archived?: boolean;
+  running?: boolean;
+  errorMessage?: string;
+  messages?: ConversationMessage[];
+}
+
+export interface ConversationMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
 }
 
 export interface ProviderSummary {
@@ -188,6 +205,22 @@ export interface ThreadListPayload {
   archived?: ThreadArchiveFilter;
 }
 
+export interface ThreadReadPayload {
+  includeTurns?: boolean;
+}
+
+export interface ThreadForkPayload {
+  workspacePath: string;
+}
+
+export interface ThreadArchivePayload {}
+
+export interface ThreadUnarchivePayload {}
+
+export interface ThreadRollbackPayload {
+  numTurns: number;
+}
+
 export interface TurnStartPayload {
   prompt: string;
   configuration?: TurnStartConfiguration;
@@ -224,6 +257,26 @@ export interface ThreadResumeCommand extends BridgeCommandEnvelope<"thread.resum
 
 export interface ThreadListCommand extends BridgeCommandEnvelope<"thread.list", ThreadListPayload> {}
 
+export interface ThreadReadCommand extends BridgeCommandEnvelope<"thread.read", ThreadReadPayload> {
+  threadID: string;
+}
+
+export interface ThreadForkCommand extends BridgeCommandEnvelope<"thread.fork", ThreadForkPayload> {
+  threadID: string;
+}
+
+export interface ThreadArchiveCommand extends BridgeCommandEnvelope<"thread.archive", ThreadArchivePayload> {
+  threadID: string;
+}
+
+export interface ThreadUnarchiveCommand extends BridgeCommandEnvelope<"thread.unarchive", ThreadUnarchivePayload> {
+  threadID: string;
+}
+
+export interface ThreadRollbackCommand extends BridgeCommandEnvelope<"thread.rollback", ThreadRollbackPayload> {
+  threadID: string;
+}
+
 export interface TurnStartCommand extends BridgeCommandEnvelope<"turn.start", TurnStartPayload> {
   threadID: string;
 }
@@ -250,6 +303,11 @@ export type BridgeCommand =
   | ThreadStartCommand
   | ThreadResumeCommand
   | ThreadListCommand
+  | ThreadReadCommand
+  | ThreadForkCommand
+  | ThreadArchiveCommand
+  | ThreadUnarchiveCommand
+  | ThreadRollbackCommand
   | TurnStartCommand
   | TurnCancelCommand
   | ApprovalResolveCommand
@@ -264,6 +322,14 @@ export interface TurnStartedPayload {
 
 export interface ThreadStartedPayload {
   thread: ThreadSummary;
+}
+
+export interface ThreadArchivedPayload {
+  threadID: string;
+}
+
+export interface ThreadUnarchivedPayload {
+  threadID: string;
 }
 
 export interface MessageDeltaPayload {
@@ -379,6 +445,15 @@ export interface ThreadStartedEvent extends BridgeEventEnvelope<"thread.started"
   threadID: string;
 }
 
+export interface ThreadArchivedEvent extends BridgeEventEnvelope<"thread.archived", ThreadArchivedPayload> {
+  threadID: string;
+}
+
+export interface ThreadUnarchivedEvent
+  extends BridgeEventEnvelope<"thread.unarchived", ThreadUnarchivedPayload> {
+  threadID: string;
+}
+
 export interface MessageDeltaEvent extends BridgeEventEnvelope<"message.delta", MessageDeltaPayload> {
   threadID: string;
   turnID: string;
@@ -472,6 +547,8 @@ export interface ProviderStatusEvent extends BridgeEventEnvelope<"provider.statu
 
 export type BridgeEvent =
   | ThreadStartedEvent
+  | ThreadArchivedEvent
+  | ThreadUnarchivedEvent
   | TurnStartedEvent
   | MessageDeltaEvent
   | ThinkingDeltaEvent

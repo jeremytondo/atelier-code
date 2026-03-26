@@ -37,6 +37,42 @@ struct WorkspaceBridgeRuntimeTests {
         #expect(sentMessageTypes(from: socketClient.sentTexts) == ["hello", "account.read", "thread.list"])
     }
 
+    @Test func archivingPristineThreadStaysLocalAndAvoidsRolloutErrors() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-pristine-archive"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4243)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        let startTask = Task { try await runtime.startThreadAndWait(title: "New Thread") }
+        try await waitUntil { pendingCommandCount(in: runtime) == 1 }
+        socketClient.enqueue(threadStartedJSON(requestID: "ateliercode-thread-start-4", threadID: "thread-1", threadTitle: "New Thread"))
+
+        let session = try await startTask.value
+        let sentCountBeforeArchive = socketClient.sentTexts.count
+
+        try await runtime.archiveThread(id: session.threadID)
+
+        #expect(session.messages.isEmpty)
+        #expect(controller.threadSummary(id: session.threadID)?.isArchived == true)
+        #expect(controller.connectionStatus == .ready)
+        #expect(socketClient.sentTexts.count == sentCountBeforeArchive)
+    }
+
     @Test func accountLoginResultOpensBrowserAndClearsPendingStateOnAuthChange() async throws {
         let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-login"), lastOpenedAt: .now)
         let controller = WorkspaceController(workspace: workspace)
@@ -1005,7 +1041,9 @@ private func pendingCommandCount(in runtime: WorkspaceBridgeRuntime) -> Int {
 }
 
 private func pendingThreadStartCount(in runtime: WorkspaceBridgeRuntime) -> Int {
-    guard let pendingThreadStarts = Mirror(reflecting: runtime).children.first(where: { $0.label == "pendingThreadStarts" })?.value else {
+    let mirror = Mirror(reflecting: runtime)
+    guard let pendingThreadStarts = mirror.children.first(where: { $0.label == "pendingThreadStarts" })?.value
+        ?? mirror.children.first(where: { $0.label == "pendingThreadSessions" })?.value else {
         return 0
     }
 
