@@ -258,6 +258,22 @@ final class AppModel {
         persistPreferences()
     }
 
+    func selectWorkspaceForNewThread(path: String) {
+        let canonicalPath = WorkspaceRecord.canonicalizedPath(for: path)
+        guard workspaceController(for: canonicalPath) != nil else {
+            return
+        }
+
+        showConversations()
+        selectedRoute = WorkspaceThreadRoute(
+            workspacePath: canonicalPath,
+            threadID: nil
+        )
+        lastSelectedWorkspacePath = canonicalPath
+        startWorkspaceRuntimeIfNeeded(for: canonicalPath)
+        persistPreferences()
+    }
+
     @discardableResult
     func prepareWorkspaceForBrowsing(path: String) async -> Bool {
         let canonicalPath = WorkspaceRecord.canonicalizedPath(for: path)

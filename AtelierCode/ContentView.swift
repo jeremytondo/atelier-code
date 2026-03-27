@@ -903,22 +903,48 @@ private struct ActiveWorkspaceConversationView: View {
         composerHeight + floatingComposerBottomPadding + transcriptComposerSpacing
     }
 
+    private var isDraftingNewThread: Bool {
+        appModel.selectedRoute?.workspacePath == controller.workspace.canonicalPath &&
+            appModel.selectedRoute?.threadID == nil
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    ConversationSurface(
-                        appModel: appModel,
-                        controller: controller,
-                        bottomInset: composerClearance
-                    )
-                    .frame(maxWidth: floatingComposerMaxWidth, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .center)
+            if (isDraftingNewThread || controller.visibleThreadSummaries.isEmpty),
+               appModel.selectedThreadSession == nil {
+                VStack(spacing: 4) {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 48))
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 8)
+
+                    Text("Start a new thread in:")
+                        .foregroundStyle(.secondary)
+
+                    WorkspacePickerButton(appModel: appModel)
                 }
-                .padding(.horizontal, contentPadding)
-                .padding(.top, contentPadding)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.bottom, composerClearance)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("conversation-ready-empty-state")
+            } else {
+                GeometryReader { geometry in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 20) {
+                            ConversationSurface(
+                                appModel: appModel,
+                                controller: controller,
+                                bottomInset: composerClearance
+                            )
+                            .frame(maxWidth: floatingComposerMaxWidth, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                        }
+                        .padding(.horizontal, contentPadding)
+                        .padding(.top, contentPadding)
+                        .padding(.bottom, composerClearance)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(minHeight: geometry.size.height)
+                    }
+                }
             }
 
             ComposerBar(appModel: appModel, composerText: $composerText)
@@ -1063,8 +1089,6 @@ private struct ConversationSurface: View {
                     appModel: appModel,
                     session: appModel.selectedThreadSession,
                     hasSelectedThread: appModel.selectedThreadSummary != nil,
-                    isDraftingNewThread: appModel.selectedRoute?.workspacePath == controller.workspace.canonicalPath &&
-                        appModel.selectedRoute?.threadID == nil,
                     hasVisibleThreads: controller.visibleThreadSummaries.isEmpty == false,
                     bottomInset: bottomInset
                 )
@@ -1093,7 +1117,6 @@ private struct ConversationTranscript: View {
     let appModel: AppModel
     let session: ThreadSession?
     let hasSelectedThread: Bool
-    let isDraftingNewThread: Bool
     let hasVisibleThreads: Bool
     let bottomInset: CGFloat
 
@@ -1109,15 +1132,6 @@ private struct ConversationTranscript: View {
             .padding(.bottom, bottomInset)
             .frame(maxWidth: .infinity, minHeight: 420)
             .accessibilityIdentifier("conversation-loading-empty-state")
-        } else if isDraftingNewThread || hasVisibleThreads == false {
-            ContentUnavailableView {
-                Label("Start a Thread", systemImage: "square.and.pencil")
-            } description: {
-                Text("Send your first prompt below to create a new thread for this workspace.")
-            }
-            .padding(.bottom, bottomInset)
-            .frame(maxWidth: .infinity, minHeight: 420)
-            .accessibilityIdentifier("conversation-ready-empty-state")
         } else if hasVisibleThreads {
             ContentUnavailableView {
                 Label("Select a Thread", systemImage: "text.bubble")
@@ -1128,6 +1142,57 @@ private struct ConversationTranscript: View {
             .frame(maxWidth: .infinity, minHeight: 420)
             .accessibilityIdentifier("conversation-select-thread-state")
         }
+    }
+}
+
+private struct WorkspacePickerButton: View {
+    let appModel: AppModel
+
+    private var currentWorkspace: WorkspaceRecord? {
+        appModel.selectedWorkspaceController?.workspace
+    }
+
+    var body: some View {
+        Menu {
+            ForEach(appModel.workspaceControllers, id: \.workspace.canonicalPath) { controller in
+                Button {
+                    appModel.selectWorkspaceForNewThread(path: controller.workspace.canonicalPath)
+                } label: {
+                    HStack {
+                        Text(controller.workspace.displayName)
+                        if controller.workspace.canonicalPath == currentWorkspace?.canonicalPath {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            Button("Open Workspace...") {
+                let panel = NSOpenPanel()
+                panel.canChooseFiles = false
+                panel.canChooseDirectories = true
+                panel.allowsMultipleSelection = false
+
+                guard panel.runModal() == .OK, let url = panel.url else {
+                    return
+                }
+
+                appModel.activateWorkspace(at: url)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(currentWorkspace?.displayName ?? "No Workspace")
+                    .font(.title2.bold())
+                Image(systemName: "chevron.down")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .accessibilityIdentifier("new-thread-workspace-picker")
     }
 }
 
