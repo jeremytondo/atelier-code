@@ -6,10 +6,10 @@
 //
 
 import SwiftUI
+import AppKit
 
 @main
 struct AtelierCodeApp: App {
-    @Environment(\.scenePhase) private var scenePhase
     @State private var appModel: AppModel
 
     @MainActor
@@ -22,12 +22,11 @@ struct AtelierCodeApp: App {
             ContentView()
                 .environment(appModel)
                 .preferredColorScheme(appModel.appearancePreference.preferredColorScheme)
-                .onChange(of: scenePhase) { _, newValue in
-                    guard newValue == .active else {
-                        return
-                    }
-
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                     appModel.applicationDidBecomeActive()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+                    appModel.applicationWindowDidBecomeKey()
                 }
         }
     }

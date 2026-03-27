@@ -245,6 +245,81 @@ struct AppModelTests {
         #expect(appModel.activeWorkspaceController?.gitStatus == .detachedHead("abc1234"))
     }
 
+    @Test func keyWindowActivationRefreshesSelectedWorkspaceGitStatusAgain() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitStatusProvider = TestWorkspaceGitStatusProvider()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitStatusProvider: gitStatusProvider,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "git-status-window-key")
+
+        await gitStatusProvider.enqueueStatuses([.branch("main"), .branch("feature/window-key")], for: workspaceURL.path)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
+
+        appModel.applicationWindowDidBecomeKey()
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("feature/window-key") }
+
+        #expect(await gitStatusProvider.requestedWorkspacePaths() == [workspaceURL.path, workspaceURL.path])
+        #expect(appModel.activeWorkspaceController?.gitStatus == .branch("feature/window-key"))
+    }
+
+    @Test func openingThreadInAnotherWorkspaceRefreshesGitStatusForThatWorkspace() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitStatusProvider = TestWorkspaceGitStatusProvider()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitStatusProvider: gitStatusProvider,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let firstWorkspaceURL = try temporaryDirectory(named: "git-status-thread-open-first")
+        let secondWorkspaceURL = try temporaryDirectory(named: "git-status-thread-open-second")
+
+        await gitStatusProvider.enqueueStatuses([.branch("main"), .branch("main")], for: firstWorkspaceURL.path)
+        await gitStatusProvider.enqueueStatuses([.branch("feature/initial"), .detachedHead("abc1234")], for: secondWorkspaceURL.path)
+
+        appModel.activateWorkspace(at: firstWorkspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
+
+        appModel.activateWorkspace(at: secondWorkspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("feature/initial") }
+        appModel.activeWorkspaceController?.upsertThreadSummary(
+            ThreadSummary(
+                id: "thread-2",
+                title: "Second Workspace Thread",
+                previewText: "Open me",
+                updatedAt: .now
+            )
+        )
+
+        appModel.selectWorkspace(path: firstWorkspaceURL.path)
+        try await waitUntil {
+            appModel.activeWorkspaceController?.workspace.canonicalPath == firstWorkspaceURL.path &&
+                appModel.activeWorkspaceController?.gitStatus == .branch("main")
+        }
+
+        let didOpen = await appModel.openThread(workspacePath: secondWorkspaceURL.path, threadID: "thread-2")
+
+        #expect(didOpen)
+        try await waitUntil {
+            appModel.activeWorkspaceController?.workspace.canonicalPath == secondWorkspaceURL.path &&
+                appModel.activeWorkspaceController?.gitStatus == .detachedHead("abc1234")
+        }
+
+        #expect(await gitStatusProvider.requestedWorkspacePaths() == [
+            firstWorkspaceURL.path,
+            secondWorkspaceURL.path,
+            firstWorkspaceURL.path,
+            secondWorkspaceURL.path,
+        ])
+    }
+
     @Test func firstSendCreatesThreadBeforeStartingTurn() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()

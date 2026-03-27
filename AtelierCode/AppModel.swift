@@ -339,6 +339,10 @@ final class AppModel {
         refreshSelectedWorkspaceGitStatus()
     }
 
+    func applicationWindowDidBecomeKey() {
+        refreshSelectedWorkspaceGitStatus()
+    }
+
     func selectSettingsSection(_ section: SettingsSection) {
         selectedSettingsSection = section
         primaryView = .settings
@@ -357,13 +361,8 @@ final class AppModel {
         showConversations()
         let threadID = preferredThreadID(for: controller)
         controller.markThreadSelected(threadID)
-        selectedRoute = WorkspaceThreadRoute(
-            workspacePath: canonicalPath,
-            threadID: threadID
-        )
-        lastSelectedWorkspacePath = canonicalPath
+        updateSelectedRoute(workspacePath: canonicalPath, threadID: threadID)
         startWorkspaceRuntimeIfNeeded(for: canonicalPath)
-        refreshGitStatus(for: controller.workspace)
         persistPreferences()
     }
 
@@ -374,13 +373,8 @@ final class AppModel {
         }
 
         showConversations()
-        selectedRoute = WorkspaceThreadRoute(
-            workspacePath: canonicalPath,
-            threadID: nil
-        )
-        lastSelectedWorkspacePath = canonicalPath
+        updateSelectedRoute(workspacePath: canonicalPath, threadID: nil)
         startWorkspaceRuntimeIfNeeded(for: canonicalPath)
-        refreshGitStatus(for: controller.workspace)
         persistPreferences()
     }
 
@@ -428,8 +422,7 @@ final class AppModel {
             }
 
             controller.markThreadSelected(threadID)
-            selectedRoute = WorkspaceThreadRoute(workspacePath: canonicalPath, threadID: threadID)
-            lastSelectedWorkspacePath = canonicalPath
+            updateSelectedRoute(workspacePath: canonicalPath, threadID: threadID)
             persistPreferences()
             return true
         } catch is CancellationError {
@@ -448,11 +441,7 @@ final class AppModel {
 
         showConversations()
         controller.clearActiveThreadSession()
-        selectedRoute = WorkspaceThreadRoute(
-            workspacePath: controller.workspace.canonicalPath,
-            threadID: nil
-        )
-        lastSelectedWorkspacePath = controller.workspace.canonicalPath
+        updateSelectedRoute(workspacePath: controller.workspace.canonicalPath, threadID: nil)
         startWorkspaceRuntimeIfNeeded(for: controller.workspace.canonicalPath)
         persistPreferences()
         return true
@@ -480,11 +469,7 @@ final class AppModel {
         do {
             let session = try await runtime.forkThreadAndWait(id: threadID)
             controller.markThreadSelected(session.threadID)
-            self.selectedRoute = WorkspaceThreadRoute(
-                workspacePath: canonicalPath,
-                threadID: session.threadID
-            )
-            lastSelectedWorkspacePath = canonicalPath
+            updateSelectedRoute(workspacePath: canonicalPath, threadID: session.threadID)
             persistPreferences()
             return true
         } catch is CancellationError {
@@ -559,11 +544,7 @@ final class AppModel {
         do {
             let session = try await runtime.unarchiveThreadAndWait(id: threadID)
             controller.markThreadSelected(session.threadID)
-            self.selectedRoute = WorkspaceThreadRoute(
-                workspacePath: canonicalPath,
-                threadID: session.threadID
-            )
-            lastSelectedWorkspacePath = canonicalPath
+            updateSelectedRoute(workspacePath: canonicalPath, threadID: session.threadID)
             persistPreferences()
             return true
         } catch is CancellationError {
@@ -611,10 +592,7 @@ final class AppModel {
         do {
             let session = try await runtime.rollbackThreadAndWait(id: threadID, numTurns: 1)
             controller.markThreadSelected(session.threadID)
-            self.selectedRoute = WorkspaceThreadRoute(
-                workspacePath: controller.workspace.canonicalPath,
-                threadID: session.threadID
-            )
+            updateSelectedRoute(workspacePath: controller.workspace.canonicalPath, threadID: session.threadID)
             persistPreferences()
             return true
         } catch is CancellationError {
@@ -724,10 +702,7 @@ final class AppModel {
                 let session = try await runtime.startThreadAndWait(title: nil)
                 threadID = session.threadID
                 controller.markThreadSelected(threadID)
-                selectedRoute = WorkspaceThreadRoute(
-                    workspacePath: controller.workspace.canonicalPath,
-                    threadID: threadID
-                )
+                updateSelectedRoute(workspacePath: controller.workspace.canonicalPath, threadID: threadID)
                 persistPreferences()
             }
 
@@ -897,6 +872,17 @@ final class AppModel {
         }
 
         refreshGitStatus(for: workspace)
+    }
+
+    private func updateSelectedRoute(workspacePath: String, threadID: String?) {
+        selectedRoute = WorkspaceThreadRoute(workspacePath: workspacePath, threadID: threadID)
+        lastSelectedWorkspacePath = workspacePath
+
+        guard let controller = workspaceController(for: workspacePath) else {
+            return
+        }
+
+        refreshGitStatus(for: controller.workspace)
     }
 
     private func refreshGitStatus(for workspace: WorkspaceRecord) {
