@@ -259,6 +259,22 @@ final class AppModel {
         return branchPickerState?.filteredBranches ?? []
     }
 
+    var selectedWorkspaceBranchPickerItems: [WorkspaceBranchPickerItem] {
+        guard isSelectedWorkspaceBranchPickerPresented else {
+            return []
+        }
+
+        return branchPickerState?.items ?? []
+    }
+
+    var selectedWorkspaceBranchPickerSelectedItemID: WorkspaceBranchPickerItem.ID? {
+        guard isSelectedWorkspaceBranchPickerPresented else {
+            return nil
+        }
+
+        return branchPickerState?.selectedItemID
+    }
+
     var selectedWorkspaceBranchPickerCurrentBranchName: String? {
         return branchPickerState?.currentBranchName
     }
@@ -296,20 +312,7 @@ final class AppModel {
             return false
         }
 
-        return branchPickerState.isLoading == false &&
-            branchPickerState.isPerformingAction == false &&
-            branchPickerState.submittedBranchName.isEmpty == false &&
-            branchPickerState.exactMatchName == nil
-    }
-
-    var selectedWorkspaceBranchPickerCreateButtonTitle: String {
-        guard let branchPickerState,
-              branchPickerState.submittedBranchName.isEmpty == false,
-              branchPickerState.exactMatchName == nil else {
-            return "Create and check out new branch..."
-        }
-
-        return "Create and check out \"\(branchPickerState.submittedBranchName)\""
+        return branchPickerState.canCreateBranch
     }
 
     func showSelectedWorkspaceBranchPicker() {
@@ -348,8 +351,17 @@ final class AppModel {
             return
         }
 
-        branchPickerState.filterText = filterText
-        branchPickerState.errorMessage = nil
+        branchPickerState.setFilterText(filterText)
+        self.branchPickerState = branchPickerState
+    }
+
+    func moveSelectedWorkspaceBranchPickerSelection(_ direction: WorkspaceBranchPickerSelectionDirection) {
+        guard isSelectedWorkspaceBranchPickerPresented,
+              var branchPickerState else {
+            return
+        }
+
+        branchPickerState.moveSelection(direction)
         self.branchPickerState = branchPickerState
     }
 
@@ -370,12 +382,16 @@ final class AppModel {
     }
 
     func submitSelectedWorkspaceBranchPicker() async {
-        guard let exactMatchName = selectedWorkspaceBranchPickerExactMatchName else {
-            await createSelectedWorkspaceBranchFromPicker()
+        guard let selectedItem = branchPickerState?.selectedItem else {
             return
         }
 
-        await performBranchPickerAction(named: exactMatchName, createIfNeeded: false)
+        switch selectedItem {
+        case .branch(let branchName):
+            await selectBranchFromPicker(branchName)
+        case .create(let branchName):
+            await performBranchPickerAction(named: branchName, createIfNeeded: true)
+        }
     }
 
     func createSelectedWorkspaceBranchFromPicker() async {
@@ -1002,10 +1018,6 @@ final class AppModel {
         }
     }
 
-    private var selectedWorkspaceBranchPickerExactMatchName: String? {
-        branchPickerState?.exactMatchName
-    }
-
     private func installWorkspacePersistenceHandlers() {
         for controller in workspaceControllers {
             configurePersistenceHandler(for: controller)
@@ -1115,10 +1127,13 @@ final class AppModel {
             ),
             currentBranchName: currentBranchName,
             filterText: "",
+            selectedItemID: nil,
             errorMessage: nil,
             isLoading: controller.localGitBranches.isEmpty,
             isPerformingAction: false
         )
+
+        branchPickerState?.selectDefaultItem()
 
         reloadSelectedWorkspaceBranchPicker()
     }
@@ -1159,6 +1174,7 @@ final class AppModel {
             )
             currentBranchPickerState.currentBranchName = Self.currentBranchName(from: snapshot.status)
             currentBranchPickerState.isLoading = false
+            currentBranchPickerState.syncSelection()
             self.branchPickerState = currentBranchPickerState
         }
     }
@@ -1550,6 +1566,7 @@ struct WorkspaceBranchPickerState: Equatable, Sendable {
     var branchNames: [String]
     var currentBranchName: String?
     var filterText: String
+    var selectedItemID: WorkspaceBranchPickerItem.ID?
     var errorMessage: String?
     var isLoading: Bool
     var isPerformingAction: Bool
@@ -1581,6 +1598,119 @@ struct WorkspaceBranchPickerState: Equatable, Sendable {
 
         return branchNames.filter { branchName in
             branchName.localizedCaseInsensitiveContains(filterText)
+        }
+    }
+
+    var canCreateBranch: Bool {
+        isLoading == false &&
+        isPerformingAction == false &&
+        submittedBranchName.isEmpty == false &&
+        exactMatchName == nil
+    }
+
+    var items: [WorkspaceBranchPickerItem] {
+        var items = filteredBranches.map(WorkspaceBranchPickerItem.branch)
+
+        if canCreateBranch {
+            items.append(.create(submittedBranchName))
+        }
+
+        return items
+    }
+
+    var selectedItem: WorkspaceBranchPickerItem? {
+        guard let selectedItemID else {
+            return items.first(where: { $0.id == defaultSelectedItemID })
+        }
+
+        return items.first(where: { $0.id == selectedItemID })
+    }
+
+    mutating func setFilterText(_ filterText: String) {
+        self.filterText = filterText
+        errorMessage = nil
+        selectDefaultItem()
+    }
+
+    mutating func moveSelection(_ direction: WorkspaceBranchPickerSelectionDirection) {
+        let items = items
+        guard items.isEmpty == false else {
+            selectedItemID = nil
+            return
+        }
+
+        guard let selectedItemID,
+              let selectedIndex = items.firstIndex(where: { $0.id == selectedItemID }) else {
+            self.selectedItemID = defaultSelectedItemID
+            return
+        }
+
+        let nextIndex: Int
+        switch direction {
+        case .up:
+            nextIndex = max(selectedIndex - 1, 0)
+        case .down:
+            nextIndex = min(selectedIndex + 1, items.count - 1)
+        }
+
+        self.selectedItemID = items[nextIndex].id
+    }
+
+    mutating func selectDefaultItem() {
+        selectedItemID = defaultSelectedItemID
+    }
+
+    mutating func syncSelection() {
+        let items = items
+        guard items.isEmpty == false else {
+            selectedItemID = nil
+            return
+        }
+
+        guard let selectedItemID,
+              items.contains(where: { $0.id == selectedItemID }) else {
+            self.selectedItemID = defaultSelectedItemID
+            return
+        }
+    }
+
+    private var defaultSelectedItemID: WorkspaceBranchPickerItem.ID? {
+        let items = items
+        guard items.isEmpty == false else {
+            return nil
+        }
+
+        if normalizedFilterText.isEmpty,
+           let currentBranchName,
+           let currentBranchItem = items.first(where: {
+               if case .branch(let branchName) = $0 {
+                   return branchName == currentBranchName
+               }
+
+               return false
+           }) {
+            return currentBranchItem.id
+        }
+
+        return items.first?.id
+    }
+}
+
+enum WorkspaceBranchPickerSelectionDirection: Sendable {
+    case up
+    case down
+}
+
+enum WorkspaceBranchPickerItem: Identifiable, Equatable, Sendable {
+    case branch(String)
+    case create(String)
+
+    var id: String {
+        switch self {
+        case .branch(let branchName):
+            return "branch:\(branchName)"
+        case .create(let branchName):
+            return "create:\(branchName)"
         }
     }
 }

@@ -1205,6 +1205,7 @@ private struct DetailStatusBarItem: View {
 
 private struct BranchPickerPopover: View {
     let appModel: AppModel
+    @FocusState private var isFilterFieldFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1212,8 +1213,9 @@ private struct BranchPickerPopover: View {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
 
-                TextField("Search branches", text: filterTextBinding)
+                TextField("Search or create branch", text: filterTextBinding)
                     .textFieldStyle(.plain)
+                    .focused($isFilterFieldFocused)
                     .onSubmit {
                         Task {
                             await appModel.submitSelectedWorkspaceBranchPicker()
@@ -1226,10 +1228,10 @@ private struct BranchPickerPopover: View {
             .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
 
             Text("Branches")
-                .font(.caption.weight(.semibold))
+                .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
-                .tracking(0.8)
+                .tracking(0.5)
 
             if appModel.isSelectedWorkspaceBranchPickerLoading &&
                 appModel.selectedWorkspaceBranchPickerFilteredBranches.isEmpty {
@@ -1255,35 +1257,27 @@ private struct BranchPickerPopover: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("branch-picker-error")
             }
-
-            Divider()
-
-            Button {
-                Task {
-                    await appModel.createSelectedWorkspaceBranchFromPicker()
-                }
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 18, weight: .medium))
-
-                    Text(appModel.selectedWorkspaceBranchPickerCreateButtonTitle)
-                        .font(.headline)
-
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-            .disabled(appModel.canCreateSelectedWorkspaceBranchFromPicker == false)
-            .accessibilityIdentifier("branch-picker-create-action")
         }
         .padding(16)
         .frame(width: 360)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("branch-picker-popover")
+        .onAppear {
+            isFilterFieldFocused = true
+        }
+        .onMoveCommand { direction in
+            switch direction {
+            case .up:
+                appModel.moveSelectedWorkspaceBranchPickerSelection(.up)
+            case .down:
+                appModel.moveSelectedWorkspaceBranchPickerSelection(.down)
+            default:
+                break
+            }
+        }
+        .onExitCommand {
+            appModel.dismissSelectedWorkspaceBranchPicker()
+        }
     }
 
     private var filterTextBinding: Binding<String> {
@@ -1298,30 +1292,43 @@ private struct BranchPickerBranchList: View {
     let appModel: AppModel
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 4) {
-                if appModel.selectedWorkspaceBranchPickerFilteredBranches.isEmpty {
-                    Text(emptyStateText)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 12)
-                        .accessibilityIdentifier("branch-picker-empty-state")
-                } else {
-                    ForEach(appModel.selectedWorkspaceBranchPickerFilteredBranches, id: \.self) { branchName in
-                        BranchPickerRow(
-                            branchName: branchName,
-                            isCurrentBranch: appModel.selectedWorkspaceBranchPickerCurrentBranchName == branchName,
-                            isDisabled: appModel.isSelectedWorkspaceBranchPickerPerformingAction
-                        ) {
-                            Task {
-                                await appModel.selectBranchFromPicker(branchName)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    if appModel.selectedWorkspaceBranchPickerItems.isEmpty {
+                        Text(emptyStateText)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 12)
+                            .accessibilityIdentifier("branch-picker-empty-state")
+                    } else {
+                        ForEach(appModel.selectedWorkspaceBranchPickerItems) { item in
+                            BranchPickerRow(
+                                item: item,
+                                isCurrentBranch: currentBranchName(for: item) == appModel.selectedWorkspaceBranchPickerCurrentBranchName,
+                                isSelected: appModel.selectedWorkspaceBranchPickerSelectedItemID == item.id,
+                                isDisabled: appModel.isSelectedWorkspaceBranchPickerPerformingAction
+                            ) {
+                                Task {
+                                    await performAction(for: item)
+                                }
                             }
+                            .id(item.id)
                         }
                     }
                 }
+                .padding(2)
             }
-            .padding(2)
+            .onChange(of: appModel.selectedWorkspaceBranchPickerSelectedItemID) { _, selectedItemID in
+                guard let selectedItemID else {
+                    return
+                }
+
+                withAnimation(.easeInOut(duration: 0.12)) {
+                    proxy.scrollTo(selectedItemID, anchor: .center)
+                }
+            }
         }
         .frame(minHeight: 140, maxHeight: 220)
         .background(Color.secondary.opacity(0.03), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -1339,52 +1346,127 @@ private struct BranchPickerBranchList: View {
             return "No local branches found."
         }
 
-        if appModel.canCreateSelectedWorkspaceBranchFromPicker {
-            return "No branches match \"\(filterText)\". Press Return to create and check out this branch."
+        return "No branches match \"\(filterText)\"."
+    }
+
+    private func currentBranchName(for item: WorkspaceBranchPickerItem) -> String? {
+        guard case .branch(let branchName) = item else {
+            return nil
         }
 
-        return "No branches match \"\(filterText)\"."
+        return branchName
+    }
+
+    private func performAction(for item: WorkspaceBranchPickerItem) async {
+        switch item {
+        case .branch(let branchName):
+            await appModel.selectBranchFromPicker(branchName)
+        case .create:
+            await appModel.createSelectedWorkspaceBranchFromPicker()
+        }
     }
 }
 
 private struct BranchPickerRow: View {
-    let branchName: String
+    let item: WorkspaceBranchPickerItem
     let isCurrentBranch: Bool
+    let isSelected: Bool
     let isDisabled: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                Image(systemName: "arrow.triangle.branch")
-                    .font(.system(size: 14, weight: .medium))
+                Image(systemName: iconName)
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.secondary)
 
-                Text(branchName)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
 
                 Spacer(minLength: 0)
 
                 if isCurrentBranch {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.primary)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
                 }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(backgroundColor, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(borderColor, lineWidth: isSelected ? 1 : 0)
+            }
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)
-        .accessibilityIdentifier("branch-picker-item-\(branchName)")
+        .accessibilityIdentifier(accessibilityIdentifier)
     }
 
     private var backgroundColor: Color {
-        isCurrentBranch ? Color.accentColor.opacity(0.12) : Color.clear
+        if isSelected {
+            return Color.accentColor.opacity(0.14)
+        }
+
+        if isCurrentBranch {
+            return Color.accentColor.opacity(0.07)
+        }
+
+        return Color.clear
+    }
+
+    private var borderColor: Color {
+        isSelected ? Color.accentColor.opacity(0.4) : .clear
+    }
+
+    private var iconName: String {
+        switch item {
+        case .branch:
+            return "arrow.triangle.branch"
+        case .create:
+            return "plus"
+        }
+    }
+
+    private var title: String {
+        switch item {
+        case .branch(let branchName):
+            return branchName
+        case .create:
+            return "Create and check out branch"
+        }
+    }
+
+    private var subtitle: String? {
+        switch item {
+        case .branch:
+            return nil
+        case .create(let branchName):
+            return branchName
+        }
+    }
+
+    private var accessibilityIdentifier: String {
+        switch item {
+        case .branch(let branchName):
+            return "branch-picker-item-\(branchName)"
+        case .create:
+            return "branch-picker-create-item"
+        }
     }
 }
 

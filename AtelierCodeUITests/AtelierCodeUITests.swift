@@ -284,13 +284,34 @@ final class AtelierCodeUITests: XCTestCase {
         filterField.click()
         filterField.typeText("feature/new-work")
 
-        let createAction = app.buttons["branch-picker-create-action"]
-        XCTAssertTrue(createAction.exists)
-        XCTAssertEqual(createAction.label, "Create and check out \"feature/new-work\"")
-        createAction.click()
+        let createAction = app.buttons["branch-picker-create-item"]
+        XCTAssertTrue(createAction.waitForExistence(timeout: 1))
+        XCTAssertFalse(app.buttons["branch-picker-create-action"].exists)
+
+        app.typeKey(.return, modifierFlags: [])
 
         XCTAssertFalse(app.textFields["branch-picker-filter"].waitForExistence(timeout: 1))
         XCTAssertEqual(statusItem.label, "feature/new-work")
+    }
+
+    func testBranchPickerKeyboardNavigationSwitchesHighlightedBranch() throws {
+        let app = try makeApp(scenario: "git-branch", workspaceName: "BranchKeyboardWorkspace")
+        app.launch()
+
+        let statusItem = app.buttons["workspace-status-git-reference"]
+        XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
+
+        statusItem.click()
+
+        let filterField = app.textFields["branch-picker-filter"]
+        XCTAssertTrue(filterField.waitForExistence(timeout: 5))
+        filterField.click()
+
+        app.typeKey(.downArrow, modifierFlags: [])
+        app.typeKey(.return, modifierFlags: [])
+
+        XCTAssertFalse(app.textFields["branch-picker-filter"].waitForExistence(timeout: 1))
+        XCTAssertEqual(statusItem.label, "main")
     }
 
     func testLiveBranchPickerShowsCurrentAndMainBranch() throws {

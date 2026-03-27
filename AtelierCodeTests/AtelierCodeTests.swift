@@ -461,6 +461,73 @@ struct AppModelTests {
         #expect(await gitService.requestedWorkspacePaths() == [workspaceURL.path, workspaceURL.path, workspaceURL.path])
     }
 
+    @Test func submittingCreateSelectionCreatesAndSwitchesToNewBranch() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitService = TestWorkspaceGitService()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitService: gitService,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "branch-picker-create-selection")
+
+        await gitService.enqueueStatuses([.branch("main"), .branch("main"), .branch("feature/new-work")], for: workspaceURL.path)
+        await gitService.setLocalBranches(["main", "release"], for: workspaceURL.path)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
+
+        appModel.showSelectedWorkspaceBranchPicker()
+        try await waitUntil { appModel.selectedWorkspaceBranchPickerFilteredBranches == ["main", "release"] }
+
+        appModel.setSelectedWorkspaceBranchPickerFilterText("feature/new-work")
+
+        #expect(appModel.selectedWorkspaceBranchPickerItems == [.create("feature/new-work")])
+        #expect(appModel.selectedWorkspaceBranchPickerSelectedItemID == WorkspaceBranchPickerItem.create("feature/new-work").id)
+
+        await appModel.submitSelectedWorkspaceBranchPicker()
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("feature/new-work") }
+
+        #expect(appModel.isSelectedWorkspaceBranchPickerPresented == false)
+        #expect(await gitService.createdBranches(for: workspaceURL.path) == ["feature/new-work"])
+        #expect(await gitService.switchedBranches(for: workspaceURL.path).isEmpty)
+    }
+
+    @Test func movingBranchPickerSelectionUpdatesHighlightedItem() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitService = TestWorkspaceGitService()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitService: gitService,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "branch-picker-keyboard-selection")
+
+        await gitService.enqueueStatuses([.branch("main"), .branch("main")], for: workspaceURL.path)
+        await gitService.setLocalBranches(["main", "release"], for: workspaceURL.path)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
+
+        appModel.showSelectedWorkspaceBranchPicker()
+        try await waitUntil { appModel.selectedWorkspaceBranchPickerItems == [.branch("main"), .branch("release")] }
+
+        #expect(appModel.selectedWorkspaceBranchPickerSelectedItemID == WorkspaceBranchPickerItem.branch("main").id)
+
+        appModel.moveSelectedWorkspaceBranchPickerSelection(.down)
+        #expect(appModel.selectedWorkspaceBranchPickerSelectedItemID == WorkspaceBranchPickerItem.branch("release").id)
+
+        appModel.setSelectedWorkspaceBranchPickerFilterText("release-")
+        #expect(
+            appModel.selectedWorkspaceBranchPickerItems == [
+                .create("release-")
+            ]
+        )
+        #expect(appModel.selectedWorkspaceBranchPickerSelectedItemID == WorkspaceBranchPickerItem.create("release-").id)
+    }
+
     @Test func failedBranchSwitchKeepsPickerOpenWithoutChangingWorkspaceRuntimeState() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
