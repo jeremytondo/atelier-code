@@ -5,6 +5,7 @@
 //  Created by Jeremy Margaritondo on 3/23/26.
 //
 
+import Foundation
 import XCTest
 
 final class AtelierCodeUITests: XCTestCase {
@@ -231,9 +232,107 @@ final class AtelierCodeUITests: XCTestCase {
         let app = try makeApp(scenario: "git-branch", workspaceName: "BranchWorkspace")
         app.launch()
 
-        let statusItem = app.otherElements["workspace-status-git-reference"]
+        let statusItem = app.buttons["workspace-status-git-reference"]
         XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
         XCTAssertEqual(statusItem.label, "feature/status-bar")
+    }
+
+    func testBranchStatusItemOpensPickerForGitWorkspace() throws {
+        let app = try makeApp(scenario: "git-branch", workspaceName: "BranchPickerWorkspace")
+        app.launch()
+
+        let statusItem = app.buttons["workspace-status-git-reference"]
+        XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
+
+        statusItem.click()
+
+        let filterField = app.textFields["branch-picker-filter"]
+        XCTAssertTrue(filterField.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["branch-picker-item-main"].exists)
+        XCTAssertTrue(app.buttons["branch-picker-item-feature/status-bar"].exists)
+        XCTAssertTrue(app.buttons["branch-picker-item-release"].exists)
+    }
+
+    func testBranchPickerSwitchesToExistingLocalBranch() throws {
+        let app = try makeApp(scenario: "git-branch", workspaceName: "BranchSwitchWorkspace")
+        app.launch()
+
+        let statusItem = app.buttons["workspace-status-git-reference"]
+        XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
+
+        statusItem.click()
+
+        let releaseBranch = app.buttons["branch-picker-item-release"]
+        XCTAssertTrue(releaseBranch.waitForExistence(timeout: 5))
+        releaseBranch.click()
+
+        XCTAssertFalse(app.textFields["branch-picker-filter"].waitForExistence(timeout: 1))
+        XCTAssertEqual(statusItem.label, "release")
+    }
+
+    func testBranchPickerCreatesAndSwitchesToNewBranch() throws {
+        let app = try makeApp(scenario: "git-branch", workspaceName: "BranchCreateWorkspace")
+        app.launch()
+
+        let statusItem = app.buttons["workspace-status-git-reference"]
+        XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
+
+        statusItem.click()
+
+        let filterField = app.textFields["branch-picker-filter"]
+        XCTAssertTrue(filterField.waitForExistence(timeout: 5))
+        filterField.click()
+        filterField.typeText("feature/new-work")
+
+        let createAction = app.buttons["branch-picker-create-action"]
+        XCTAssertTrue(createAction.exists)
+        XCTAssertEqual(createAction.label, "Create and check out \"feature/new-work\"")
+        createAction.click()
+
+        XCTAssertFalse(app.textFields["branch-picker-filter"].waitForExistence(timeout: 1))
+        XCTAssertEqual(statusItem.label, "feature/new-work")
+    }
+
+    func testLiveBranchPickerShowsCurrentAndMainBranch() throws {
+        let workspaceURL = try makeGitRepositoryWorkspace(named: "LiveBranchPickerWorkspace")
+        let app = makeApp(scenario: "git-branch-live", workspaceURL: workspaceURL)
+        app.launch()
+
+        let statusItem = app.buttons["workspace-status-git-reference"]
+        XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
+        XCTAssertEqual(statusItem.label, "git-branches")
+
+        statusItem.click()
+
+        XCTAssertTrue(app.buttons["branch-picker-item-git-branches"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["branch-picker-item-main"].exists)
+    }
+
+    func testLiveBranchPickerCanReopenWithoutCrashing() throws {
+        let workspaceURL = try makeGitRepositoryWorkspace(named: "LiveBranchPickerReopenWorkspace")
+        let app = makeApp(scenario: "git-branch-live", workspaceURL: workspaceURL)
+        app.launch()
+
+        let statusItem = app.buttons["workspace-status-git-reference"]
+        XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
+
+        for _ in 0..<3 {
+            statusItem.click()
+            XCTAssertTrue(app.textFields["branch-picker-filter"].waitForExistence(timeout: 5))
+            dismissBranchPicker(in: app)
+            XCTAssertFalse(app.textFields["branch-picker-filter"].waitForExistence(timeout: 1))
+            XCTAssertTrue(app.wait(for: .runningForeground, timeout: 2))
+        }
+    }
+
+    func testNoGitBranchPlaceholderStaysNonInteractive() throws {
+        let app = try makeApp(scenario: "ready", workspaceName: "NoBranchNonInteractiveWorkspace")
+        app.launch()
+
+        XCTAssertFalse(app.buttons["workspace-status-git-reference"].exists)
+        let placeholder = app.otherElements["workspace-status-git-reference"]
+        XCTAssertTrue(placeholder.waitForExistence(timeout: 5))
+        XCTAssertEqual(placeholder.label, "No Git branch")
     }
 
     func testLaunchPerformance() throws {
@@ -247,6 +346,10 @@ final class AtelierCodeUITests: XCTestCase {
         let workspaceURL = FileManager.default.temporaryDirectory.appendingPathComponent(workspaceName, isDirectory: true)
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
 
+        return makeApp(scenario: scenario, workspaceURL: workspaceURL)
+    }
+
+    private func makeApp(scenario: String, workspaceURL: URL) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["ATELIERCODE_UI_TEST_SCENARIO"] = scenario
         app.launchEnvironment["ATELIERCODE_UI_TEST_WORKSPACE"] = workspaceURL.path
@@ -257,5 +360,63 @@ final class AtelierCodeUITests: XCTestCase {
         for _ in 0..<maxSwipes where element.exists == false {
             scrollView.swipeUp()
         }
+    }
+
+    private func dismissBranchPicker(in app: XCUIApplication) {
+        let statusItem = app.buttons["workspace-status-git-reference"]
+        if statusItem.exists {
+            statusItem.click()
+        }
+
+        if app.textFields["branch-picker-filter"].exists {
+            app.typeKey(.escape, modifierFlags: [])
+        }
+    }
+
+    private func makeGitRepositoryWorkspace(named name: String) throws -> URL {
+        let workspaceURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        try runGit(arguments: ["init", "-b", "main"], in: workspaceURL)
+        try runGit(arguments: ["config", "user.name", "AtelierCode UI Tests"], in: workspaceURL)
+        try runGit(arguments: ["config", "user.email", "ui-tests@example.com"], in: workspaceURL)
+        guard let data = "hello\n".data(using: .utf8) else {
+            throw NSError(domain: "AtelierCodeUITests", code: 1)
+        }
+
+        try data.write(to: workspaceURL.appendingPathComponent("README.md", isDirectory: false))
+        try runGit(arguments: ["add", "README.md"], in: workspaceURL)
+        try runGit(arguments: ["commit", "-m", "Initial commit"], in: workspaceURL)
+        try runGit(arguments: ["switch", "-c", "git-branches"], in: workspaceURL)
+        return workspaceURL
+    }
+
+    @discardableResult
+    private func runGit(arguments: [String], in directoryURL: URL) throws -> String {
+        let process = Process()
+        process.executableURL = URL(
+            fileURLWithPath: "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+            isDirectory: false
+        )
+        process.arguments = ["-C", directoryURL.path] + arguments
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        let stdout = String(decoding: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let stderr = String(decoding: stderrPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+
+        guard process.terminationStatus == 0 else {
+            XCTFail(stderr.isEmpty ? stdout : stderr)
+            throw NSError(domain: "AtelierCodeUITests", code: Int(process.terminationStatus))
+        }
+
+        return stdout
     }
 }

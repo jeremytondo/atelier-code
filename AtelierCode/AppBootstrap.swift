@@ -21,10 +21,30 @@ enum AppBootstrap {
         )
         let coordinator = UITestRuntimeCoordinator(scenario: scenario.kind)
 
+        if scenario.kind == .gitBranchLive {
+            let gitService = WorkspaceGitService(
+                commandRunner: ProcessGitCommandRunner(
+                    executableURL: URL(
+                        fileURLWithPath: "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+                        isDirectory: false
+                    )
+                )
+            )
+
+            return AppModel(
+                preferencesStore: preferencesStore,
+                bridgeDiagnosticProvider: { .bridgePresent(at: workspaceURL.appendingPathComponent("mock-bridge")) },
+                gitService: gitService,
+                runtimeFactory: { UITestWorkspaceRuntime(controller: $0, coordinator: coordinator) }
+            )
+        }
+
+        let gitService = UITestWorkspaceGitService(scenario: scenario.kind)
+
         return AppModel(
             preferencesStore: preferencesStore,
             bridgeDiagnosticProvider: { .bridgePresent(at: workspaceURL.appendingPathComponent("mock-bridge")) },
-            gitStatusProvider: UITestWorkspaceGitStatusProvider(scenario: scenario.kind),
+            gitService: gitService,
             runtimeFactory: { UITestWorkspaceRuntime(controller: $0, coordinator: coordinator) }
         )
     }
@@ -40,6 +60,8 @@ private struct UITestScenario {
         case refreshOmitsThread = "refresh-omits-thread"
         case repeatedWaiting = "repeated-waiting"
         case gitBranch = "git-branch"
+        case gitBranchError = "git-branch-error"
+        case gitBranchLive = "git-branch-live"
     }
 
     let kind: Kind
@@ -85,16 +107,60 @@ private final class InMemoryBootstrapPreferencesStore: AppPreferencesStore {
     }
 }
 
-private struct UITestWorkspaceGitStatusProvider: WorkspaceGitStatusProviding {
+private actor UITestWorkspaceGitService: WorkspaceGitServing {
     let scenario: UITestScenario.Kind
+    private var localBranches: [String]
+    private var currentStatus: WorkspaceGitStatus
 
-    func gitStatus(for workspacePath: String) async -> WorkspaceGitStatus {
+    init(scenario: UITestScenario.Kind) {
+        self.scenario = scenario
+
         switch scenario {
         case .gitBranch:
-            return .branch("feature/status-bar")
-        case .empty, .recentSelection, .ready, .retry, .phase2, .refreshOmitsThread, .repeatedWaiting:
-            return .unavailable(.noRepository)
+            localBranches = ["main", "feature/status-bar", "release"]
+            currentStatus = .branch("feature/status-bar")
+        case .gitBranchError:
+            localBranches = ["main", "feature/status-bar", "release"]
+            currentStatus = .branch("feature/status-bar")
+        case .empty, .recentSelection, .ready, .retry, .phase2, .refreshOmitsThread, .repeatedWaiting, .gitBranchLive:
+            localBranches = []
+            currentStatus = .unavailable(.noRepository)
         }
+    }
+
+    func snapshot(for workspacePath: String) async -> WorkspaceGitSnapshot {
+        WorkspaceGitSnapshot(status: currentStatus, localBranches: localBranches)
+    }
+
+    func switchToBranch(named branchName: String, for workspacePath: String) async throws -> WorkspaceGitSnapshot {
+        if scenario == .gitBranchError {
+            throw WorkspaceGitBranchManagerError.gitRejected(
+                "error: Your local changes to the following files would be overwritten by switch."
+            )
+        }
+
+        guard localBranches.contains(branchName) else {
+            throw WorkspaceGitBranchManagerError.gitRejected("error: pathspec '\(branchName)' did not match any branch.")
+        }
+
+        currentStatus = .branch(branchName)
+        return WorkspaceGitSnapshot(status: currentStatus, localBranches: localBranches)
+    }
+
+    func createAndSwitchToBranch(named branchName: String, for workspacePath: String) async throws -> WorkspaceGitSnapshot {
+        if scenario == .gitBranchError {
+            throw WorkspaceGitBranchManagerError.gitRejected("error: cannot lock ref 'refs/heads/\(branchName)'")
+        }
+
+        guard localBranches.contains(branchName) == false else {
+            currentStatus = .branch(branchName)
+            return WorkspaceGitSnapshot(status: currentStatus, localBranches: localBranches)
+        }
+
+        localBranches.append(branchName)
+        localBranches.sort()
+        currentStatus = .branch(branchName)
+        return WorkspaceGitSnapshot(status: currentStatus, localBranches: localBranches)
     }
 }
 
