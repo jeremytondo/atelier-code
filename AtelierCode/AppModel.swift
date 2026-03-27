@@ -672,14 +672,6 @@ final class AppModel {
         }
     }
 
-    var canRetryActiveWorkspace: Bool {
-        guard let controller = selectedWorkspaceController else {
-            return false
-        }
-
-        return controller.connectionStatus.isRetryable
-    }
-
     @discardableResult
     func sendPrompt(_ prompt: String) async -> Bool {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)

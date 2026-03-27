@@ -964,66 +964,6 @@ private struct ActiveWorkspaceConversationView: View {
                 threadID: threadID
             )
         }
-        .toolbar {
-            ToolbarItemGroup {
-                ConnectionBadge(status: controller.connectionStatus)
-                    .accessibilityIdentifier("workspace-connection-status")
-
-                Button("New Thread") {
-                    Task {
-                        _ = await appModel.createThread()
-                    }
-                }
-                .accessibilityIdentifier("new-thread-button")
-
-                if appModel.selectedThreadSummary != nil {
-                    Button("Fork") {
-                        Task {
-                            _ = await appModel.forkSelectedThread()
-                        }
-                    }
-                    .accessibilityIdentifier("fork-thread-button")
-                }
-
-                if let selectedThreadSummary = appModel.selectedThreadSummary {
-                    if selectedThreadSummary.isArchived {
-                        Button("Unarchive") {
-                            Task {
-                                _ = await appModel.unarchiveSelectedThread()
-                            }
-                        }
-                        .accessibilityIdentifier("unarchive-thread-button")
-                    } else {
-                        Button("Archive") {
-                            Task {
-                                _ = await appModel.archiveSelectedThread()
-                            }
-                        }
-                        .accessibilityIdentifier("archive-thread-button")
-
-                        Button("Rollback") {
-                            Task {
-                                _ = await appModel.rollbackSelectedThread()
-                            }
-                        }
-                        .disabled(appModel.selectedThreadSession?.turnState.phase == .inProgress)
-                        .accessibilityIdentifier("rollback-thread-button")
-                    }
-                }
-
-                if appModel.canRetryActiveWorkspace {
-                    Button("Retry Connection") {
-                        appModel.retryActiveWorkspaceConnection()
-                    }
-                    .accessibilityIdentifier("retry-connection-button")
-                }
-
-                Button("Clear Selection") {
-                    appModel.clearSelectedWorkspace()
-                }
-                .accessibilityIdentifier("clear-selection-button")
-            }
-        }
     }
 
     private var selectedThreadLoadKey: String? {
@@ -2417,21 +2357,6 @@ private struct StateCard: View {
         .padding(24)
         .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 20))
-    }
-}
-
-private struct ConnectionBadge: View {
-    let status: ConnectionStatus
-
-    var body: some View {
-        if status != .ready {
-            Text(status.shortLabel)
-                .font(.caption.weight(.semibold))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .foregroundStyle(status.accentColor)
-                .background(status.accentColor.opacity(0.14), in: Capsule())
-        }
     }
 }
 

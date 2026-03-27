@@ -172,20 +172,34 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertLessThan(toolsSection.frame.minY, approvalsHeading.frame.minY)
     }
 
-    func testRetryRecoversFromConnectionError() throws {
-        let app = try makeApp(scenario: "retry", workspaceName: "RetryWorkspace")
+    func testConversationHeaderOmitsRemovedToolbarControls() throws {
+        let app = try makeApp(scenario: "ready", workspaceName: "ToolbarlessWorkspace")
         app.launch()
-
-        let retryButton = app.buttons.matching(identifier: "retry-connection-button").firstMatch
-        XCTAssertTrue(retryButton.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Connection Error"].exists)
-
-        retryButton.click()
 
         let composer = app.textViews["conversation-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["conversation-send-button"].exists)
-        XCTAssertFalse(app.staticTexts["Connection Error"].exists)
+        composer.click()
+        composer.typeText("Confirm the top status bar is clean")
+        composer.typeText("\r")
+
+        XCTAssertTrue(app.staticTexts["Confirm the top status bar is clean"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Working through the request in the UI test harness."].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["sidebar-new-thread-button"].exists)
+
+        let removedControlIdentifiers = [
+            "workspace-connection-status",
+            "new-thread-button",
+            "fork-thread-button",
+            "archive-thread-button",
+            "unarchive-thread-button",
+            "rollback-thread-button",
+            "retry-connection-button",
+            "clear-selection-button"
+        ]
+
+        for identifier in removedControlIdentifiers {
+            XCTAssertFalse(app.descendants(matching: .any)[identifier].exists, "\(identifier) should not be present in the conversation header")
+        }
     }
 
     func testSettingsScreenShowsGeneralSectionAndReturnsToConversation() throws {
