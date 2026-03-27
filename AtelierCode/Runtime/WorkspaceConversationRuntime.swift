@@ -4,6 +4,7 @@ import Foundation
 protocol WorkspaceConversationRuntime: AnyObject {
     func start() async throws
     func stop() async
+    func refreshModels() async throws
     func listThreads(archived: Bool) async throws
     func startThreadAndWait(title: String?) async throws -> ThreadSession
     func resumeThreadAndWait(id: String) async throws -> ThreadSession

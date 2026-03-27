@@ -15,6 +15,7 @@ struct WorkspaceBridgeRuntimeTests {
         let socketClient = FakeBridgeSocketClient(messages: [
             welcomeJSON(requestID: "ateliercode-hello-1"),
             authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_in", displayName: "chatgpt (pro)"),
+            modelListResultJSON(requestID: "ateliercode-model-list"),
             rateLimitUpdatedJSON(requestID: "ateliercode-account-read-2"),
             threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Bootstrap Thread")
         ])
@@ -34,6 +35,8 @@ struct WorkspaceBridgeRuntimeTests {
         #expect(controller.authState == .signedIn(accountDescription: "chatgpt (pro)"))
         #expect(controller.rateLimitState?.buckets.count == 1)
         #expect(controller.threadSummaries.map(\.title) == ["Bootstrap Thread"])
+        #expect(controller.availableModels.first?.id == "gpt-5.4")
+        #expect(controller.availableModels.first?.defaultReasoningEffort == .medium)
         #expect(controller.bridgeEnvironmentDiagnostics == WorkspaceBridgeEnvironmentDiagnostics(
             source: .loginProbe,
             shellPath: "/bin/zsh",
@@ -41,7 +44,37 @@ struct WorkspaceBridgeRuntimeTests {
             pathDirectoryCount: 5,
             homeDirectory: "/Users/tester"
         ))
-        #expect(sentMessageTypes(from: socketClient.sentTexts) == ["hello", "account.read", "thread.list"])
+        let sentMessageTypes = sentMessageTypes(from: socketClient.sentTexts)
+        #expect(sentMessageTypes.contains("hello"))
+        #expect(sentMessageTypes.contains("account.read"))
+        #expect(sentMessageTypes.contains("model.list"))
+        #expect(sentMessageTypes.contains("thread.list"))
+    }
+
+    @Test func modelListErrorsDoNotPoisonWorkspaceConnection() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-model-list-error"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4246)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            modelListErrorJSON(requestID: "ateliercode-model-list", message: "model/list is unavailable"),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready && controller.threadSummaries.count == 1 }
+
+        #expect(controller.connectionStatus == .ready)
+        #expect(controller.availableModels.isEmpty)
     }
 
     @Test func providerStatusUpdatesEnvironmentWarningAndExecutablePath() async throws {
@@ -792,10 +825,10 @@ struct WorkspaceBridgeRuntimeTests {
 
         try await waitUntil {
             pendingCommandCount(in: runtime) == 1 &&
-            commandObject(from: socketClient.sentTexts.last ?? "")?["type"] as? String == "thread.rename"
+            latestCommandPayload(ofType: "thread.rename", from: socketClient.sentTexts)?["title"] as? String == "Renamed Thread"
         }
 
-        #expect(commandPayload(from: socketClient.sentTexts.last)?["title"] as? String == "Renamed Thread")
+        #expect(latestCommandPayload(ofType: "thread.rename", from: socketClient.sentTexts)?["title"] as? String == "Renamed Thread")
 
         socketClient.enqueue(threadStartedJSON(
             requestID: "ateliercode-thread-rename-4",
@@ -1108,6 +1141,18 @@ private func rateLimitUpdatedJSON(requestID: String) -> String {
     """
 }
 
+private func modelListResultJSON(requestID: String) -> String {
+    """
+    {"type":"model.list.result","timestamp":"2026-03-24T10:00:03Z","requestID":"\(requestID)","payload":{"models":[{"id":"gpt-5.4","model":"gpt-5.4","displayName":"GPT-5.4","hidden":false,"defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"low","description":"Lower latency"},{"reasoningEffort":"medium","description":"Balanced"},{"reasoningEffort":"high","description":"More reasoning"}],"inputModalities":["text","image"],"supportsPersonality":true,"isDefault":true}]}}
+    """
+}
+
+private func modelListErrorJSON(requestID: String, message: String) -> String {
+    """
+    {"type":"error","timestamp":"2026-03-24T10:00:03Z","requestID":"\(requestID)","payload":{"code":"provider_command_failed","message":"\(jsonEscaped(message))"}}
+    """
+}
+
 private func threadListResultJSON(requestID: String, threadTitle: String) -> String {
     """
     {"type":"thread.list.result","timestamp":"2026-03-24T10:00:04Z","requestID":"\(requestID)","payload":{"threads":[{"id":"thread-1","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:04Z"}],"nextCursor":null}}
@@ -1311,6 +1356,20 @@ private func commandPayload(from message: String?) -> [String: Any]? {
     }
 
     return payload
+}
+
+private func latestCommandPayload(ofType type: String, from messages: [String]) -> [String: Any]? {
+    for message in messages.reversed() {
+        guard let object = commandObject(from: message),
+              object["type"] as? String == type,
+              let payload = object["payload"] as? [String: Any] else {
+            continue
+        }
+
+        return payload
+    }
+
+    return nil
 }
 
 private func commandObject(from message: String) -> [String: Any]? {

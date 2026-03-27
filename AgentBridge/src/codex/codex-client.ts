@@ -2,6 +2,8 @@ import type {
   AccountReadPayload,
   AccountLoginPayload,
   ApprovalResolvePayload,
+  ModelListPayload,
+  ReasoningEffort,
   ThreadArchiveFilter,
   ThreadArchivePayload,
   ThreadForkPayload,
@@ -32,6 +34,27 @@ export interface CodexThread {
   status?: unknown;
   turns?: unknown[];
   archived?: boolean;
+}
+
+export interface CodexModelReasoningEffort {
+  reasoningEffort: ReasoningEffort;
+  description?: string;
+}
+
+export interface CodexModelSummary {
+  id: string;
+  model: string;
+  displayName: string;
+  hidden: boolean;
+  defaultReasoningEffort?: ReasoningEffort;
+  supportedReasoningEfforts: CodexModelReasoningEffort[];
+  inputModalities?: string[];
+  supportsPersonality?: boolean;
+  isDefault?: boolean;
+}
+
+export interface CodexModelListResult {
+  models: CodexModelSummary[];
 }
 
 export interface CodexThreadListResult {
@@ -110,6 +133,10 @@ export interface CodexLoginResult {
 export interface CodexClientAdapter {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
+  listModels(
+    requestID: CodexTransportRequestID,
+    payload: ModelListPayload,
+  ): Promise<CodexModelListResult>;
   startThread(requestID: CodexTransportRequestID, payload: ThreadStartPayload): Promise<CodexThreadStartResult>;
   resumeThread(
     requestID: CodexTransportRequestID,
@@ -230,6 +257,24 @@ export class CodexClient implements CodexClientAdapter {
     }
 
     return { thread };
+  }
+
+  async listModels(
+    requestID: CodexTransportRequestID,
+    payload: ModelListPayload,
+  ): Promise<CodexModelListResult> {
+    const response = await this.transport.send<{ data: unknown[] }>({
+      id: requestID,
+      method: "model/list",
+      params: {
+        limit: payload.limit,
+        includeHidden: payload.includeHidden === true ? true : undefined,
+      },
+    });
+
+    return {
+      models: Array.isArray(response.data) ? response.data.map((model) => toCodexModelSummary(model)) : [],
+    };
   }
 
   async resumeThread(
@@ -531,6 +576,21 @@ function mapArchiveFilter(filter: ThreadArchiveFilter | undefined): boolean | un
   }
 }
 
+function mapSupportedReasoningEffort(value: unknown): ReasoningEffort | undefined {
+  if (
+    value === "none" ||
+    value === "minimal" ||
+    value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh"
+  ) {
+    return value;
+  }
+
+  return undefined;
+}
+
 function mapApprovalPolicy(value: string | undefined): string | undefined {
   if (
     value === "untrusted" ||
@@ -695,6 +755,49 @@ function toCodexAccount(value: unknown): CodexAccount | null {
   }
 
   return null;
+}
+
+function toCodexModelSummary(value: unknown): CodexModelSummary {
+  if (
+    !isPlainObject(value) ||
+    typeof value.id !== "string" ||
+    typeof value.model !== "string" ||
+    typeof value.displayName !== "string"
+  ) {
+    throw new Error("Codex model/list payload is malformed.");
+  }
+
+  const supportedReasoningEfforts = Array.isArray(value.supportedReasoningEfforts)
+    ? value.supportedReasoningEfforts.flatMap((effort) => {
+        if (!isPlainObject(effort)) {
+          return [];
+        }
+
+        const reasoningEffort = mapSupportedReasoningEffort(effort.reasoningEffort);
+        if (!reasoningEffort) {
+          return [];
+        }
+
+        return [{
+          reasoningEffort,
+          description: typeof effort.description === "string" ? effort.description : undefined,
+        }];
+      })
+    : [];
+
+  return {
+    id: value.id,
+    model: value.model,
+    displayName: value.displayName,
+    hidden: value.hidden === true,
+    defaultReasoningEffort: mapSupportedReasoningEffort(value.defaultReasoningEffort),
+    supportedReasoningEfforts,
+    inputModalities: Array.isArray(value.inputModalities)
+      ? value.inputModalities.filter((modality): modality is string => typeof modality === "string")
+      : undefined,
+    supportsPersonality: value.supportsPersonality === true,
+    isDefault: value.isDefault === true,
+  };
 }
 
 function toCodexRateLimitSnapshot(value: unknown): CodexRateLimitSnapshot | null {

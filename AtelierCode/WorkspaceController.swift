@@ -25,6 +25,7 @@ final class WorkspaceController {
     private(set) var authState: AuthState
     private(set) var pendingLogin: PendingLogin?
     private(set) var rateLimitState: RateLimitState?
+    private(set) var availableModels: [ComposerModelOption]
     private(set) var threadSessionsByID: [String: ThreadSession]
     private(set) var lastActiveThreadID: String? {
         didSet {
@@ -60,6 +61,7 @@ final class WorkspaceController {
         self.authState = .unknown
         self.pendingLogin = nil
         self.rateLimitState = nil
+        self.availableModels = []
         self.threadSessionsByID = [:]
         self.lastActiveThreadID = nil
         self.isShowingArchivedThreads = false
@@ -142,6 +144,7 @@ final class WorkspaceController {
         authState = .unknown
         pendingLogin = nil
         rateLimitState = nil
+        availableModels = []
         threadSessionsByID.removeAll()
         lastActiveThreadID = nil
         isShowingArchivedThreads = false
@@ -182,6 +185,10 @@ final class WorkspaceController {
 
     func setRateLimitState(_ rateLimitState: RateLimitState?) {
         self.rateLimitState = rateLimitState
+    }
+
+    func setAvailableModels(_ availableModels: [ComposerModelOption]) {
+        self.availableModels = availableModels
     }
 
     func setShowingArchivedThreads(_ isShowingArchivedThreads: Bool) {

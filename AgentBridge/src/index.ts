@@ -28,6 +28,7 @@ import type {
   BridgeStartupError,
   ErrorEvent,
   HelloEnvelope,
+  ModelListResultEvent,
   RateLimitUpdatedEvent,
   ProviderHealth,
   ProviderStatusEvent,
@@ -708,6 +709,19 @@ export async function executeBridgeCommand(
 
   try {
     switch (command.type) {
+      case "model.list": {
+        const result = await client.listModels(command.id, command.payload);
+        const event: ModelListResultEvent = {
+          type: "model.list.result",
+          timestamp: new Date().toISOString(),
+          provider: "codex",
+          requestID: command.id,
+          payload: {
+            models: result.models,
+          },
+        };
+        return [event];
+      }
       case "thread.start": {
         const result = await client.startThread(command.id, command.payload);
         return [buildThreadStartedEvent(command.id, result.thread)];

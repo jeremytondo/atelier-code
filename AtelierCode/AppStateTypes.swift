@@ -547,26 +547,9 @@ enum AppAppearancePreference: String, Codable, Equatable, Sendable, CaseIterable
 struct ComposerModelOption: Equatable, Sendable, Identifiable {
     let id: String
     let title: String
-
-    static let fallbackCatalog: [Self] = [
-        Self(id: "gpt-5.4", title: "GPT-5.4"),
-        Self(id: "gpt-5.4-mini", title: "GPT-5.4 Mini"),
-        Self(id: "gpt-5.3-codex", title: "GPT-5.3 Codex"),
-        Self(id: "gpt-5.3-codex-spark", title: "GPT-5.3 Codex Spark"),
-        Self(id: "gpt-5.2", title: "GPT-5.2"),
-        Self(id: "gpt-5.2-codex", title: "GPT-5.2 Codex"),
-        Self(id: "gpt-5.1-codex-max", title: "GPT-5.1 Codex Max"),
-        Self(id: "gpt-5.1-codex-mini", title: "GPT-5.1 Codex Mini")
-    ]
-
-    static func resolvedOption(for id: String?) -> Self? {
-        let normalizedID = id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard normalizedID.isEmpty == false else {
-            return nil
-        }
-
-        return fallbackCatalog.first(where: { $0.id == normalizedID }) ?? Self(id: normalizedID, title: normalizedID)
-    }
+    let defaultReasoningEffort: ComposerReasoningEffort?
+    let supportedReasoningEfforts: [ComposerReasoningEffort]
+    let isDefault: Bool
 }
 
 enum ComposerReasoningEffort: String, Codable, Equatable, Sendable, CaseIterable, Identifiable {
@@ -579,6 +562,8 @@ enum ComposerReasoningEffort: String, Codable, Equatable, Sendable, CaseIterable
     case none
 
     var id: String { rawValue }
+
+    static let serverSupportedDefaults: [Self] = [.low, .medium, .high, .xhigh]
 
     var bridgeValue: String? {
         self == .appDefault ? nil : rawValue
@@ -605,6 +590,16 @@ enum ComposerReasoningEffort: String, Codable, Equatable, Sendable, CaseIterable
 
     init(storedValue: String?) {
         self = ComposerReasoningEffort(rawValue: storedValue ?? ComposerReasoningEffort.appDefault.rawValue) ?? .appDefault
+    }
+
+    init?(bridgeValue: String?) {
+        guard let bridgeValue,
+              let effort = ComposerReasoningEffort(rawValue: bridgeValue),
+              effort != .appDefault else {
+            return nil
+        }
+
+        self = effort
     }
 }
 

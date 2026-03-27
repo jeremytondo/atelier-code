@@ -71,6 +71,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     private static let decoder = JSONDecoder()
     private static let clientName = "AtelierCode"
     private static let provider = "codex"
+    private static let modelListRequestID = "ateliercode-model-list"
 
     let controller: WorkspaceController
 
@@ -178,6 +179,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             }
 
             try await refreshAccount()
+            try await refreshModels()
             try await listThreads(archived: false)
         } catch {
             handleBridgeFailure(message: error.localizedDescription)
@@ -226,6 +228,14 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         controller.setBridgeLifecycleState(.idle)
         controller.setConnectionStatus(.disconnected)
         isStopping = false
+    }
+
+    func refreshModels() async throws {
+        try await sendCommand(
+            id: Self.modelListRequestID,
+            type: .modelList,
+            payload: BridgeModelListPayload(limit: 100, includeHidden: false)
+        )
     }
 
     func listThreads(archived: Bool) async throws {
@@ -597,6 +607,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         adoptTurnContextIfNeeded(from: event)
 
         switch event.payload {
+        case .modelListResult(let payload):
+            handleModelListResult(payload, requestID: event.requestID)
         case .threadStarted(let payload):
             handleThreadStarted(payload, requestID: event.requestID)
         case .threadArchived(let payload):
@@ -934,6 +946,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         _ = controller.ensureThreadSession(id: summary.id, title: summary.title, markSelected: false)
     }
 
+    private func handleModelListResult(_ payload: BridgeModelListResultPayload, requestID: String?) {
+        controller.setAvailableModels(payload.models.compactMap(\.composerModelOption))
+    }
+
     private func handleThreadListResult(
         _ payload: BridgeThreadListResultPayload,
         requestID: String?,
@@ -1128,9 +1144,19 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             controller.setAuthState(.signedIn(accountDescription: payload.account?.displayName ?? "Signed In"))
             controller.clearPendingLogin()
         }
+
+        Task { @MainActor [weak self] in
+            try? await self?.refreshModels()
+        }
     }
 
     private func handleBridgeError(_ payload: BridgeErrorPayload, requestID: String?) {
+        var shouldUpdateConnectionStatus = true
+
+        if requestID == Self.modelListRequestID {
+            shouldUpdateConnectionStatus = false
+        }
+
         if let requestID,
            let pendingCommand = pendingCommands.removeValue(forKey: requestID) {
             switch pendingCommand {
@@ -1171,7 +1197,9 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             }
         }
 
-        controller.setConnectionStatus(.error(message: payload.message))
+        if shouldUpdateConnectionStatus {
+            controller.setConnectionStatus(.error(message: payload.message))
+        }
     }
 
     private func handleProviderStatus(_ payload: BridgeProviderStatusPayload) {

@@ -2098,50 +2098,52 @@ private struct ComposerBar: View {
             }
 
             HStack(alignment: .center, spacing: 8) {
-                Menu {
-                    Button {
-                        appModel.setComposerModelID(nil)
+                if appModel.availableComposerModels.isEmpty == false {
+                    Menu {
+                        Button {
+                            appModel.setComposerModelID(nil)
+                        } label: {
+                            ComposerMenuItemLabel(
+                                title: "Default Model",
+                                isSelected: appModel.effectiveComposerModelID == nil
+                            )
+                        }
+
+                        Divider()
+
+                        ForEach(appModel.availableComposerModels) { option in
+                            Button {
+                                appModel.setComposerModelID(option.id)
+                            } label: {
+                                ComposerMenuItemLabel(
+                                    title: option.title,
+                                    isSelected: appModel.effectiveComposerModelID == option.id
+                                )
+                            }
+                        }
                     } label: {
-                        ComposerMenuItemLabel(
-                            title: "Default Model",
-                            isSelected: appModel.composerModelID == nil
-                        )
+                        ComposerMenuChip(title: appModel.composerModelTitle)
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("composer-model-button")
 
-                    Divider()
-
-                    ForEach(appModel.availableComposerModels) { option in
-                        Button {
-                            appModel.setComposerModelID(option.id)
-                        } label: {
-                            ComposerMenuItemLabel(
-                                title: option.title,
-                                isSelected: appModel.composerModelID == option.id
-                            )
+                    Menu {
+                        ForEach(appModel.availableComposerReasoningEfforts) { effort in
+                            Button {
+                                appModel.setComposerReasoningEffort(effort)
+                            } label: {
+                                ComposerMenuItemLabel(
+                                    title: effort.title,
+                                    isSelected: appModel.effectiveComposerReasoningEffort == effort
+                                )
+                            }
                         }
+                    } label: {
+                        ComposerMenuChip(title: appModel.composerReasoningEffortTitle)
                     }
-                } label: {
-                    ComposerMenuChip(title: appModel.composerModelTitle)
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("composer-reasoning-button")
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("composer-model-button")
-
-                Menu {
-                    ForEach(appModel.availableComposerReasoningEfforts) { effort in
-                        Button {
-                            appModel.setComposerReasoningEffort(effort)
-                        } label: {
-                            ComposerMenuItemLabel(
-                                title: effort.title,
-                                isSelected: appModel.composerReasoningEffort == effort
-                            )
-                        }
-                    }
-                } label: {
-                    ComposerMenuChip(title: appModel.composerReasoningEffortTitle)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("composer-reasoning-button")
 
                 Spacer(minLength: 0)
 
@@ -2498,6 +2500,10 @@ private final class PreviewWorkspaceRuntime: WorkspaceConversationRuntime {
 
     func stop() async {
         controller.setAwaitingTurnStart(false)
+    }
+
+    func refreshModels() async throws {
+        controller.setAvailableModels([])
     }
 
     func listThreads(archived: Bool) async throws {

@@ -155,11 +155,40 @@ final class AppModel {
     }
 
     var availableComposerModels: [ComposerModelOption] {
-        ComposerModelOption.fallbackCatalog
+        selectedWorkspaceController?.availableModels ?? []
+    }
+
+    var defaultComposerModelOption: ComposerModelOption? {
+        availableComposerModels.first(where: \.isDefault) ?? availableComposerModels.first
+    }
+
+    var effectiveComposerModelID: String? {
+        explicitComposerModelOption?.id
+    }
+
+    var effectiveComposerReasoningEffort: ComposerReasoningEffort {
+        guard composerReasoningEffort != .appDefault else {
+            return .appDefault
+        }
+
+        guard let selectedComposerModelOption,
+              selectedComposerModelOption.supportedReasoningEfforts.contains(composerReasoningEffort) else {
+            return .appDefault
+        }
+
+        return composerReasoningEffort
+    }
+
+    private var explicitComposerModelOption: ComposerModelOption? {
+        guard let composerModelID else {
+            return nil
+        }
+
+        return availableComposerModels.first(where: { $0.id == composerModelID })
     }
 
     var selectedComposerModelOption: ComposerModelOption? {
-        ComposerModelOption.resolvedOption(for: composerModelID)
+        explicitComposerModelOption ?? defaultComposerModelOption
     }
 
     var composerModelTitle: String {
@@ -167,11 +196,19 @@ final class AppModel {
     }
 
     var availableComposerReasoningEfforts: [ComposerReasoningEffort] {
-        ComposerReasoningEffort.allCases
+        guard let selectedComposerModelOption else {
+            return [.appDefault]
+        }
+
+        return [.appDefault] + selectedComposerModelOption.supportedReasoningEfforts
     }
 
     var composerReasoningEffortTitle: String {
-        composerReasoningEffort.title
+        if effectiveComposerReasoningEffort == .appDefault {
+            return selectedComposerModelOption?.defaultReasoningEffort?.title ?? composerReasoningEffort.title
+        }
+
+        return effectiveComposerReasoningEffort.title
     }
 
     func activateWorkspace(at url: URL) {
@@ -832,8 +869,8 @@ final class AppModel {
     private func defaultTurnConfiguration(for controller: WorkspaceController) -> BridgeTurnStartConfiguration {
         BridgeTurnStartConfiguration(
             cwd: controller.workspace.canonicalPath,
-            model: composerModelID,
-            reasoningEffort: composerReasoningEffort.bridgeValue,
+            model: effectiveComposerModelID,
+            reasoningEffort: effectiveComposerReasoningEffort.bridgeValue,
             sandboxPolicy: SandboxPolicy.workspaceWrite.rawValue,
             approvalPolicy: ApprovalPolicy.onRequest.rawValue,
             summaryMode: SummaryMode.concise.rawValue,
