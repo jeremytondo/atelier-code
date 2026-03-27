@@ -8,11 +8,13 @@ enum AppBootstrap {
         }
 
         let workspaceURL = scenario.workspaceURL
-        try? FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        if scenario.includesWorkspace {
+            try? FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        }
 
         let preferencesStore = InMemoryBootstrapPreferencesStore(
             snapshot: AppPreferencesSnapshot(
-                recentWorkspaces: [WorkspaceRecord(url: workspaceURL, lastOpenedAt: .now)],
+                recentWorkspaces: scenario.includesWorkspace ? [WorkspaceRecord(url: workspaceURL, lastOpenedAt: .now)] : [],
                 lastSelectedWorkspacePath: scenario.startsWithSelectedWorkspace ? workspaceURL.path : nil,
                 codexPathOverride: nil
             )
@@ -22,6 +24,7 @@ enum AppBootstrap {
         return AppModel(
             preferencesStore: preferencesStore,
             bridgeDiagnosticProvider: { .bridgePresent(at: workspaceURL.appendingPathComponent("mock-bridge")) },
+            gitStatusProvider: UITestWorkspaceGitStatusProvider(scenario: scenario.kind),
             runtimeFactory: { UITestWorkspaceRuntime(controller: $0, coordinator: coordinator) }
         )
     }
@@ -29,19 +32,25 @@ enum AppBootstrap {
 
 private struct UITestScenario {
     enum Kind: String {
+        case empty
         case recentSelection = "recent-selection"
         case ready
         case retry
         case phase2
         case refreshOmitsThread = "refresh-omits-thread"
         case repeatedWaiting = "repeated-waiting"
+        case gitBranch = "git-branch"
     }
 
     let kind: Kind
     let workspaceURL: URL
 
     var startsWithSelectedWorkspace: Bool {
-        kind != .recentSelection
+        includesWorkspace && kind != .recentSelection
+    }
+
+    var includesWorkspace: Bool {
+        kind != .empty
     }
 
     init?(processInfo: ProcessInfo) {
@@ -73,6 +82,19 @@ private final class InMemoryBootstrapPreferencesStore: AppPreferencesStore {
 
     func saveSnapshot(_ snapshot: AppPreferencesSnapshot) throws {
         storedSnapshot = snapshot
+    }
+}
+
+private struct UITestWorkspaceGitStatusProvider: WorkspaceGitStatusProviding {
+    let scenario: UITestScenario.Kind
+
+    func gitStatus(for workspacePath: String) async -> WorkspaceGitStatus {
+        switch scenario {
+        case .gitBranch:
+            return .branch("feature/status-bar")
+        case .empty, .recentSelection, .ready, .retry, .phase2, .refreshOmitsThread, .repeatedWaiting:
+            return .unavailable(.noRepository)
+        }
     }
 }
 

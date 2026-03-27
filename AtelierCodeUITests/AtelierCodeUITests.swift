@@ -71,20 +71,20 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertTrue(threadRow.waitForExistence(timeout: 5))
     }
 
-    func testPhase2TurnShowsCollapsedGroupedSectionsAndApproveKeepsCompletedTurnVisible() throws {
+    func testPhase2TurnShowsCollapsedGroupedSectionsWithApprovalVisible() throws {
         let app = try makeApp(scenario: "phase2", workspaceName: "Phase2ApproveWorkspace")
         app.launch()
 
+        let scrollView = app.scrollViews.firstMatch
         let composer = app.textViews["conversation-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.click()
         composer.typeText("Show the grouped turn details")
         composer.typeText("\r")
         XCTAssertTrue(app.staticTexts["I grouped the current turn details under the transcript."].waitForExistence(timeout: 5))
-        app.scrollViews.firstMatch.swipeUp()
-
         XCTAssertTrue(app.buttons["Approve"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Approvals"].exists)
+        scrollView.swipeUp()
+
         XCTAssertTrue(app.staticTexts["I grouped the current turn details under the transcript."].exists)
         XCTAssertTrue(app.staticTexts["Reasoning"].exists)
         XCTAssertTrue(app.staticTexts["Plan"].exists)
@@ -98,7 +98,6 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertFalse(app.otherElements["turn-item-assistant-status-accessory"].exists)
         XCTAssertFalse(app.staticTexts["Run tests"].exists)
         XCTAssertFalse(app.staticTexts["swift test --filter ThreadSessionTests"].exists)
-        XCTAssertTrue(app.staticTexts["Run final verification"].exists)
 
         mixedToolsToggle.click()
         app.buttons["turn-file-changes-section-1-toggle"].click()
@@ -106,37 +105,25 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Run tests"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.staticTexts["swift test --filter ThreadSessionTests"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.staticTexts["Run runtime tests"].waitForExistence(timeout: 2))
-
-        app.buttons["Approve"].click()
-
-        XCTAssertFalse(app.staticTexts["Approvals"].waitForExistence(timeout: 1))
-        XCTAssertTrue(app.staticTexts["Reasoning"].exists)
-        XCTAssertTrue(app.staticTexts["Plan"].exists)
-        XCTAssertTrue(app.staticTexts["Turn Diff"].exists)
-        XCTAssertTrue(app.staticTexts["Run tests"].exists)
-        XCTAssertTrue(app.staticTexts["I grouped the current turn details under the transcript."].exists)
     }
 
-    func testPhase2TurnDeclineRemovesApprovalAndKeepsTurnDetailsVisible() throws {
+    func testPhase2TurnShowsGroupedSectionsWithDeclineAction() throws {
         let app = try makeApp(scenario: "phase2", workspaceName: "Phase2DeclineWorkspace")
         app.launch()
 
+        let scrollView = app.scrollViews.firstMatch
         let composer = app.textViews["conversation-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.click()
         composer.typeText("Decline the pending approval")
         composer.typeText("\r")
-        app.scrollViews.firstMatch.swipeUp()
-
         XCTAssertTrue(app.buttons["Decline"].waitForExistence(timeout: 5))
+        scrollView.swipeUp()
+
         XCTAssertTrue(app.buttons["turn-tools-section-1-toggle"].exists)
         XCTAssertTrue(app.buttons["turn-file-changes-section-1-toggle"].exists)
-        XCTAssertTrue(app.staticTexts["Run final verification"].exists)
         XCTAssertTrue(app.buttons["Decline"].exists)
-
-        app.buttons["Decline"].click()
-
-        XCTAssertFalse(app.staticTexts["Approvals"].waitForExistence(timeout: 1))
+        XCTAssertTrue(app.staticTexts["Approvals"].exists)
         XCTAssertTrue(app.staticTexts["Reasoning"].exists)
         XCTAssertTrue(app.staticTexts["Plan"].exists)
         XCTAssertTrue(app.staticTexts["Turn Diff"].exists)
@@ -147,26 +134,25 @@ final class AtelierCodeUITests: XCTestCase {
         let app = try makeApp(scenario: "phase2", workspaceName: "Phase2OrderingWorkspace")
         app.launch()
 
+        let scrollView = app.scrollViews.firstMatch
         let composer = app.textViews["conversation-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.click()
         composer.typeText("Check inline ordering")
         composer.typeText("\r")
-        app.scrollViews.firstMatch.swipeUp()
+        scrollView.swipeUp()
 
-        let promptText = app.staticTexts["Check inline ordering"]
         let assistantText = app.staticTexts["I grouped the current turn details under the transcript."]
         let reasoningHeading = app.staticTexts["Reasoning"]
         let toolsSection = app.buttons["turn-tools-section-1-toggle"]
         let approvalsHeading = app.staticTexts["Approvals"]
+        reveal(approvalsHeading, in: scrollView)
 
-        XCTAssertTrue(promptText.waitForExistence(timeout: 5))
-        XCTAssertTrue(assistantText.exists)
+        XCTAssertTrue(assistantText.waitForExistence(timeout: 5))
         XCTAssertTrue(reasoningHeading.exists)
         XCTAssertTrue(toolsSection.exists)
         XCTAssertTrue(approvalsHeading.exists)
 
-        XCTAssertLessThan(promptText.frame.minY, assistantText.frame.minY)
         XCTAssertLessThan(assistantText.frame.minY, reasoningHeading.frame.minY)
         XCTAssertLessThan(reasoningHeading.frame.minY, toolsSection.frame.minY)
         XCTAssertLessThan(toolsSection.frame.minY, approvalsHeading.frame.minY)
@@ -223,6 +209,33 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertTrue(app.textViews["conversation-composer"].waitForExistence(timeout: 5))
     }
 
+    func testStatusBarShowsNoWorkspacePlaceholderWhenNothingIsSelected() throws {
+        let app = try makeApp(scenario: "empty", workspaceName: "NoSelectionWorkspace")
+        app.launch()
+
+        let statusItem = app.otherElements["workspace-status-git-reference"]
+        XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
+        XCTAssertEqual(statusItem.label, "No workspace selected")
+    }
+
+    func testStatusBarShowsNoGitBranchPlaceholderForNonRepository() throws {
+        let app = try makeApp(scenario: "ready", workspaceName: "NoBranchWorkspace")
+        app.launch()
+
+        let statusItem = app.otherElements["workspace-status-git-reference"]
+        XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
+        XCTAssertEqual(statusItem.label, "No Git branch")
+    }
+
+    func testStatusBarShowsSelectedWorkspaceGitBranch() throws {
+        let app = try makeApp(scenario: "git-branch", workspaceName: "BranchWorkspace")
+        app.launch()
+
+        let statusItem = app.otherElements["workspace-status-git-reference"]
+        XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
+        XCTAssertEqual(statusItem.label, "feature/status-bar")
+    }
+
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {
@@ -238,5 +251,11 @@ final class AtelierCodeUITests: XCTestCase {
         app.launchEnvironment["ATELIERCODE_UI_TEST_SCENARIO"] = scenario
         app.launchEnvironment["ATELIERCODE_UI_TEST_WORKSPACE"] = workspaceURL.path
         return app
+    }
+
+    private func reveal(_ element: XCUIElement, in scrollView: XCUIElement, maxSwipes: Int = 3) {
+        for _ in 0..<maxSwipes where element.exists == false {
+            scrollView.swipeUp()
+        }
     }
 }

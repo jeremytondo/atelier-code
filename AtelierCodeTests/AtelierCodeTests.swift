@@ -174,13 +174,16 @@ struct AppModelTests {
     @Test func selectingWorkspaceReturnsFromSettingsToConversationView() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitStatusProvider = TestWorkspaceGitStatusProvider()
         let appModel = AppModel(
             preferencesStore: store,
             bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitStatusProvider: gitStatusProvider,
             runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
         )
         let workspaceURL = try temporaryDirectory(named: "settings-navigation")
 
+        await gitStatusProvider.enqueueStatuses([.branch("main")], for: workspaceURL.path)
         appModel.activateWorkspace(at: workspaceURL)
         try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
 
@@ -191,6 +194,55 @@ struct AppModelTests {
 
         #expect(appModel.primaryView == .conversations)
         #expect(appModel.activeWorkspaceController?.workspace.canonicalPath == workspaceURL.path)
+    }
+
+    @Test func selectingDifferentWorkspaceRefreshesGitStatusForNewSelection() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitStatusProvider = TestWorkspaceGitStatusProvider()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitStatusProvider: gitStatusProvider,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let firstWorkspaceURL = try temporaryDirectory(named: "git-status-first")
+        let secondWorkspaceURL = try temporaryDirectory(named: "git-status-second")
+
+        await gitStatusProvider.enqueueStatuses([.branch("main")], for: firstWorkspaceURL.path)
+        appModel.activateWorkspace(at: firstWorkspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
+
+        await gitStatusProvider.enqueueStatuses([.detachedHead("abc1234")], for: secondWorkspaceURL.path)
+        appModel.activateWorkspace(at: secondWorkspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .detachedHead("abc1234") }
+
+        #expect(await gitStatusProvider.requestedWorkspacePaths() == [firstWorkspaceURL.path, secondWorkspaceURL.path])
+        #expect(appModel.activeWorkspaceController?.workspace.canonicalPath == secondWorkspaceURL.path)
+        #expect(appModel.activeWorkspaceController?.gitStatus == .detachedHead("abc1234"))
+    }
+
+    @Test func appActivationRefreshesSelectedWorkspaceGitStatusAgain() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitStatusProvider = TestWorkspaceGitStatusProvider()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitStatusProvider: gitStatusProvider,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "git-status-reactivation")
+
+        await gitStatusProvider.enqueueStatuses([.branch("main"), .detachedHead("abc1234")], for: workspaceURL.path)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
+
+        appModel.applicationDidBecomeActive()
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .detachedHead("abc1234") }
+
+        #expect(await gitStatusProvider.requestedWorkspacePaths() == [workspaceURL.path, workspaceURL.path])
+        #expect(appModel.activeWorkspaceController?.gitStatus == .detachedHead("abc1234"))
     }
 
     @Test func firstSendCreatesThreadBeforeStartingTurn() async throws {
@@ -970,6 +1022,29 @@ private final class TestWorkspaceRuntime: WorkspaceConversationRuntime {
         coordinator.resolveApprovalCalls.append((id, resolution))
         await coordinator.awaitDelayedApprovalResolutionIfNeeded()
         controller.threadSession(id: threadID)?.resolveApprovalRequest(id: id, resolution: resolution)
+    }
+}
+
+private actor TestWorkspaceGitStatusProvider: WorkspaceGitStatusProviding {
+    private var queuedStatusesByWorkspacePath: [String: [WorkspaceGitStatus]] = [:]
+    private var requestedPaths: [String] = []
+
+    func enqueueStatuses(_ statuses: [WorkspaceGitStatus], for workspacePath: String) {
+        queuedStatusesByWorkspacePath[workspacePath, default: []].append(contentsOf: statuses)
+    }
+
+    func requestedWorkspacePaths() -> [String] {
+        requestedPaths
+    }
+
+    func gitStatus(for workspacePath: String) async -> WorkspaceGitStatus {
+        requestedPaths.append(workspacePath)
+
+        if queuedStatusesByWorkspacePath[workspacePath]?.isEmpty == false {
+            return queuedStatusesByWorkspacePath[workspacePath]!.removeFirst()
+        }
+
+        return .unavailable(.lookupFailed)
     }
 }
 

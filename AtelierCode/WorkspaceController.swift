@@ -26,6 +26,7 @@ final class WorkspaceController {
     private(set) var pendingLogin: PendingLogin?
     private(set) var rateLimitState: RateLimitState?
     private(set) var availableModels: [ComposerModelOption]
+    private(set) var gitStatus: WorkspaceGitStatus
     private(set) var threadSessionsByID: [String: ThreadSession]
     private(set) var lastActiveThreadID: String? {
         didSet {
@@ -62,6 +63,7 @@ final class WorkspaceController {
         self.pendingLogin = nil
         self.rateLimitState = nil
         self.availableModels = []
+        self.gitStatus = .unavailable(.lookupFailed)
         self.threadSessionsByID = [:]
         self.lastActiveThreadID = nil
         self.isShowingArchivedThreads = false
@@ -132,6 +134,7 @@ final class WorkspaceController {
 
     func activate(workspace: WorkspaceRecord) {
         self.workspace = workspace
+        gitStatus = .unavailable(.lookupFailed)
         resetWorkspace()
     }
 
@@ -189,6 +192,10 @@ final class WorkspaceController {
 
     func setAvailableModels(_ availableModels: [ComposerModelOption]) {
         self.availableModels = availableModels
+    }
+
+    func setGitStatus(_ gitStatus: WorkspaceGitStatus) {
+        self.gitStatus = gitStatus
     }
 
     func setShowingArchivedThreads(_ isShowingArchivedThreads: Bool) {
