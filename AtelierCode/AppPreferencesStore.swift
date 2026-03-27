@@ -10,6 +10,8 @@ struct AppPreferencesSnapshot: Codable, Equatable, Sendable {
     var lastSelectedWorkspacePath: String?
     var codexPathOverride: String?
     var appearancePreference: AppAppearancePreference
+    var composerModelID: String?
+    var composerReasoningEffort: ComposerReasoningEffort
     var workspaceStates: [PersistedWorkspaceState]
 
     init(
@@ -17,12 +19,16 @@ struct AppPreferencesSnapshot: Codable, Equatable, Sendable {
         lastSelectedWorkspacePath: String?,
         codexPathOverride: String?,
         appearancePreference: AppAppearancePreference = .system,
+        composerModelID: String? = nil,
+        composerReasoningEffort: ComposerReasoningEffort = .appDefault,
         workspaceStates: [PersistedWorkspaceState] = []
     ) {
         self.recentWorkspaces = recentWorkspaces
         self.lastSelectedWorkspacePath = lastSelectedWorkspacePath
         self.codexPathOverride = codexPathOverride
         self.appearancePreference = appearancePreference
+        self.composerModelID = composerModelID
+        self.composerReasoningEffort = composerReasoningEffort
         self.workspaceStates = workspaceStates
     }
 
@@ -31,6 +37,8 @@ struct AppPreferencesSnapshot: Codable, Equatable, Sendable {
         case lastSelectedWorkspacePath
         case codexPathOverride
         case appearancePreference
+        case composerModelID
+        case composerReasoningEffort
         case workspaceStates
     }
 
@@ -40,6 +48,8 @@ struct AppPreferencesSnapshot: Codable, Equatable, Sendable {
         lastSelectedWorkspacePath = try container.decodeIfPresent(String.self, forKey: .lastSelectedWorkspacePath)
         codexPathOverride = try container.decodeIfPresent(String.self, forKey: .codexPathOverride)
         appearancePreference = try container.decodeIfPresent(AppAppearancePreference.self, forKey: .appearancePreference) ?? .system
+        composerModelID = try container.decodeIfPresent(String.self, forKey: .composerModelID)
+        composerReasoningEffort = try container.decodeIfPresent(ComposerReasoningEffort.self, forKey: .composerReasoningEffort) ?? .appDefault
         workspaceStates = try container.decodeIfPresent([PersistedWorkspaceState].self, forKey: .workspaceStates) ?? []
     }
 
@@ -49,6 +59,8 @@ struct AppPreferencesSnapshot: Codable, Equatable, Sendable {
         try container.encodeIfPresent(lastSelectedWorkspacePath, forKey: .lastSelectedWorkspacePath)
         try container.encodeIfPresent(codexPathOverride, forKey: .codexPathOverride)
         try container.encode(appearancePreference, forKey: .appearancePreference)
+        try container.encodeIfPresent(composerModelID, forKey: .composerModelID)
+        try container.encode(composerReasoningEffort, forKey: .composerReasoningEffort)
         try container.encode(workspaceStates, forKey: .workspaceStates)
     }
 }

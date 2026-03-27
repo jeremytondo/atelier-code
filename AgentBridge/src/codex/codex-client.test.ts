@@ -9,6 +9,76 @@ import type {
 } from "./codex-transport";
 
 describe("CodexClient", () => {
+  test("lists models and preserves server capabilities", async () => {
+    const transport = new FakeTransport([
+      { userAgent: "Codex/Test" },
+      {
+        data: [
+          {
+            id: "gpt-5.4",
+            model: "gpt-5.4",
+            displayName: "GPT-5.4",
+            hidden: false,
+            defaultReasoningEffort: "medium",
+            supportedReasoningEfforts: [
+              {
+                reasoningEffort: "low",
+                description: "Lower latency",
+              },
+              {
+                reasoningEffort: "high",
+                description: "More reasoning",
+              },
+            ],
+            inputModalities: ["text", "image"],
+            supportsPersonality: true,
+            isDefault: true,
+          },
+        ],
+      },
+    ]);
+    const client = new CodexClient(transport);
+
+    await client.connect();
+    const result = await client.listModels("req-models", {
+      limit: 20,
+      includeHidden: false,
+    });
+
+    expect(result).toEqual({
+      models: [
+        {
+          id: "gpt-5.4",
+          model: "gpt-5.4",
+          displayName: "GPT-5.4",
+          hidden: false,
+          defaultReasoningEffort: "medium",
+          supportedReasoningEfforts: [
+            {
+              reasoningEffort: "low",
+              description: "Lower latency",
+            },
+            {
+              reasoningEffort: "high",
+              description: "More reasoning",
+            },
+          ],
+          inputModalities: ["text", "image"],
+          supportsPersonality: true,
+          isDefault: true,
+        },
+      ],
+    });
+    expect(transport.sent[1]).toEqual({
+      id: "req-models",
+      method: "model/list",
+      params: {
+        limit: 20,
+        includeHidden: undefined,
+      },
+    });
+  });
+
   test("initializes once and maps thread start plus naming", async () => {
     const transport = new FakeTransport([
       { userAgent: "Codex/Test" },

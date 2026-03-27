@@ -6,6 +6,7 @@ enum BridgeProtocolVersion {
 }
 
 enum BridgeCommandType: String, Encodable, Sendable {
+    case modelList = "model.list"
     case threadStart = "thread.start"
     case threadResume = "thread.resume"
     case threadList = "thread.list"
@@ -24,6 +25,7 @@ enum BridgeCommandType: String, Encodable, Sendable {
 }
 
 enum BridgeEventType: String, Decodable, Sendable {
+    case modelListResult = "model.list.result"
     case threadStarted = "thread.started"
     case threadArchived = "thread.archived"
     case threadUnarchived = "thread.unarchived"
@@ -185,6 +187,11 @@ struct BridgeCommandEnvelope<Payload: Encodable>: Encodable {
 struct BridgeThreadStartPayload: Encodable, Sendable {
     let workspacePath: String
     let title: String?
+}
+
+struct BridgeModelListPayload: Encodable, Sendable {
+    let limit: Int?
+    let includeHidden: Bool?
 }
 
 struct BridgeThreadResumePayload: Encodable, Sendable {
@@ -414,6 +421,27 @@ struct BridgeRateLimitUpdatedPayload: Decodable, Equatable, Sendable {
     let buckets: [BridgeRateLimitBucketDTO]
 }
 
+struct BridgeModelReasoningEffortDTO: Decodable, Equatable, Sendable {
+    let reasoningEffort: String
+    let description: String?
+}
+
+struct BridgeModelSummaryDTO: Decodable, Equatable, Sendable {
+    let id: String
+    let model: String
+    let displayName: String
+    let hidden: Bool
+    let defaultReasoningEffort: String?
+    let supportedReasoningEfforts: [BridgeModelReasoningEffortDTO]
+    let inputModalities: [String]?
+    let supportsPersonality: Bool?
+    let isDefault: Bool?
+}
+
+struct BridgeModelListResultPayload: Decodable, Equatable, Sendable {
+    let models: [BridgeModelSummaryDTO]
+}
+
 enum BridgeJSONValue: Codable, Equatable, Sendable {
     case string(String)
     case number(Double)
@@ -480,6 +508,7 @@ struct BridgeProviderStatusPayload: Decodable, Equatable, Sendable {
 }
 
 enum BridgeEventPayload: Equatable, Sendable {
+    case modelListResult(BridgeModelListResultPayload)
     case threadStarted(BridgeThreadStartedPayload)
     case threadArchived(BridgeThreadArchivedPayload)
     case threadUnarchived(BridgeThreadUnarchivedPayload)
@@ -541,6 +570,8 @@ struct BridgeEventEnvelope: Decodable, Equatable, Sendable {
         activityID = try container.decodeIfPresent(String.self, forKey: .activityID)
 
         switch type {
+        case .modelListResult:
+            payload = .modelListResult(try container.decode(BridgeModelListResultPayload.self, forKey: .payload))
         case .threadStarted:
             payload = .threadStarted(try container.decode(BridgeThreadStartedPayload.self, forKey: .payload))
         case .threadArchived:
@@ -628,6 +659,29 @@ extension BridgeThreadSummaryDTO {
             title: title,
             messages: (messages ?? []).map { $0.toConversationMessage() }
         )
+    }
+}
+
+extension BridgeModelSummaryDTO {
+    var composerModelOption: ComposerModelOption? {
+        let supportedReasoningEfforts = supportedReasoningEfforts.compactMap(\.composerReasoningEffort)
+        let resolvedSupportedReasoningEfforts = supportedReasoningEfforts.isEmpty
+            ? ComposerReasoningEffort.serverSupportedDefaults
+            : supportedReasoningEfforts
+
+        return ComposerModelOption(
+            id: id,
+            title: displayName,
+            defaultReasoningEffort: ComposerReasoningEffort(bridgeValue: defaultReasoningEffort),
+            supportedReasoningEfforts: resolvedSupportedReasoningEfforts,
+            isDefault: isDefault ?? false
+        )
+    }
+}
+
+extension BridgeModelReasoningEffortDTO {
+    var composerReasoningEffort: ComposerReasoningEffort? {
+        ComposerReasoningEffort(bridgeValue: reasoningEffort)
     }
 }
 

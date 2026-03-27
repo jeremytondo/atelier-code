@@ -11,6 +11,8 @@ final class AppModel {
     private(set) var lastSelectedWorkspacePath: String?
     private(set) var codexPathOverride: String?
     private(set) var appearancePreference: AppAppearancePreference
+    private(set) var composerModelID: String?
+    private(set) var composerReasoningEffort: ComposerReasoningEffort
     private(set) var startupDiagnostics: [StartupDiagnostic]
     private(set) var workspaceControllers: [WorkspaceController]
     private(set) var selectedRoute: WorkspaceThreadRoute?
@@ -50,11 +52,15 @@ final class AppModel {
         let selectedPath = loadedSnapshot?.lastSelectedWorkspacePath.map(WorkspaceRecord.canonicalizedPath(for:))
         let codexOverridePath = loadedSnapshot?.codexPathOverride
         let appearancePreference = loadedSnapshot?.appearancePreference ?? .system
+        let composerModelID = loadedSnapshot?.composerModelID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let composerReasoningEffort = ComposerReasoningEffort(storedValue: loadedSnapshot?.composerReasoningEffort.rawValue)
 
         recentWorkspaces = []
         lastSelectedWorkspacePath = nil
         codexPathOverride = codexOverridePath
         self.appearancePreference = appearancePreference
+        self.composerModelID = composerModelID
+        self.composerReasoningEffort = composerReasoningEffort
         startupDiagnostics = []
         workspaceControllers = []
         selectedRoute = nil
@@ -142,8 +148,67 @@ final class AppModel {
             lastSelectedWorkspacePath: lastSelectedWorkspacePath,
             codexPathOverride: codexPathOverride,
             appearancePreference: appearancePreference,
+            composerModelID: composerModelID,
+            composerReasoningEffort: composerReasoningEffort,
             workspaceStates: workspaceControllers.map(\.persistedState)
         )
+    }
+
+    var availableComposerModels: [ComposerModelOption] {
+        selectedWorkspaceController?.availableModels ?? []
+    }
+
+    var defaultComposerModelOption: ComposerModelOption? {
+        availableComposerModels.first(where: \.isDefault) ?? availableComposerModels.first
+    }
+
+    var effectiveComposerModelID: String? {
+        explicitComposerModelOption?.id
+    }
+
+    var effectiveComposerReasoningEffort: ComposerReasoningEffort {
+        guard composerReasoningEffort != .appDefault else {
+            return .appDefault
+        }
+
+        guard let selectedComposerModelOption,
+              selectedComposerModelOption.supportedReasoningEfforts.contains(composerReasoningEffort) else {
+            return .appDefault
+        }
+
+        return composerReasoningEffort
+    }
+
+    private var explicitComposerModelOption: ComposerModelOption? {
+        guard let composerModelID else {
+            return nil
+        }
+
+        return availableComposerModels.first(where: { $0.id == composerModelID })
+    }
+
+    var selectedComposerModelOption: ComposerModelOption? {
+        explicitComposerModelOption ?? defaultComposerModelOption
+    }
+
+    var composerModelTitle: String {
+        selectedComposerModelOption?.title ?? "Default Model"
+    }
+
+    var availableComposerReasoningEfforts: [ComposerReasoningEffort] {
+        guard let selectedComposerModelOption else {
+            return [.appDefault]
+        }
+
+        return [.appDefault] + selectedComposerModelOption.supportedReasoningEfforts
+    }
+
+    var composerReasoningEffortTitle: String {
+        if effectiveComposerReasoningEffort == .appDefault {
+            return selectedComposerModelOption?.defaultReasoningEffort?.title ?? composerReasoningEffort.title
+        }
+
+        return effectiveComposerReasoningEffort.title
     }
 
     func activateWorkspace(at url: URL) {
@@ -223,6 +288,25 @@ final class AppModel {
         }
 
         appearancePreference = preference
+        persistPreferences()
+    }
+
+    func setComposerModelID(_ modelID: String?) {
+        let normalizedModelID = modelID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        guard composerModelID != normalizedModelID else {
+            return
+        }
+
+        composerModelID = normalizedModelID
+        persistPreferences()
+    }
+
+    func setComposerReasoningEffort(_ effort: ComposerReasoningEffort) {
+        guard composerReasoningEffort != effort else {
+            return
+        }
+
+        composerReasoningEffort = effort
         persistPreferences()
     }
 
@@ -785,8 +869,8 @@ final class AppModel {
     private func defaultTurnConfiguration(for controller: WorkspaceController) -> BridgeTurnStartConfiguration {
         BridgeTurnStartConfiguration(
             cwd: controller.workspace.canonicalPath,
-            model: nil,
-            reasoningEffort: nil,
+            model: effectiveComposerModelID,
+            reasoningEffort: effectiveComposerReasoningEffort.bridgeValue,
             sandboxPolicy: SandboxPolicy.workspaceWrite.rawValue,
             approvalPolicy: ApprovalPolicy.onRequest.rawValue,
             summaryMode: SummaryMode.concise.rawValue,

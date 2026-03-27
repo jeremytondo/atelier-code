@@ -13,6 +13,7 @@ export type ProviderIdentifier = string;
 export type BridgeTransport = "websocket";
 export type BridgeHandshakeType = "hello" | "welcome";
 export type BridgeCommandType =
+  | "model.list"
   | "thread.start"
   | "thread.resume"
   | "thread.list"
@@ -29,6 +30,7 @@ export type BridgeCommandType =
   | "account.login"
   | "account.logout";
 export type BridgeEventType =
+  | "model.list.result"
   | "thread.started"
   | "thread.archived"
   | "thread.unarchived"
@@ -64,6 +66,7 @@ export type AuthState = "unknown" | "signed_out" | "signed_in";
 export type PlanStepStatus = "pending" | "in_progress" | "completed";
 export type ProviderConnectionStatus = "starting" | "ready" | "degraded" | "disconnected" | "error";
 export type RateLimitBucketKind = "requests" | "tokens" | "other";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export interface BridgeEnvelopeBase<TType extends BridgeMessageType = BridgeMessageType> {
   type: TType;
@@ -155,6 +158,23 @@ export interface RateLimitBucket {
   detail?: string;
 }
 
+export interface ModelReasoningEffortSummary {
+  reasoningEffort: ReasoningEffort;
+  description?: string;
+}
+
+export interface ModelSummary {
+  id: string;
+  model: string;
+  displayName: string;
+  hidden: boolean;
+  defaultReasoningEffort?: ReasoningEffort;
+  supportedReasoningEfforts: ModelReasoningEffortSummary[];
+  inputModalities?: string[];
+  supportsPersonality?: boolean;
+  isDefault?: boolean;
+}
+
 export interface TurnStartConfiguration {
   cwd?: string;
   model?: string;
@@ -203,6 +223,11 @@ export interface WelcomeEnvelope extends BridgeHandshakeEnvelope<"welcome", Welc
 export interface ThreadStartPayload {
   workspacePath: string;
   title?: string;
+}
+
+export interface ModelListPayload {
+  limit?: number;
+  includeHidden?: boolean;
 }
 
 export interface ThreadResumePayload {
@@ -266,6 +291,8 @@ export interface AccountLogoutPayload {
 
 export interface ThreadStartCommand extends BridgeCommandEnvelope<"thread.start", ThreadStartPayload> {}
 
+export interface ModelListCommand extends BridgeCommandEnvelope<"model.list", ModelListPayload> {}
+
 export interface ThreadResumeCommand extends BridgeCommandEnvelope<"thread.resume", ThreadResumePayload> {
   threadID: string;
 }
@@ -319,6 +346,7 @@ export interface AccountLogoutCommand
   extends BridgeCommandEnvelope<"account.logout", AccountLogoutPayload> {}
 
 export type BridgeCommand =
+  | ModelListCommand
   | ThreadStartCommand
   | ThreadResumeCommand
   | ThreadListCommand
@@ -420,6 +448,10 @@ export interface PlanUpdatedPayload {
 export interface TurnCompletedPayload {
   status: TurnCompletionStatus;
   detail?: string;
+}
+
+export interface ModelListResultPayload {
+  models: ModelSummary[];
 }
 
 export interface ThreadListResultPayload {
@@ -553,6 +585,11 @@ export interface ThreadListResultEvent
   requestID: string;
 }
 
+export interface ModelListResultEvent
+  extends BridgeEventEnvelope<"model.list.result", ModelListResultPayload> {
+  requestID: string;
+}
+
 export interface AccountLoginResultEvent
   extends BridgeEventEnvelope<"account.login.result", AccountLoginResultPayload> {
   requestID: string;
@@ -568,6 +605,7 @@ export interface ErrorEvent extends BridgeEventEnvelope<"error", ErrorPayload> {
 export interface ProviderStatusEvent extends BridgeEventEnvelope<"provider.status", ProviderStatusPayload> {}
 
 export type BridgeEvent =
+  | ModelListResultEvent
   | ThreadStartedEvent
   | ThreadArchivedEvent
   | ThreadUnarchivedEvent

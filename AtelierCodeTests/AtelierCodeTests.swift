@@ -149,6 +149,28 @@ struct AppModelTests {
         #expect(restoredModel.appearancePreference == .dark)
     }
 
+    @Test func roundTripsComposerSelections() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+
+        appModel.setComposerModelID("gpt-5.4")
+        appModel.setComposerReasoningEffort(.xhigh)
+
+        let restoredModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+
+        #expect(restoredModel.composerModelID == "gpt-5.4")
+        #expect(restoredModel.composerReasoningEffort == .xhigh)
+    }
+
     @Test func selectingWorkspaceReturnsFromSettingsToConversationView() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
@@ -515,6 +537,57 @@ struct AppModelTests {
         #expect(configuration.summaryMode == "concise")
     }
 
+    @Test func sendPromptUsesSelectedModelAndReasoningEffort() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        runtimeCoordinator.availableModels = [
+            ComposerModelOption(
+                id: "gpt-5.4",
+                title: "GPT-5.4",
+                defaultReasoningEffort: .medium,
+                supportedReasoningEfforts: [.low, .medium, .high, .xhigh],
+                isDefault: true
+            )
+        ]
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "conversation-config-model")
+
+        appModel.setComposerModelID("gpt-5.4")
+        appModel.setComposerReasoningEffort(.high)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
+        _ = await appModel.sendPrompt("Create a README with the selected model")
+
+        let configuration = try #require(runtimeCoordinator.startTurnConfigurations.last ?? nil)
+        #expect(configuration.model == "gpt-5.4")
+        #expect(configuration.reasoningEffort == "high")
+    }
+
+    @Test func sendPromptOmitsUnavailableModelAndReasoningSelections() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "conversation-config-no-model-catalog")
+
+        appModel.setComposerModelID("gpt-5.4")
+        appModel.setComposerReasoningEffort(.high)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
+        _ = await appModel.sendPrompt("Create a README without a model catalog")
+
+        let configuration = try #require(runtimeCoordinator.startTurnConfigurations.last ?? nil)
+        #expect(configuration.model == nil)
+        #expect(configuration.reasoningEffort == nil)
+    }
+
     @Test func secondSendIsRejectedWhileWaitingForTurnStartAcknowledgement() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
@@ -745,6 +818,7 @@ private final class TestRuntimeCoordinator {
     var startThreadCount = 0
     var startTurnPrompts: [String] = []
     var startTurnConfigurations: [BridgeTurnStartConfiguration?] = []
+    var availableModels: [ComposerModelOption] = []
     var cancelCount = 0
     var resolveApprovalCalls: [(String, ApprovalResolution)] = []
     var queuedThreadListResponses: [[ThreadSummary]] = []
@@ -796,6 +870,7 @@ private final class TestWorkspaceRuntime: WorkspaceConversationRuntime {
 
     func start() async throws {
         coordinator.startCount += 1
+        controller.setAvailableModels(coordinator.availableModels)
         controller.setBridgeLifecycleState(.idle)
         controller.setConnectionStatus(.ready)
     }
@@ -804,6 +879,10 @@ private final class TestWorkspaceRuntime: WorkspaceConversationRuntime {
         coordinator.stopCount += 1
         controller.setAwaitingTurnStart(false)
         controller.setConnectionStatus(.disconnected)
+    }
+
+    func refreshModels() async throws {
+        controller.setAvailableModels(coordinator.availableModels)
     }
 
     func listThreads(archived: Bool) async throws {
@@ -972,6 +1051,10 @@ private final class LifecycleProbeRuntime: WorkspaceConversationRuntime {
         controller.setAwaitingTurnStart(false)
         controller.setBridgeLifecycleState(.idle)
         controller.setConnectionStatus(.disconnected)
+    }
+
+    func refreshModels() async throws {
+        controller.setAvailableModels([])
     }
 
     func listThreads(archived: Bool) async throws {

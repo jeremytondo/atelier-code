@@ -544,6 +544,65 @@ enum AppAppearancePreference: String, Codable, Equatable, Sendable, CaseIterable
     }
 }
 
+struct ComposerModelOption: Equatable, Sendable, Identifiable {
+    let id: String
+    let title: String
+    let defaultReasoningEffort: ComposerReasoningEffort?
+    let supportedReasoningEfforts: [ComposerReasoningEffort]
+    let isDefault: Bool
+}
+
+enum ComposerReasoningEffort: String, Codable, Equatable, Sendable, CaseIterable, Identifiable {
+    case appDefault = "default"
+    case minimal
+    case low
+    case medium
+    case high
+    case xhigh
+    case none
+
+    var id: String { rawValue }
+
+    static let serverSupportedDefaults: [Self] = [.low, .medium, .high, .xhigh]
+
+    var bridgeValue: String? {
+        self == .appDefault ? nil : rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .appDefault:
+            return "Default Effort"
+        case .minimal:
+            return "Minimal"
+        case .low:
+            return "Low"
+        case .medium:
+            return "Medium"
+        case .high:
+            return "High"
+        case .xhigh:
+            return "Extra High"
+        case .none:
+            return "None"
+        }
+    }
+
+    init(storedValue: String?) {
+        self = ComposerReasoningEffort(rawValue: storedValue ?? ComposerReasoningEffort.appDefault.rawValue) ?? .appDefault
+    }
+
+    init?(bridgeValue: String?) {
+        guard let bridgeValue,
+              let effort = ComposerReasoningEffort(rawValue: bridgeValue),
+              effort != .appDefault else {
+            return nil
+        }
+
+        self = effort
+    }
+}
+
 enum ConversationRole: String, Codable, Equatable, Sendable {
     case system
     case user

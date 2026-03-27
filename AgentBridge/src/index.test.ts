@@ -5,6 +5,7 @@ import type {
   AccountReadPayload,
   ApprovalResolvePayload,
   BridgeEnvironmentDiagnostics,
+  ModelListPayload,
   ThreadArchivePayload,
   ThreadForkPayload,
   ThreadListPayload,
@@ -25,6 +26,7 @@ import type {
   CodexAccountReadResult,
   CodexClientAdapter,
   CodexLoginResult,
+  CodexModelListResult,
   CodexThreadForkResult,
   CodexThreadListResult,
   CodexThreadRenameResult,
@@ -103,6 +105,37 @@ describe("executeBridgeCommand", () => {
       expect.objectContaining({
         type: "rateLimit.updated",
         requestID: "req-account",
+      }),
+    ]);
+  });
+
+  test("emits a model list result event for model discovery", async () => {
+    const client = new FakeCodexClient();
+
+    const events = await executeBridgeCommand(client, {
+      id: "req-models",
+      type: "model.list",
+      timestamp: new Date().toISOString(),
+      provider: "codex",
+      payload: {
+        limit: 20,
+        includeHidden: false,
+      },
+    });
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "model.list.result",
+        requestID: "req-models",
+        payload: {
+          models: [
+            expect.objectContaining({
+              id: "gpt-5.4",
+              displayName: "GPT-5.4",
+              isDefault: true,
+            }),
+          ],
+        },
       }),
     ]);
   });
@@ -371,6 +404,28 @@ class FakeCodexClient implements CodexClientAdapter {
   async connect(): Promise<void> {}
 
   async disconnect(): Promise<void> {}
+
+  async listModels(_requestID: string, _payload: ModelListPayload): Promise<CodexModelListResult> {
+    return {
+      models: [
+        {
+          id: "gpt-5.4",
+          model: "gpt-5.4",
+          displayName: "GPT-5.4",
+          hidden: false,
+          defaultReasoningEffort: "medium",
+          supportedReasoningEfforts: [
+            { reasoningEffort: "low", description: "Lower latency" },
+            { reasoningEffort: "medium", description: "Balanced" },
+            { reasoningEffort: "high", description: "More reasoning" },
+          ],
+          inputModalities: ["text", "image"],
+          supportsPersonality: true,
+          isDefault: true,
+        },
+      ],
+    };
+  }
 
   async startThread(_requestID: string, payload: ThreadStartPayload): Promise<CodexThreadStartResult> {
     return {

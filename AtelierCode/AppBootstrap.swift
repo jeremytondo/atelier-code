@@ -131,6 +131,10 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
         controller.setConnectionStatus(.disconnected)
     }
 
+    func refreshModels() async throws {
+        controller.setAvailableModels([])
+    }
+
     func listThreads(archived: Bool) async throws {
         controller.setShowingArchivedThreads(archived)
 
