@@ -18,39 +18,43 @@ final class AppModel {
     private(set) var selectedRoute: WorkspaceThreadRoute?
     private(set) var primaryView: AppPrimaryView
     private(set) var selectedSettingsSection: SettingsSection
+    private(set) var branchPickerState: WorkspaceBranchPickerState?
 
     @ObservationIgnored private let preferencesStore: any AppPreferencesStore
     @ObservationIgnored private let fileManager: FileManager
     @ObservationIgnored private let bridgeDiagnosticProvider: () -> StartupDiagnostic
-    @ObservationIgnored private let gitStatusProvider: any WorkspaceGitStatusProviding
+    @ObservationIgnored private let gitService: any WorkspaceGitServing
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let runtimeFactory: @MainActor (WorkspaceController) -> any WorkspaceConversationRuntime
     @ObservationIgnored private var workspaceRuntimes: [String: any WorkspaceConversationRuntime]
     @ObservationIgnored private var runtimeLifecycleTasks: [String: Task<Void, Never>]
     @ObservationIgnored private var gitStatusRefreshTasks: [String: Task<Void, Never>]
+    @ObservationIgnored private var branchPickerRefreshTask: Task<Void, Never>?
 
     init(
         preferencesStore: (any AppPreferencesStore)? = nil,
         fileManager: FileManager = .default,
         bridgeDiagnosticProvider: (() -> StartupDiagnostic)? = nil,
-        gitStatusProvider: (any WorkspaceGitStatusProviding)? = nil,
+        gitService: (any WorkspaceGitServing)? = nil,
         now: @escaping () -> Date = Date.init,
         runtimeFactory: (@MainActor (WorkspaceController) -> any WorkspaceConversationRuntime)? = nil
     ) {
         let resolvedPreferencesStore = preferencesStore ?? UserDefaultsAppPreferencesStore()
         let resolvedBridgeDiagnosticProvider = bridgeDiagnosticProvider ?? { StartupDiagnostic.defaultBridgeDiagnostic() }
-        let resolvedGitStatusProvider = gitStatusProvider ?? WorkspaceGitStatusProvider()
+        let resolvedGitService = gitService ?? WorkspaceGitService()
         let resolvedRuntimeFactory = runtimeFactory ?? { WorkspaceBridgeRuntime(controller: $0) }
 
         self.preferencesStore = resolvedPreferencesStore
         self.fileManager = fileManager
         self.bridgeDiagnosticProvider = resolvedBridgeDiagnosticProvider
-        self.gitStatusProvider = resolvedGitStatusProvider
+        self.gitService = resolvedGitService
         self.now = now
         self.runtimeFactory = resolvedRuntimeFactory
         self.workspaceRuntimes = [:]
         self.runtimeLifecycleTasks = [:]
         self.gitStatusRefreshTasks = [:]
+        self.branchPickerRefreshTask = nil
+        self.branchPickerState = nil
 
         let loadedSnapshot = try? resolvedPreferencesStore.loadSnapshot()
         let normalizedRecentWorkspaces = Self.normalizeRecentWorkspaces(loadedSnapshot?.recentWorkspaces ?? [])
@@ -72,6 +76,7 @@ final class AppModel {
         selectedRoute = nil
         primaryView = .conversations
         selectedSettingsSection = .general
+        branchPickerState = nil
 
         if let codexOverridePath {
             appendStartupDiagnostic(Self.codexOverrideDiagnostic(path: codexOverridePath, fileManager: fileManager))
@@ -224,9 +229,186 @@ final class AppModel {
                 id: "git-reference",
                 systemImage: "arrow.triangle.branch",
                 text: selectedWorkspaceGitStatusText,
-                isPlaceholder: selectedWorkspaceGitStatusIsPlaceholder
+                isPlaceholder: selectedWorkspaceGitStatusIsPlaceholder,
+                isInteractive: selectedWorkspaceGitStatusIsInteractive
             )
         ]
+    }
+
+    var isSelectedWorkspaceBranchPickerPresented: Bool {
+        guard let workspacePath = selectedWorkspaceController?.workspace.canonicalPath else {
+            return false
+        }
+
+        return branchPickerState?.workspacePath == workspacePath
+    }
+
+    var selectedWorkspaceBranchPickerFilterText: String {
+        guard isSelectedWorkspaceBranchPickerPresented else {
+            return ""
+        }
+
+        return branchPickerState?.filterText ?? ""
+    }
+
+    var selectedWorkspaceBranchPickerFilteredBranches: [String] {
+        guard isSelectedWorkspaceBranchPickerPresented else {
+            return []
+        }
+
+        return branchPickerState?.filteredBranches ?? []
+    }
+
+    var selectedWorkspaceBranchPickerItems: [WorkspaceBranchPickerItem] {
+        guard isSelectedWorkspaceBranchPickerPresented else {
+            return []
+        }
+
+        return branchPickerState?.items ?? []
+    }
+
+    var selectedWorkspaceBranchPickerSelectedItemID: WorkspaceBranchPickerItem.ID? {
+        guard isSelectedWorkspaceBranchPickerPresented else {
+            return nil
+        }
+
+        return branchPickerState?.selectedItemID
+    }
+
+    var selectedWorkspaceBranchPickerCurrentBranchName: String? {
+        return branchPickerState?.currentBranchName
+    }
+
+    var selectedWorkspaceBranchPickerErrorMessage: String? {
+        guard isSelectedWorkspaceBranchPickerPresented else {
+            return nil
+        }
+
+        return branchPickerState?.errorMessage
+    }
+
+    var isSelectedWorkspaceBranchPickerLoading: Bool {
+        guard isSelectedWorkspaceBranchPickerPresented else {
+            return false
+        }
+
+        return branchPickerState?.isLoading ?? false
+    }
+
+    var isSelectedWorkspaceBranchPickerPerformingAction: Bool {
+        guard isSelectedWorkspaceBranchPickerPresented else {
+            return false
+        }
+
+        return branchPickerState?.isPerformingAction ?? false
+    }
+
+    var canCreateSelectedWorkspaceBranchFromPicker: Bool {
+        guard isSelectedWorkspaceBranchPickerPresented else {
+            return false
+        }
+
+        guard let branchPickerState else {
+            return false
+        }
+
+        return branchPickerState.canCreateBranch
+    }
+
+    func showSelectedWorkspaceBranchPicker() {
+        guard selectedWorkspaceGitStatusIsInteractive else {
+            return
+        }
+
+        guard isSelectedWorkspaceBranchPickerPresented == false else {
+            return
+        }
+
+        presentSelectedWorkspaceBranchPicker()
+    }
+
+    func toggleSelectedWorkspaceBranchPicker() {
+        if isSelectedWorkspaceBranchPickerPresented {
+            dismissSelectedWorkspaceBranchPicker()
+            return
+        }
+
+        showSelectedWorkspaceBranchPicker()
+    }
+
+    func dismissSelectedWorkspaceBranchPicker() {
+        branchPickerRefreshTask?.cancel()
+        branchPickerRefreshTask = nil
+        branchPickerState = nil
+    }
+
+    func setSelectedWorkspaceBranchPickerFilterText(_ filterText: String) {
+        guard isSelectedWorkspaceBranchPickerPresented else {
+            return
+        }
+
+        guard var branchPickerState else {
+            return
+        }
+
+        branchPickerState.setFilterText(filterText)
+        self.branchPickerState = branchPickerState
+    }
+
+    func moveSelectedWorkspaceBranchPickerSelection(_ direction: WorkspaceBranchPickerSelectionDirection) {
+        guard isSelectedWorkspaceBranchPickerPresented,
+              var branchPickerState else {
+            return
+        }
+
+        branchPickerState.moveSelection(direction)
+        self.branchPickerState = branchPickerState
+    }
+
+    func selectBranchFromPicker(_ branchName: String) async {
+        guard let branchPickerState,
+              isSelectedWorkspaceBranchPickerPresented,
+              branchPickerState.isLoading == false,
+              branchPickerState.isPerformingAction == false else {
+            return
+        }
+
+        if selectedWorkspaceBranchPickerCurrentBranchName == branchName {
+            dismissSelectedWorkspaceBranchPicker()
+            return
+        }
+
+        await performBranchPickerAction(named: branchName, createIfNeeded: false)
+    }
+
+    func submitSelectedWorkspaceBranchPicker() async {
+        guard let selectedItem = branchPickerState?.selectedItem else {
+            return
+        }
+
+        switch selectedItem {
+        case .branch(let branchName):
+            await selectBranchFromPicker(branchName)
+        case .create(let branchName):
+            await performBranchPickerAction(named: branchName, createIfNeeded: true)
+        }
+    }
+
+    func createSelectedWorkspaceBranchFromPicker() async {
+        guard let branchPickerState else {
+            return
+        }
+
+        let branchName = branchPickerState.submittedBranchName
+        guard branchName.isEmpty == false else {
+            return
+        }
+
+        guard branchPickerState.exactMatchName == nil else {
+            return
+        }
+
+        await performBranchPickerAction(named: branchName, createIfNeeded: true)
     }
 
     func activateWorkspace(at url: URL) {
@@ -265,6 +447,7 @@ final class AppModel {
         showConversations()
         selectedRoute = nil
         lastSelectedWorkspacePath = nil
+        dismissSelectedWorkspaceBranchPicker()
         persistPreferences()
     }
 
@@ -287,6 +470,10 @@ final class AppModel {
                 preferExistingThreadSelection: true
             )
             lastSelectedWorkspacePath = selectedRoute?.workspacePath
+        }
+
+        if branchPickerState?.workspacePath == canonicalPath {
+            resetBranchPickerState(for: selectedRoute?.workspacePath)
         }
 
         persistPreferences()
@@ -339,6 +526,10 @@ final class AppModel {
         refreshSelectedWorkspaceGitStatus()
     }
 
+    func applicationWindowDidBecomeKey() {
+        refreshSelectedWorkspaceGitStatus()
+    }
+
     func selectSettingsSection(_ section: SettingsSection) {
         selectedSettingsSection = section
         primaryView = .settings
@@ -357,30 +548,20 @@ final class AppModel {
         showConversations()
         let threadID = preferredThreadID(for: controller)
         controller.markThreadSelected(threadID)
-        selectedRoute = WorkspaceThreadRoute(
-            workspacePath: canonicalPath,
-            threadID: threadID
-        )
-        lastSelectedWorkspacePath = canonicalPath
+        updateSelectedRoute(workspacePath: canonicalPath, threadID: threadID)
         startWorkspaceRuntimeIfNeeded(for: canonicalPath)
-        refreshGitStatus(for: controller.workspace)
         persistPreferences()
     }
 
     func selectWorkspaceForNewThread(path: String) {
         let canonicalPath = WorkspaceRecord.canonicalizedPath(for: path)
-        guard let controller = workspaceController(for: canonicalPath) else {
+        guard workspaceController(for: canonicalPath) != nil else {
             return
         }
 
         showConversations()
-        selectedRoute = WorkspaceThreadRoute(
-            workspacePath: canonicalPath,
-            threadID: nil
-        )
-        lastSelectedWorkspacePath = canonicalPath
+        updateSelectedRoute(workspacePath: canonicalPath, threadID: nil)
         startWorkspaceRuntimeIfNeeded(for: canonicalPath)
-        refreshGitStatus(for: controller.workspace)
         persistPreferences()
     }
 
@@ -428,8 +609,7 @@ final class AppModel {
             }
 
             controller.markThreadSelected(threadID)
-            selectedRoute = WorkspaceThreadRoute(workspacePath: canonicalPath, threadID: threadID)
-            lastSelectedWorkspacePath = canonicalPath
+            updateSelectedRoute(workspacePath: canonicalPath, threadID: threadID)
             persistPreferences()
             return true
         } catch is CancellationError {
@@ -448,11 +628,7 @@ final class AppModel {
 
         showConversations()
         controller.clearActiveThreadSession()
-        selectedRoute = WorkspaceThreadRoute(
-            workspacePath: controller.workspace.canonicalPath,
-            threadID: nil
-        )
-        lastSelectedWorkspacePath = controller.workspace.canonicalPath
+        updateSelectedRoute(workspacePath: controller.workspace.canonicalPath, threadID: nil)
         startWorkspaceRuntimeIfNeeded(for: controller.workspace.canonicalPath)
         persistPreferences()
         return true
@@ -480,11 +656,7 @@ final class AppModel {
         do {
             let session = try await runtime.forkThreadAndWait(id: threadID)
             controller.markThreadSelected(session.threadID)
-            self.selectedRoute = WorkspaceThreadRoute(
-                workspacePath: canonicalPath,
-                threadID: session.threadID
-            )
-            lastSelectedWorkspacePath = canonicalPath
+            updateSelectedRoute(workspacePath: canonicalPath, threadID: session.threadID)
             persistPreferences()
             return true
         } catch is CancellationError {
@@ -559,11 +731,7 @@ final class AppModel {
         do {
             let session = try await runtime.unarchiveThreadAndWait(id: threadID)
             controller.markThreadSelected(session.threadID)
-            self.selectedRoute = WorkspaceThreadRoute(
-                workspacePath: canonicalPath,
-                threadID: session.threadID
-            )
-            lastSelectedWorkspacePath = canonicalPath
+            updateSelectedRoute(workspacePath: canonicalPath, threadID: session.threadID)
             persistPreferences()
             return true
         } catch is CancellationError {
@@ -611,10 +779,7 @@ final class AppModel {
         do {
             let session = try await runtime.rollbackThreadAndWait(id: threadID, numTurns: 1)
             controller.markThreadSelected(session.threadID)
-            self.selectedRoute = WorkspaceThreadRoute(
-                workspacePath: controller.workspace.canonicalPath,
-                threadID: session.threadID
-            )
+            updateSelectedRoute(workspacePath: controller.workspace.canonicalPath, threadID: session.threadID)
             persistPreferences()
             return true
         } catch is CancellationError {
@@ -724,10 +889,7 @@ final class AppModel {
                 let session = try await runtime.startThreadAndWait(title: nil)
                 threadID = session.threadID
                 controller.markThreadSelected(threadID)
-                selectedRoute = WorkspaceThreadRoute(
-                    workspacePath: controller.workspace.canonicalPath,
-                    threadID: threadID
-                )
+                updateSelectedRoute(workspacePath: controller.workspace.canonicalPath, threadID: threadID)
                 persistPreferences()
             }
 
@@ -843,6 +1005,19 @@ final class AppModel {
         return false
     }
 
+    private var selectedWorkspaceGitStatusIsInteractive: Bool {
+        guard let controller = selectedWorkspaceController else {
+            return false
+        }
+
+        switch controller.gitStatus {
+        case .branch, .detachedHead:
+            return true
+        case .unavailable:
+            return false
+        }
+    }
+
     private func installWorkspacePersistenceHandlers() {
         for controller in workspaceControllers {
             configurePersistenceHandler(for: controller)
@@ -896,10 +1071,22 @@ final class AppModel {
             return
         }
 
-        refreshGitStatus(for: workspace)
+        refreshGitSnapshot(for: workspace)
     }
 
-    private func refreshGitStatus(for workspace: WorkspaceRecord) {
+    private func updateSelectedRoute(workspacePath: String, threadID: String?) {
+        resetBranchPickerState(for: workspacePath)
+        selectedRoute = WorkspaceThreadRoute(workspacePath: workspacePath, threadID: threadID)
+        lastSelectedWorkspacePath = workspacePath
+
+        guard let controller = workspaceController(for: workspacePath) else {
+            return
+        }
+
+        refreshGitSnapshot(for: controller.workspace)
+    }
+
+    private func refreshGitSnapshot(for workspace: WorkspaceRecord) {
         let workspacePath = workspace.canonicalPath
         gitStatusRefreshTasks[workspacePath]?.cancel()
 
@@ -908,14 +1095,160 @@ final class AppModel {
                 return
             }
 
-            let gitStatus = await gitStatusProvider.gitStatus(for: workspacePath)
+            let snapshot = await gitService.snapshot(for: workspacePath)
             guard Task.isCancelled == false,
                   let controller = workspaceController(for: workspacePath) else {
                 return
             }
 
-            controller.setGitStatus(gitStatus)
+            controller.setGitSnapshot(snapshot)
+
+        if case .unavailable = snapshot.status,
+               branchPickerState?.workspacePath == workspacePath {
+                dismissSelectedWorkspaceBranchPicker()
+            }
         }
+    }
+
+    private func presentSelectedWorkspaceBranchPicker() {
+        guard let controller = selectedWorkspaceController,
+              selectedWorkspaceGitStatusIsInteractive else {
+            return
+        }
+
+        let workspacePath = controller.workspace.canonicalPath
+        let currentBranchName = Self.currentBranchName(from: controller.gitStatus)
+        branchPickerState = WorkspaceBranchPickerState(
+            workspacePath: workspacePath,
+            sessionID: UUID(),
+            branchNames: Self.normalizedBranchNames(
+                controller.localGitBranches,
+                currentBranchName: currentBranchName
+            ),
+            currentBranchName: currentBranchName,
+            filterText: "",
+            selectedItemID: nil,
+            errorMessage: nil,
+            isLoading: controller.localGitBranches.isEmpty,
+            isPerformingAction: false
+        )
+
+        branchPickerState?.selectDefaultItem()
+
+        reloadSelectedWorkspaceBranchPicker()
+    }
+
+    private func reloadSelectedWorkspaceBranchPicker() {
+        guard let branchPickerState else {
+            return
+        }
+
+        let workspacePath = branchPickerState.workspacePath
+        let sessionID = branchPickerState.sessionID
+
+        branchPickerRefreshTask?.cancel()
+        branchPickerRefreshTask = Task { [weak self] in
+            guard let self else {
+                return
+            }
+
+            let snapshot = await gitService.snapshot(for: workspacePath)
+            guard Task.isCancelled == false,
+                  let controller = workspaceController(for: workspacePath),
+                  var currentBranchPickerState = self.branchPickerState,
+                  currentBranchPickerState.sessionID == sessionID,
+                  currentBranchPickerState.workspacePath == workspacePath else {
+                return
+            }
+
+            controller.setGitSnapshot(snapshot)
+
+            if case .unavailable = snapshot.status {
+                dismissSelectedWorkspaceBranchPicker()
+                return
+            }
+
+            currentBranchPickerState.branchNames = Self.normalizedBranchNames(
+                snapshot.localBranches,
+                currentBranchName: Self.currentBranchName(from: snapshot.status)
+            )
+            currentBranchPickerState.currentBranchName = Self.currentBranchName(from: snapshot.status)
+            currentBranchPickerState.isLoading = false
+            currentBranchPickerState.syncSelection()
+            self.branchPickerState = currentBranchPickerState
+        }
+    }
+
+    private func performBranchPickerAction(named branchName: String, createIfNeeded: Bool) async {
+        guard let controller = selectedWorkspaceController,
+              var currentBranchPickerState = branchPickerState,
+              currentBranchPickerState.workspacePath == controller.workspace.canonicalPath,
+              currentBranchPickerState.isLoading == false,
+              currentBranchPickerState.isPerformingAction == false else {
+            return
+        }
+
+        let workspacePath = currentBranchPickerState.workspacePath
+        let sessionID = currentBranchPickerState.sessionID
+        currentBranchPickerState.errorMessage = nil
+        currentBranchPickerState.isPerformingAction = true
+        self.branchPickerState = currentBranchPickerState
+
+        do {
+            let snapshot: WorkspaceGitSnapshot
+            if createIfNeeded {
+                snapshot = try await gitService.createAndSwitchToBranch(named: branchName, for: workspacePath)
+            } else {
+                snapshot = try await gitService.switchToBranch(named: branchName, for: workspacePath)
+            }
+
+            guard let refreshedController = workspaceController(for: workspacePath),
+                  var currentBranchPickerState = self.branchPickerState,
+                  currentBranchPickerState.sessionID == sessionID,
+                  currentBranchPickerState.workspacePath == workspacePath else {
+                dismissSelectedWorkspaceBranchPicker()
+                return
+            }
+
+            refreshedController.setGitSnapshot(snapshot)
+            currentBranchPickerState.branchNames = Self.normalizedBranchNames(
+                snapshot.localBranches,
+                currentBranchName: Self.currentBranchName(from: snapshot.status)
+            )
+            currentBranchPickerState.currentBranchName = Self.currentBranchName(from: snapshot.status)
+            currentBranchPickerState.isPerformingAction = false
+            self.branchPickerState = currentBranchPickerState
+            dismissSelectedWorkspaceBranchPicker()
+            refreshGitSnapshot(for: refreshedController.workspace)
+        } catch let error as WorkspaceGitBranchManagerError {
+            guard var currentBranchPickerState = self.branchPickerState,
+                  currentBranchPickerState.sessionID == sessionID,
+                  currentBranchPickerState.workspacePath == workspacePath else {
+                return
+            }
+
+            currentBranchPickerState.isPerformingAction = false
+            currentBranchPickerState.errorMessage = error.message
+            self.branchPickerState = currentBranchPickerState
+        } catch {
+            guard var currentBranchPickerState = self.branchPickerState,
+                  currentBranchPickerState.sessionID == sessionID,
+                  currentBranchPickerState.workspacePath == workspacePath else {
+                return
+            }
+
+            currentBranchPickerState.isPerformingAction = false
+            currentBranchPickerState.errorMessage = error.localizedDescription
+            self.branchPickerState = currentBranchPickerState
+        }
+    }
+
+    private func resetBranchPickerState(for workspacePath: String?) {
+        guard branchPickerState?.workspacePath != workspacePath else {
+            return
+        }
+
+        dismissSelectedWorkspaceBranchPicker()
     }
 
     private func startRuntime(_ runtime: any WorkspaceConversationRuntime, workspacePath: String) async {
@@ -1134,6 +1467,34 @@ final class AppModel {
         return uniqueWorkspaces
     }
 
+    private static func normalizedBranchNames(_ branchNames: [String], currentBranchName: String?) -> [String] {
+        var seenBranchNames = Set<String>()
+        var normalizedBranchNames = branchNames
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.isEmpty == false }
+            .filter { seenBranchNames.insert($0).inserted }
+
+        if let currentBranchName = currentBranchName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           currentBranchName.isEmpty == false,
+           seenBranchNames.insert(currentBranchName).inserted {
+            normalizedBranchNames.append(currentBranchName)
+        }
+
+        normalizedBranchNames.sort { lhs, rhs in
+            lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+        }
+
+        return normalizedBranchNames
+    }
+
+    private static func currentBranchName(from status: WorkspaceGitStatus) -> String? {
+        guard case .branch(let branchName) = status else {
+            return nil
+        }
+
+        return branchName
+    }
+
     private static func normalizeWorkspaceStates(
         _ workspaceStates: [PersistedWorkspaceState]
     ) -> [String: PersistedWorkspaceState] {
@@ -1199,6 +1560,161 @@ final class AppModel {
     }
 }
 
+struct WorkspaceBranchPickerState: Equatable, Sendable {
+    let workspacePath: String
+    let sessionID: UUID
+    var branchNames: [String]
+    var currentBranchName: String?
+    var filterText: String
+    var selectedItemID: WorkspaceBranchPickerItem.ID?
+    var errorMessage: String?
+    var isLoading: Bool
+    var isPerformingAction: Bool
+
+    var normalizedFilterText: String {
+        filterText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var submittedBranchName: String {
+        normalizedFilterText
+    }
+
+    var exactMatchName: String? {
+        let branchName = normalizedFilterText
+        guard branchName.isEmpty == false else {
+            return nil
+        }
+
+        return branchNames.first { candidate in
+            candidate == branchName
+        }
+    }
+
+    var filteredBranches: [String] {
+        let filterText = normalizedFilterText
+        guard filterText.isEmpty == false else {
+            return branchNames
+        }
+
+        return branchNames.filter { branchName in
+            branchName.localizedCaseInsensitiveContains(filterText)
+        }
+    }
+
+    var canCreateBranch: Bool {
+        isLoading == false &&
+        isPerformingAction == false &&
+        submittedBranchName.isEmpty == false &&
+        exactMatchName == nil
+    }
+
+    var items: [WorkspaceBranchPickerItem] {
+        var items = filteredBranches.map(WorkspaceBranchPickerItem.branch)
+
+        if canCreateBranch {
+            items.append(.create(submittedBranchName))
+        }
+
+        return items
+    }
+
+    var selectedItem: WorkspaceBranchPickerItem? {
+        guard let selectedItemID else {
+            return items.first(where: { $0.id == defaultSelectedItemID })
+        }
+
+        return items.first(where: { $0.id == selectedItemID })
+    }
+
+    mutating func setFilterText(_ filterText: String) {
+        self.filterText = filterText
+        errorMessage = nil
+        selectDefaultItem()
+    }
+
+    mutating func moveSelection(_ direction: WorkspaceBranchPickerSelectionDirection) {
+        let items = items
+        guard items.isEmpty == false else {
+            selectedItemID = nil
+            return
+        }
+
+        guard let selectedItemID,
+              let selectedIndex = items.firstIndex(where: { $0.id == selectedItemID }) else {
+            self.selectedItemID = defaultSelectedItemID
+            return
+        }
+
+        let nextIndex: Int
+        switch direction {
+        case .up:
+            nextIndex = max(selectedIndex - 1, 0)
+        case .down:
+            nextIndex = min(selectedIndex + 1, items.count - 1)
+        }
+
+        self.selectedItemID = items[nextIndex].id
+    }
+
+    mutating func selectDefaultItem() {
+        selectedItemID = defaultSelectedItemID
+    }
+
+    mutating func syncSelection() {
+        let items = items
+        guard items.isEmpty == false else {
+            selectedItemID = nil
+            return
+        }
+
+        guard let selectedItemID,
+              items.contains(where: { $0.id == selectedItemID }) else {
+            self.selectedItemID = defaultSelectedItemID
+            return
+        }
+    }
+
+    private var defaultSelectedItemID: WorkspaceBranchPickerItem.ID? {
+        let items = items
+        guard items.isEmpty == false else {
+            return nil
+        }
+
+        if normalizedFilterText.isEmpty,
+           let currentBranchName,
+           let currentBranchItem = items.first(where: {
+               if case .branch(let branchName) = $0 {
+                   return branchName == currentBranchName
+               }
+
+               return false
+           }) {
+            return currentBranchItem.id
+        }
+
+        return items.first?.id
+    }
+}
+
+enum WorkspaceBranchPickerSelectionDirection: Sendable {
+    case up
+    case down
+}
+
+enum WorkspaceBranchPickerItem: Identifiable, Equatable, Sendable {
+    case branch(String)
+    case create(String)
+
+    var id: String {
+        switch self {
+        case .branch(let branchName):
+            return "branch:\(branchName)"
+        case .create(let branchName):
+            return "create:\(branchName)"
+        }
+    }
+}
+
 private extension String {
     var nilIfEmpty: String? {
         isEmpty ? nil : self
@@ -1233,4 +1749,5 @@ struct DetailStatusItem: Identifiable, Equatable, Sendable {
     let systemImage: String
     let text: String
     let isPlaceholder: Bool
+    let isInteractive: Bool
 }

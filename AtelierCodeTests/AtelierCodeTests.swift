@@ -174,16 +174,16 @@ struct AppModelTests {
     @Test func selectingWorkspaceReturnsFromSettingsToConversationView() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
-        let gitStatusProvider = TestWorkspaceGitStatusProvider()
+        let gitService = TestWorkspaceGitService()
         let appModel = AppModel(
             preferencesStore: store,
             bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
-            gitStatusProvider: gitStatusProvider,
+            gitService: gitService,
             runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
         )
         let workspaceURL = try temporaryDirectory(named: "settings-navigation")
 
-        await gitStatusProvider.enqueueStatuses([.branch("main")], for: workspaceURL.path)
+        await gitService.enqueueStatuses([.branch("main")], for: workspaceURL.path)
         appModel.activateWorkspace(at: workspaceURL)
         try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
 
@@ -199,25 +199,25 @@ struct AppModelTests {
     @Test func selectingDifferentWorkspaceRefreshesGitStatusForNewSelection() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
-        let gitStatusProvider = TestWorkspaceGitStatusProvider()
+        let gitService = TestWorkspaceGitService()
         let appModel = AppModel(
             preferencesStore: store,
             bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
-            gitStatusProvider: gitStatusProvider,
+            gitService: gitService,
             runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
         )
         let firstWorkspaceURL = try temporaryDirectory(named: "git-status-first")
         let secondWorkspaceURL = try temporaryDirectory(named: "git-status-second")
 
-        await gitStatusProvider.enqueueStatuses([.branch("main")], for: firstWorkspaceURL.path)
+        await gitService.enqueueStatuses([.branch("main")], for: firstWorkspaceURL.path)
         appModel.activateWorkspace(at: firstWorkspaceURL)
         try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
 
-        await gitStatusProvider.enqueueStatuses([.detachedHead("abc1234")], for: secondWorkspaceURL.path)
+        await gitService.enqueueStatuses([.detachedHead("abc1234")], for: secondWorkspaceURL.path)
         appModel.activateWorkspace(at: secondWorkspaceURL)
         try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .detachedHead("abc1234") }
 
-        #expect(await gitStatusProvider.requestedWorkspacePaths() == [firstWorkspaceURL.path, secondWorkspaceURL.path])
+        #expect(await gitService.requestedWorkspacePaths() == [firstWorkspaceURL.path, secondWorkspaceURL.path])
         #expect(appModel.activeWorkspaceController?.workspace.canonicalPath == secondWorkspaceURL.path)
         #expect(appModel.activeWorkspaceController?.gitStatus == .detachedHead("abc1234"))
     }
@@ -225,24 +225,342 @@ struct AppModelTests {
     @Test func appActivationRefreshesSelectedWorkspaceGitStatusAgain() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
-        let gitStatusProvider = TestWorkspaceGitStatusProvider()
+        let gitService = TestWorkspaceGitService()
         let appModel = AppModel(
             preferencesStore: store,
             bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
-            gitStatusProvider: gitStatusProvider,
+            gitService: gitService,
             runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
         )
         let workspaceURL = try temporaryDirectory(named: "git-status-reactivation")
 
-        await gitStatusProvider.enqueueStatuses([.branch("main"), .detachedHead("abc1234")], for: workspaceURL.path)
+        await gitService.enqueueStatuses([.branch("main"), .detachedHead("abc1234")], for: workspaceURL.path)
         appModel.activateWorkspace(at: workspaceURL)
         try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
 
         appModel.applicationDidBecomeActive()
         try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .detachedHead("abc1234") }
 
-        #expect(await gitStatusProvider.requestedWorkspacePaths() == [workspaceURL.path, workspaceURL.path])
+        #expect(await gitService.requestedWorkspacePaths() == [workspaceURL.path, workspaceURL.path])
         #expect(appModel.activeWorkspaceController?.gitStatus == .detachedHead("abc1234"))
+    }
+
+    @Test func keyWindowActivationRefreshesSelectedWorkspaceGitStatusAgain() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitService = TestWorkspaceGitService()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitService: gitService,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "git-status-window-key")
+
+        await gitService.enqueueStatuses([.branch("main"), .branch("feature/window-key")], for: workspaceURL.path)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
+
+        appModel.applicationWindowDidBecomeKey()
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("feature/window-key") }
+
+        #expect(await gitService.requestedWorkspacePaths() == [workspaceURL.path, workspaceURL.path])
+        #expect(appModel.activeWorkspaceController?.gitStatus == .branch("feature/window-key"))
+    }
+
+    @Test func openingThreadInAnotherWorkspaceRefreshesGitStatusForThatWorkspace() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitService = TestWorkspaceGitService()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitService: gitService,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let firstWorkspaceURL = try temporaryDirectory(named: "git-status-thread-open-first")
+        let secondWorkspaceURL = try temporaryDirectory(named: "git-status-thread-open-second")
+
+        await gitService.enqueueStatuses([.branch("main"), .branch("main")], for: firstWorkspaceURL.path)
+        await gitService.enqueueStatuses([.branch("feature/initial"), .detachedHead("abc1234")], for: secondWorkspaceURL.path)
+
+        appModel.activateWorkspace(at: firstWorkspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
+
+        appModel.activateWorkspace(at: secondWorkspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("feature/initial") }
+        appModel.activeWorkspaceController?.upsertThreadSummary(
+            ThreadSummary(
+                id: "thread-2",
+                title: "Second Workspace Thread",
+                previewText: "Open me",
+                updatedAt: .now
+            )
+        )
+
+        appModel.selectWorkspace(path: firstWorkspaceURL.path)
+        try await waitUntil {
+            appModel.activeWorkspaceController?.workspace.canonicalPath == firstWorkspaceURL.path &&
+                appModel.activeWorkspaceController?.gitStatus == .branch("main")
+        }
+
+        let didOpen = await appModel.openThread(workspacePath: secondWorkspaceURL.path, threadID: "thread-2")
+
+        #expect(didOpen)
+        try await waitUntil {
+            appModel.activeWorkspaceController?.workspace.canonicalPath == secondWorkspaceURL.path &&
+                appModel.activeWorkspaceController?.gitStatus == .detachedHead("abc1234")
+        }
+
+        #expect(await gitService.requestedWorkspacePaths() == [
+            firstWorkspaceURL.path,
+            secondWorkspaceURL.path,
+            firstWorkspaceURL.path,
+            secondWorkspaceURL.path,
+        ])
+    }
+
+    @Test func openingBranchPickerLoadsBranchesAndResetsWhenWorkspaceChanges() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitService = TestWorkspaceGitService()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitService: gitService,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let firstWorkspaceURL = try temporaryDirectory(named: "branch-picker-first")
+        let secondWorkspaceURL = try temporaryDirectory(named: "branch-picker-second")
+
+        await gitService.enqueueStatuses([.branch("main"), .branch("main")], for: firstWorkspaceURL.path)
+        await gitService.setLocalBranches(["main", "release"], for: firstWorkspaceURL.path)
+        appModel.activateWorkspace(at: firstWorkspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
+
+        appModel.showSelectedWorkspaceBranchPicker()
+        try await waitUntil {
+            appModel.isSelectedWorkspaceBranchPickerPresented &&
+                appModel.selectedWorkspaceBranchPickerFilteredBranches == ["main", "release"]
+        }
+
+        await gitService.enqueueStatuses([.branch("feature/detached-work")], for: secondWorkspaceURL.path)
+        appModel.activateWorkspace(at: secondWorkspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("feature/detached-work") }
+
+        #expect(appModel.isSelectedWorkspaceBranchPickerPresented == false)
+    }
+
+    @Test func dismissingAndReopeningBranchPickerStartsFreshSession() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitService = TestWorkspaceGitService()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitService: gitService,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "branch-picker-reopen")
+
+        await gitService.enqueueStatuses([.branch("main"), .branch("main"), .branch("main")], for: workspaceURL.path)
+        await gitService.setLocalBranches(["git-branches", "main"], for: workspaceURL.path)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
+
+        appModel.showSelectedWorkspaceBranchPicker()
+        try await waitUntil { appModel.selectedWorkspaceBranchPickerFilteredBranches == ["git-branches", "main"] }
+
+        appModel.dismissSelectedWorkspaceBranchPicker()
+        #expect(appModel.isSelectedWorkspaceBranchPickerPresented == false)
+
+        appModel.showSelectedWorkspaceBranchPicker()
+        try await waitUntil { appModel.selectedWorkspaceBranchPickerFilteredBranches == ["git-branches", "main"] }
+
+        #expect(appModel.selectedWorkspaceBranchPickerFilterText.isEmpty)
+    }
+
+    @Test func openingBranchPickerShowsCurrentBranchWhenBranchCacheIsEmpty() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitService = TestWorkspaceGitService()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitService: gitService,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "branch-picker-current-branch-fallback")
+
+        await gitService.enqueueStatuses([.branch("git-branches"), .branch("git-branches")], for: workspaceURL.path)
+        await gitService.setLocalBranches([], for: workspaceURL.path)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("git-branches") }
+
+        appModel.showSelectedWorkspaceBranchPicker()
+        try await waitUntil {
+            appModel.isSelectedWorkspaceBranchPickerPresented &&
+                appModel.selectedWorkspaceBranchPickerFilteredBranches == ["git-branches"]
+        }
+
+        #expect(appModel.selectedWorkspaceBranchPickerCurrentBranchName == "git-branches")
+    }
+
+    @Test func openingBranchPickerRefreshesFromCurrentBranchToFullLocalBranchList() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitService = TestWorkspaceGitService()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitService: gitService,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "branch-picker-refreshes-full-list")
+
+        await gitService.enqueueStatuses([.branch("git-branches"), .branch("git-branches")], for: workspaceURL.path)
+        await gitService.setLocalBranches([], for: workspaceURL.path)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("git-branches") }
+
+        await gitService.setLocalBranches(["git-branches", "main"], for: workspaceURL.path)
+        appModel.showSelectedWorkspaceBranchPicker()
+
+        try await waitUntil {
+            appModel.selectedWorkspaceBranchPickerFilteredBranches == ["git-branches", "main"]
+        }
+    }
+
+    @Test func submittingExistingBranchSwitchesAndRefreshesSelectedWorkspaceStatus() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitService = TestWorkspaceGitService()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitService: gitService,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "branch-picker-switch")
+
+        await gitService.enqueueStatuses([.branch("main"), .branch("main"), .branch("release")], for: workspaceURL.path)
+        await gitService.setLocalBranches(["main", "release"], for: workspaceURL.path)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
+
+        appModel.showSelectedWorkspaceBranchPicker()
+        try await waitUntil { appModel.selectedWorkspaceBranchPickerFilteredBranches == ["main", "release"] }
+
+        appModel.setSelectedWorkspaceBranchPickerFilterText("release")
+        await appModel.submitSelectedWorkspaceBranchPicker()
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("release") }
+
+        #expect(appModel.isSelectedWorkspaceBranchPickerPresented == false)
+        #expect(await gitService.switchedBranches(for: workspaceURL.path) == ["release"])
+        #expect(await gitService.createdBranches(for: workspaceURL.path).isEmpty)
+        #expect(await gitService.requestedWorkspacePaths() == [workspaceURL.path, workspaceURL.path, workspaceURL.path])
+    }
+
+    @Test func submittingCreateSelectionCreatesAndSwitchesToNewBranch() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitService = TestWorkspaceGitService()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitService: gitService,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "branch-picker-create-selection")
+
+        await gitService.enqueueStatuses([.branch("main"), .branch("main"), .branch("feature/new-work")], for: workspaceURL.path)
+        await gitService.setLocalBranches(["main", "release"], for: workspaceURL.path)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
+
+        appModel.showSelectedWorkspaceBranchPicker()
+        try await waitUntil { appModel.selectedWorkspaceBranchPickerFilteredBranches == ["main", "release"] }
+
+        appModel.setSelectedWorkspaceBranchPickerFilterText("feature/new-work")
+
+        #expect(appModel.selectedWorkspaceBranchPickerItems == [.create("feature/new-work")])
+        #expect(appModel.selectedWorkspaceBranchPickerSelectedItemID == WorkspaceBranchPickerItem.create("feature/new-work").id)
+
+        await appModel.submitSelectedWorkspaceBranchPicker()
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("feature/new-work") }
+
+        #expect(appModel.isSelectedWorkspaceBranchPickerPresented == false)
+        #expect(await gitService.createdBranches(for: workspaceURL.path) == ["feature/new-work"])
+        #expect(await gitService.switchedBranches(for: workspaceURL.path).isEmpty)
+    }
+
+    @Test func movingBranchPickerSelectionUpdatesHighlightedItem() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitService = TestWorkspaceGitService()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitService: gitService,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "branch-picker-keyboard-selection")
+
+        await gitService.enqueueStatuses([.branch("main"), .branch("main")], for: workspaceURL.path)
+        await gitService.setLocalBranches(["main", "release"], for: workspaceURL.path)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
+
+        appModel.showSelectedWorkspaceBranchPicker()
+        try await waitUntil { appModel.selectedWorkspaceBranchPickerItems == [.branch("main"), .branch("release")] }
+
+        #expect(appModel.selectedWorkspaceBranchPickerSelectedItemID == WorkspaceBranchPickerItem.branch("main").id)
+
+        appModel.moveSelectedWorkspaceBranchPickerSelection(.down)
+        #expect(appModel.selectedWorkspaceBranchPickerSelectedItemID == WorkspaceBranchPickerItem.branch("release").id)
+
+        appModel.setSelectedWorkspaceBranchPickerFilterText("release-")
+        #expect(
+            appModel.selectedWorkspaceBranchPickerItems == [
+                .create("release-")
+            ]
+        )
+        #expect(appModel.selectedWorkspaceBranchPickerSelectedItemID == WorkspaceBranchPickerItem.create("release-").id)
+    }
+
+    @Test func failedBranchSwitchKeepsPickerOpenWithoutChangingWorkspaceRuntimeState() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitService = TestWorkspaceGitService()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitService: gitService,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "branch-picker-failure")
+
+        await gitService.enqueueStatuses([.branch("main"), .branch("main")], for: workspaceURL.path)
+        await gitService.setLocalBranches(["main", "release"], for: workspaceURL.path)
+        await gitService.failSwitch(
+            to: "release",
+            error: .gitRejected("error: Your local changes would be overwritten by checkout."),
+            for: workspaceURL.path
+        )
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
+        try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("main") }
+
+        appModel.showSelectedWorkspaceBranchPicker()
+        try await waitUntil { appModel.selectedWorkspaceBranchPickerFilteredBranches == ["main", "release"] }
+
+        appModel.setSelectedWorkspaceBranchPickerFilterText("release")
+        await appModel.submitSelectedWorkspaceBranchPicker()
+
+        #expect(appModel.isSelectedWorkspaceBranchPickerPresented)
+        #expect(appModel.selectedWorkspaceBranchPickerErrorMessage == "error: Your local changes would be overwritten by checkout.")
+        #expect(appModel.activeWorkspaceController?.gitStatus == .branch("main"))
+        #expect(appModel.activeWorkspaceController?.connectionStatus == .ready)
     }
 
     @Test func firstSendCreatesThreadBeforeStartingTurn() async throws {
@@ -1025,26 +1343,81 @@ private final class TestWorkspaceRuntime: WorkspaceConversationRuntime {
     }
 }
 
-private actor TestWorkspaceGitStatusProvider: WorkspaceGitStatusProviding {
+private actor TestWorkspaceGitService: WorkspaceGitServing {
     private var queuedStatusesByWorkspacePath: [String: [WorkspaceGitStatus]] = [:]
+    private var localBranchesByWorkspacePath: [String: [String]] = [:]
     private var requestedPaths: [String] = []
+    private var switchFailuresByWorkspacePath: [String: [String: WorkspaceGitBranchManagerError]] = [:]
+    private var switchedBranchesByWorkspacePath: [String: [String]] = [:]
+    private var createdBranchesByWorkspacePath: [String: [String]] = [:]
 
     func enqueueStatuses(_ statuses: [WorkspaceGitStatus], for workspacePath: String) {
         queuedStatusesByWorkspacePath[workspacePath, default: []].append(contentsOf: statuses)
+    }
+
+    func setLocalBranches(_ branches: [String], for workspacePath: String) {
+        localBranchesByWorkspacePath[workspacePath] = branches
+    }
+
+    func failSwitch(to branchName: String, error: WorkspaceGitBranchManagerError, for workspacePath: String) {
+        switchFailuresByWorkspacePath[workspacePath, default: [:]][branchName] = error
     }
 
     func requestedWorkspacePaths() -> [String] {
         requestedPaths
     }
 
-    func gitStatus(for workspacePath: String) async -> WorkspaceGitStatus {
+    func switchedBranches(for workspacePath: String) -> [String] {
+        switchedBranchesByWorkspacePath[workspacePath] ?? []
+    }
+
+    func createdBranches(for workspacePath: String) -> [String] {
+        createdBranchesByWorkspacePath[workspacePath] ?? []
+    }
+
+    func snapshot(for workspacePath: String) async -> WorkspaceGitSnapshot {
         requestedPaths.append(workspacePath)
 
+        let localBranches = localBranchesByWorkspacePath[workspacePath] ?? []
         if queuedStatusesByWorkspacePath[workspacePath]?.isEmpty == false {
-            return queuedStatusesByWorkspacePath[workspacePath]!.removeFirst()
+            return WorkspaceGitSnapshot(
+                status: queuedStatusesByWorkspacePath[workspacePath]!.removeFirst(),
+                localBranches: localBranches
+            )
         }
 
-        return .unavailable(.lookupFailed)
+        return WorkspaceGitSnapshot(
+            status: .unavailable(.lookupFailed),
+            localBranches: localBranches
+        )
+    }
+
+    func switchToBranch(named branchName: String, for workspacePath: String) async throws -> WorkspaceGitSnapshot {
+        if let error = switchFailuresByWorkspacePath[workspacePath]?[branchName] {
+            throw error
+        }
+
+        switchedBranchesByWorkspacePath[workspacePath, default: []].append(branchName)
+        let localBranches = localBranchesByWorkspacePath[workspacePath] ?? []
+        return WorkspaceGitSnapshot(
+            status: .branch(branchName),
+            localBranches: localBranches.isEmpty ? [branchName] : localBranches
+        )
+    }
+
+    func createAndSwitchToBranch(named branchName: String, for workspacePath: String) async throws -> WorkspaceGitSnapshot {
+        createdBranchesByWorkspacePath[workspacePath, default: []].append(branchName)
+        if localBranchesByWorkspacePath[workspacePath]?.contains(branchName) != true {
+            localBranchesByWorkspacePath[workspacePath, default: []].append(branchName)
+        }
+
+        let localBranches = localBranchesByWorkspacePath[workspacePath] ?? [branchName]
+        return WorkspaceGitSnapshot(
+            status: .branch(branchName),
+            localBranches: localBranches.sorted { lhs, rhs in
+                lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+            }
+        )
     }
 }
 

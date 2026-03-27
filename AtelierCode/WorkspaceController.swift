@@ -27,6 +27,7 @@ final class WorkspaceController {
     private(set) var rateLimitState: RateLimitState?
     private(set) var availableModels: [ComposerModelOption]
     private(set) var gitStatus: WorkspaceGitStatus
+    private(set) var localGitBranches: [String]
     private(set) var threadSessionsByID: [String: ThreadSession]
     private(set) var lastActiveThreadID: String? {
         didSet {
@@ -64,6 +65,7 @@ final class WorkspaceController {
         self.rateLimitState = nil
         self.availableModels = []
         self.gitStatus = .unavailable(.lookupFailed)
+        self.localGitBranches = []
         self.threadSessionsByID = [:]
         self.lastActiveThreadID = nil
         self.isShowingArchivedThreads = false
@@ -148,6 +150,8 @@ final class WorkspaceController {
         pendingLogin = nil
         rateLimitState = nil
         availableModels = []
+        gitStatus = .unavailable(.lookupFailed)
+        localGitBranches = []
         threadSessionsByID.removeAll()
         lastActiveThreadID = nil
         isShowingArchivedThreads = false
@@ -196,6 +200,15 @@ final class WorkspaceController {
 
     func setGitStatus(_ gitStatus: WorkspaceGitStatus) {
         self.gitStatus = gitStatus
+    }
+
+    func setLocalGitBranches(_ localGitBranches: [String]) {
+        self.localGitBranches = localGitBranches
+    }
+
+    func setGitSnapshot(_ snapshot: WorkspaceGitSnapshot) {
+        gitStatus = snapshot.status
+        localGitBranches = snapshot.localBranches
     }
 
     func setShowingArchivedThreads(_ isShowingArchivedThreads: Bool) {
