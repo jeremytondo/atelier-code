@@ -22,29 +22,35 @@ final class AppModel {
     @ObservationIgnored private let preferencesStore: any AppPreferencesStore
     @ObservationIgnored private let fileManager: FileManager
     @ObservationIgnored private let bridgeDiagnosticProvider: () -> StartupDiagnostic
+    @ObservationIgnored private let gitStatusProvider: any WorkspaceGitStatusProviding
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let runtimeFactory: @MainActor (WorkspaceController) -> any WorkspaceConversationRuntime
     @ObservationIgnored private var workspaceRuntimes: [String: any WorkspaceConversationRuntime]
     @ObservationIgnored private var runtimeLifecycleTasks: [String: Task<Void, Never>]
+    @ObservationIgnored private var gitStatusRefreshTasks: [String: Task<Void, Never>]
 
     init(
         preferencesStore: (any AppPreferencesStore)? = nil,
         fileManager: FileManager = .default,
         bridgeDiagnosticProvider: (() -> StartupDiagnostic)? = nil,
+        gitStatusProvider: (any WorkspaceGitStatusProviding)? = nil,
         now: @escaping () -> Date = Date.init,
         runtimeFactory: (@MainActor (WorkspaceController) -> any WorkspaceConversationRuntime)? = nil
     ) {
         let resolvedPreferencesStore = preferencesStore ?? UserDefaultsAppPreferencesStore()
         let resolvedBridgeDiagnosticProvider = bridgeDiagnosticProvider ?? { StartupDiagnostic.defaultBridgeDiagnostic() }
+        let resolvedGitStatusProvider = gitStatusProvider ?? WorkspaceGitStatusProvider()
         let resolvedRuntimeFactory = runtimeFactory ?? { WorkspaceBridgeRuntime(controller: $0) }
 
         self.preferencesStore = resolvedPreferencesStore
         self.fileManager = fileManager
         self.bridgeDiagnosticProvider = resolvedBridgeDiagnosticProvider
+        self.gitStatusProvider = resolvedGitStatusProvider
         self.now = now
         self.runtimeFactory = resolvedRuntimeFactory
         self.workspaceRuntimes = [:]
         self.runtimeLifecycleTasks = [:]
+        self.gitStatusRefreshTasks = [:]
 
         let loadedSnapshot = try? resolvedPreferencesStore.loadSnapshot()
         let normalizedRecentWorkspaces = Self.normalizeRecentWorkspaces(loadedSnapshot?.recentWorkspaces ?? [])
@@ -110,6 +116,7 @@ final class AppModel {
 
         startInitiallySelectedWorkspaceRuntime()
         preloadInitiallyExpandedWorkspaceThreadLists()
+        refreshSelectedWorkspaceGitStatus()
     }
 
     var activeWorkspaceController: WorkspaceController? {
@@ -211,6 +218,17 @@ final class AppModel {
         return effectiveComposerReasoningEffort.title
     }
 
+    var detailStatusItems: [DetailStatusItem] {
+        [
+            DetailStatusItem(
+                id: "git-reference",
+                systemImage: "arrow.triangle.branch",
+                text: selectedWorkspaceGitStatusText,
+                isPlaceholder: selectedWorkspaceGitStatusIsPlaceholder
+            )
+        ]
+    }
+
     func activateWorkspace(at url: URL) {
         let workspace = WorkspaceRecord(url: url, lastOpenedAt: now())
         showConversations()
@@ -254,6 +272,8 @@ final class AppModel {
         let canonicalPath = WorkspaceRecord.canonicalizedPath(for: path)
         let previousRuntime = workspaceRuntimes.removeValue(forKey: canonicalPath)
 
+        gitStatusRefreshTasks[canonicalPath]?.cancel()
+        gitStatusRefreshTasks.removeValue(forKey: canonicalPath)
         runtimeLifecycleTasks[canonicalPath]?.cancel()
         runtimeLifecycleTasks.removeValue(forKey: canonicalPath)
         workspaceControllers.removeAll { $0.workspace.canonicalPath == canonicalPath }
@@ -315,6 +335,10 @@ final class AppModel {
         primaryView = .settings
     }
 
+    func applicationDidBecomeActive() {
+        refreshSelectedWorkspaceGitStatus()
+    }
+
     func selectSettingsSection(_ section: SettingsSection) {
         selectedSettingsSection = section
         primaryView = .settings
@@ -339,12 +363,13 @@ final class AppModel {
         )
         lastSelectedWorkspacePath = canonicalPath
         startWorkspaceRuntimeIfNeeded(for: canonicalPath)
+        refreshGitStatus(for: controller.workspace)
         persistPreferences()
     }
 
     func selectWorkspaceForNewThread(path: String) {
         let canonicalPath = WorkspaceRecord.canonicalizedPath(for: path)
-        guard workspaceController(for: canonicalPath) != nil else {
+        guard let controller = workspaceController(for: canonicalPath) else {
             return
         }
 
@@ -355,6 +380,7 @@ final class AppModel {
         )
         lastSelectedWorkspacePath = canonicalPath
         startWorkspaceRuntimeIfNeeded(for: canonicalPath)
+        refreshGitStatus(for: controller.workspace)
         persistPreferences()
     }
 
@@ -790,6 +816,33 @@ final class AppModel {
         try? preferencesStore.saveSnapshot(snapshot)
     }
 
+    private var selectedWorkspaceGitStatusText: String {
+        guard let controller = selectedWorkspaceController else {
+            return "No workspace selected"
+        }
+
+        switch controller.gitStatus {
+        case .branch(let branchName):
+            return branchName
+        case .detachedHead(let commitSHA):
+            return commitSHA
+        case .unavailable:
+            return "No Git branch"
+        }
+    }
+
+    private var selectedWorkspaceGitStatusIsPlaceholder: Bool {
+        guard let controller = selectedWorkspaceController else {
+            return true
+        }
+
+        if case .unavailable = controller.gitStatus {
+            return true
+        }
+
+        return false
+    }
+
     private func installWorkspacePersistenceHandlers() {
         for controller in workspaceControllers {
             configurePersistenceHandler(for: controller)
@@ -835,6 +888,33 @@ final class AppModel {
 
                 _ = await prepareWorkspaceForBrowsing(path: workspacePath)
             }
+        }
+    }
+
+    private func refreshSelectedWorkspaceGitStatus() {
+        guard let workspace = selectedWorkspaceController?.workspace else {
+            return
+        }
+
+        refreshGitStatus(for: workspace)
+    }
+
+    private func refreshGitStatus(for workspace: WorkspaceRecord) {
+        let workspacePath = workspace.canonicalPath
+        gitStatusRefreshTasks[workspacePath]?.cancel()
+
+        gitStatusRefreshTasks[workspacePath] = Task { [weak self] in
+            guard let self else {
+                return
+            }
+
+            let gitStatus = await gitStatusProvider.gitStatus(for: workspacePath)
+            guard Task.isCancelled == false,
+                  let controller = workspaceController(for: workspacePath) else {
+                return
+            }
+
+            controller.setGitStatus(gitStatus)
         }
     }
 
@@ -1146,4 +1226,11 @@ private extension ConnectionStatus {
             return false
         }
     }
+}
+
+struct DetailStatusItem: Identifiable, Equatable, Sendable {
+    let id: String
+    let systemImage: String
+    let text: String
+    let isPlaceholder: Bool
 }

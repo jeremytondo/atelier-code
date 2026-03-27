@@ -9,6 +9,7 @@ import SwiftUI
 
 @main
 struct AtelierCodeApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var appModel: AppModel
 
     @MainActor
@@ -21,6 +22,13 @@ struct AtelierCodeApp: App {
             ContentView()
                 .environment(appModel)
                 .preferredColorScheme(appModel.appearancePreference.preferredColorScheme)
+                .onChange(of: scenePhase) { _, newValue in
+                    guard newValue == .active else {
+                        return
+                    }
+
+                    appModel.applicationDidBecomeActive()
+                }
         }
     }
 }

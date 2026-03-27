@@ -141,6 +141,9 @@ private struct AppDetailView: View {
                 SettingsDetailView(appModel: appModel)
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            DetailStatusBar(appModel: appModel)
+        }
     }
 }
 
@@ -1114,6 +1117,53 @@ private struct WorkspacePickerButton: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .accessibilityIdentifier("new-thread-workspace-picker")
+    }
+}
+
+private struct DetailStatusBar: View {
+    let appModel: AppModel
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ForEach(appModel.detailStatusItems) { item in
+                DetailStatusBarItem(item: item)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor).opacity(0.32))
+                .frame(height: 1)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("workspace-status-bar")
+    }
+}
+
+private struct DetailStatusBarItem: View {
+    let item: DetailStatusItem
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: item.systemImage)
+                .font(.caption.weight(.semibold))
+
+            Text(item.text)
+                .lineLimit(1)
+        }
+        .font(.system(size: 12, weight: .medium))
+        .foregroundStyle(item.isPlaceholder ? .tertiary : .secondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.secondary.opacity(0.08), in: Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(item.text)
+        .accessibilityIdentifier("workspace-status-\(item.id)")
     }
 }
 
