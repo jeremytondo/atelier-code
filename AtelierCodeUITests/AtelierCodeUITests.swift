@@ -42,8 +42,7 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.click()
         composer.typeText("Build the conversation MVP")
-
-        app.buttons["conversation-send-button"].click()
+        composer.typeText("\r")
 
         XCTAssertTrue(app.staticTexts["Build the conversation MVP"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Working through the request in the UI test harness."].waitForExistence(timeout: 5))
@@ -60,8 +59,7 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.click()
         composer.typeText("Keep this thread visible")
-
-        app.buttons["conversation-send-button"].click()
+        composer.typeText("\r")
 
         let threadRow = app.descendants(matching: .any)["thread-row-ui-test-thread"]
         XCTAssertTrue(threadRow.waitForExistence(timeout: 5))
@@ -81,8 +79,7 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.click()
         composer.typeText("Show the grouped turn details")
-
-        app.buttons["conversation-send-button"].click()
+        composer.typeText("\r")
         XCTAssertTrue(app.staticTexts["I grouped the current turn details under the transcript."].waitForExistence(timeout: 5))
         app.scrollViews.firstMatch.swipeUp()
 
@@ -128,8 +125,7 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.click()
         composer.typeText("Decline the pending approval")
-
-        app.buttons["conversation-send-button"].click()
+        composer.typeText("\r")
         app.scrollViews.firstMatch.swipeUp()
 
         XCTAssertTrue(app.buttons["Decline"].waitForExistence(timeout: 5))
@@ -155,8 +151,7 @@ final class AtelierCodeUITests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.click()
         composer.typeText("Check inline ordering")
-
-        app.buttons["conversation-send-button"].click()
+        composer.typeText("\r")
         app.scrollViews.firstMatch.swipeUp()
 
         let promptText = app.staticTexts["Check inline ordering"]
@@ -189,7 +184,7 @@ final class AtelierCodeUITests: XCTestCase {
 
         let composer = app.textViews["conversation-composer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["conversation-send-button"].exists)
+        XCTAssertFalse(app.buttons["conversation-send-button"].exists)
         XCTAssertFalse(app.staticTexts["Connection Error"].exists)
     }
 

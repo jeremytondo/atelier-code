@@ -242,17 +242,7 @@ private struct WorkspaceTreeRow: View {
             }
         }
         .padding(12)
-        .background(
-            Color.secondary.opacity(0.04),
-            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(
-                    Color(nsColor: .separatorColor).opacity(0.14),
-                    lineWidth: 1
-                )
-        }
+        .sidebarCardBackground()
     }
 }
 
@@ -948,18 +938,7 @@ private struct ActiveWorkspaceConversationView: View {
             }
 
             ComposerBar(appModel: appModel, composerText: $composerText)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 16)
                 .frame(maxWidth: floatingComposerMaxWidth)
-                .background(
-                    Color(nsColor: .windowBackgroundColor),
-                    in: RoundedRectangle(cornerRadius: 22, style: .continuous)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .stroke(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
-                }
-                .shadow(color: Color.black.opacity(0.16), radius: 24, y: 10)
                 .background {
                     GeometryReader { geometry in
                         Color.clear
@@ -2091,17 +2070,19 @@ private struct TranscriptActivityStatusCountChip: Identifiable {
 private struct ComposerBar: View {
     let appModel: AppModel
     @Binding var composerText: String
+    @State private var isFocused = false
 
     private var isComposerEnabled: Bool {
         appModel.selectedWorkspaceController != nil && appModel.selectedThreadSummary?.isArchived != true
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             ZStack(alignment: .topLeading) {
                 ComposerTextView(
                     text: $composerText,
                     isEnabled: isComposerEnabled,
+                    isFocused: $isFocused,
                     onSubmit: sendPrompt
                 )
                 .frame(minHeight: 84, maxHeight: 180)
@@ -2110,90 +2091,100 @@ private struct ComposerBar: View {
                 if composerText.isEmpty {
                     Text("Send a prompt to Codex...")
                         .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 12)
+                        .padding(.leading, ComposerMetrics.textHorizontalInset)
+                        .padding(.top, ComposerMetrics.textVerticalInset)
                         .allowsHitTesting(false)
                 }
             }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color(nsColor: .textBackgroundColor))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.secondary.opacity(0.22), lineWidth: 1)
-            )
+            
+            if appModel.canCancelTurn {
+                HStack {
+                    Spacer(minLength: 0)
 
-            HStack {
-                Text(composerHint)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-
-                Spacer(minLength: 0)
-
-                if appModel.canCancelTurn {
-                    Button("Cancel") {
+                    Button {
                         Task {
                             await appModel.cancelActiveTurn()
                         }
+                    } label: {
+                        Label("Cancel", systemImage: "stop.fill")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.04), in: Capsule())
+                    .overlay {
+                        Capsule()
+                            .stroke(Color.white.opacity(0.06), lineWidth: 1)
                     }
                     .accessibilityIdentifier("conversation-cancel-button")
                 }
-
-                Button("Send") {
-                    sendPrompt()
-                }
-                .keyboardShortcut(.return, modifiers: [.command])
-                .disabled(appModel.canSendPrompt(composerText) == false)
-                .accessibilityIdentifier("conversation-send-button")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color(nsColor: .textBackgroundColor))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(editorBorderColor, lineWidth: isFocused ? 1.25 : 1)
+        }
+        .shadow(color: editorShadowColor, radius: isFocused ? 14 : 6, y: isFocused ? 5 : 2)
+        .overlay(alignment: .bottomLeading) {
+            if showsDisabledBanner {
+                Text(disabledBannerText)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 10)
             }
         }
     }
 
-    private var composerHint: String {
+    private var editorBorderColor: Color {
+        if isFocused {
+            return Color.accentColor.opacity(0.38)
+        }
+
+        return Color.white.opacity(0.06)
+    }
+
+    private var editorShadowColor: Color {
+        if isFocused {
+            return Color.accentColor.opacity(0.12)
+        }
+
+        return Color.black.opacity(0.12)
+    }
+
+    private var showsDisabledBanner: Bool {
+        isComposerEnabled == false
+    }
+
+    private var disabledBannerText: String {
         guard let controller = appModel.selectedWorkspaceController else {
             return "Pick a workspace to start a conversation."
         }
 
         if appModel.selectedThreadSummary?.isArchived == true {
-            return "Archived threads are read-only. Unarchive this thread or create a new one to continue."
-        }
-
-        if appModel.selectedThreadSession?.turnState.phase == .inProgress {
-            return "This thread is streaming. Cancel if you need to stop it."
+            return "Archived threads are read-only."
         }
 
         switch controller.connectionStatus {
-        case .ready:
-            let isAwaitingSelectedTurnStart: Bool
-            if let selectedRoute = appModel.selectedRoute,
-               selectedRoute.workspacePath == controller.workspace.canonicalPath,
-               let threadID = selectedRoute.threadID {
-                isAwaitingSelectedTurnStart = controller.isAwaitingTurnStart(threadID: threadID)
-            } else {
-                isAwaitingSelectedTurnStart = false
-            }
-
-            return isAwaitingSelectedTurnStart
-                ? "Waiting for the bridge to acknowledge the new turn."
-                : appModel.selectedThreadSummary == nil
-                    ? "Press Enter to start a new thread. Press Shift-Enter for a new line."
-                    : "Press Enter to send. Press Shift-Enter for a new line."
-        case .streaming:
-            return "Another thread in this workspace is still running. You can keep working here."
-        case .cancelling:
-            return "Waiting for the runtime to cancel the active turn."
         case .connecting:
-            return "Waiting for the workspace runtime to connect."
+            return "Connecting workspace runtime..."
         case .disconnected:
-            return "Reconnect the workspace before sending."
+            return "Reconnect the workspace to continue."
         case .error(let message):
             return message
+        case .ready, .streaming, .cancelling:
+            return ""
         }
     }
-
     private func sendPrompt() {
         let prompt = composerText
 
@@ -2208,10 +2199,11 @@ private struct ComposerBar: View {
 private struct ComposerTextView: NSViewRepresentable {
     @Binding var text: String
     let isEnabled: Bool
+    @Binding var isFocused: Bool
     let onSubmit: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text)
+        Coordinator(text: $text, isFocused: $isFocused)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -2232,7 +2224,10 @@ private struct ComposerTextView: NSViewRepresentable {
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.font = .preferredFont(forTextStyle: .body)
-        textView.textContainerInset = NSSize(width: 0, height: 2)
+        textView.textContainerInset = NSSize(
+            width: ComposerMetrics.textHorizontalInset,
+            height: ComposerMetrics.textVerticalInset
+        )
         textView.textContainer?.lineFragmentPadding = 0
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
@@ -2264,9 +2259,11 @@ private struct ComposerTextView: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         @Binding private var text: String
+        @Binding private var isFocused: Bool
 
-        init(text: Binding<String>) {
+        init(text: Binding<String>, isFocused: Binding<Bool>) {
             _text = text
+            _isFocused = isFocused
         }
 
         func textDidChange(_ notification: Notification) {
@@ -2275,6 +2272,14 @@ private struct ComposerTextView: NSViewRepresentable {
             }
 
             text = textView.string
+        }
+
+        func textDidBeginEditing(_ notification: Notification) {
+            isFocused = true
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            isFocused = false
         }
     }
 }
@@ -2291,6 +2296,24 @@ private final class ComposerNSTextView: NSTextView {
             insertNewline(nil)
         default:
             super.doCommand(by: commandSelector)
+        }
+    }
+}
+
+private enum ComposerMetrics {
+    static let textHorizontalInset: CGFloat = 13
+    static let textVerticalInset: CGFloat = 10
+}
+
+private extension View {
+    func sidebarCardBackground(cornerRadius: CGFloat = 16) -> some View {
+        background(
+            Color.secondary.opacity(0.04),
+            in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.14), lineWidth: 1)
         }
     }
 }
