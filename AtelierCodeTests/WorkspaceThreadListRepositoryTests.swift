@@ -147,4 +147,28 @@ struct WorkspaceThreadListRepositoryTests {
         #expect(repository.threadSummary(id: "thread-local")?.isLocalOnly == false)
         #expect(repository.threadSummary(id: "thread-local")?.isStale == false)
     }
+
+    @Test func equalActivityDatesDoNotResortWhenOnlyTitleChanges() async throws {
+        let repository = WorkspaceThreadListRepository()
+        let baseline = Date(timeIntervalSince1970: 1_710_000_000)
+
+        repository.replaceThreadList(
+            [
+                ThreadSummary(id: "thread-1", title: "Beta", previewText: "Preview", updatedAt: baseline),
+                ThreadSummary(id: "thread-2", title: "Alpha", previewText: "Preview", updatedAt: baseline)
+            ],
+            archived: false,
+            listedAt: baseline,
+            selectedThreadID: nil,
+            loadedThreadIDs: []
+        )
+
+        #expect(repository.threadSummaries.map(\.id) == ["thread-1", "thread-2"])
+
+        repository.updateThreadSummary(id: "thread-2") { summary in
+            summary.title = "Zulu"
+        }
+
+        #expect(repository.threadSummaries.map(\.id) == ["thread-1", "thread-2"])
+    }
 }

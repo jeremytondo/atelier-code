@@ -1089,7 +1089,7 @@ final class AppModel {
                 pinnedThreadIDs: normalizedPinnedThreadIDs,
                 threadSummaries: normalizedThreadSummaries.values.sorted { lhs, rhs in
                     if lhs.updatedAt == rhs.updatedAt {
-                        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                        return lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
                     }
 
                     return lhs.updatedAt > rhs.updatedAt

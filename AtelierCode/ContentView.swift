@@ -575,6 +575,7 @@ private struct WorkspaceThreadRow: View {
                             .buttonStyle(.plain)
                             .disabled(canCommitRename == false)
                             .help("Save thread title")
+                            .keyboardShortcut(.defaultAction)
 
                             Button(action: cancelRename) {
                                 Image(systemName: "xmark.circle.fill")
@@ -582,6 +583,7 @@ private struct WorkspaceThreadRow: View {
                             }
                             .buttonStyle(.plain)
                             .help("Cancel renaming")
+                            .keyboardShortcut(.cancelAction)
                         }
                     } else {
                         Text(threadSummary.title)
