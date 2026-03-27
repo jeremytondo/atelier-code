@@ -2096,11 +2096,56 @@ private struct ComposerBar: View {
                         .allowsHitTesting(false)
                 }
             }
-            
-            if appModel.canCancelTurn {
-                HStack {
-                    Spacer(minLength: 0)
 
+            HStack(alignment: .center, spacing: 8) {
+                Menu {
+                    Button {
+                        appModel.setComposerModelID(nil)
+                    } label: {
+                        ComposerMenuItemLabel(
+                            title: "Default Model",
+                            isSelected: appModel.composerModelID == nil
+                        )
+                    }
+
+                    Divider()
+
+                    ForEach(appModel.availableComposerModels) { option in
+                        Button {
+                            appModel.setComposerModelID(option.id)
+                        } label: {
+                            ComposerMenuItemLabel(
+                                title: option.title,
+                                isSelected: appModel.composerModelID == option.id
+                            )
+                        }
+                    }
+                } label: {
+                    ComposerMenuChip(title: appModel.composerModelTitle)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("composer-model-button")
+
+                Menu {
+                    ForEach(appModel.availableComposerReasoningEfforts) { effort in
+                        Button {
+                            appModel.setComposerReasoningEffort(effort)
+                        } label: {
+                            ComposerMenuItemLabel(
+                                title: effort.title,
+                                isSelected: appModel.composerReasoningEffort == effort
+                            )
+                        }
+                    }
+                } label: {
+                    ComposerMenuChip(title: appModel.composerReasoningEffortTitle)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("composer-reasoning-button")
+
+                Spacer(minLength: 0)
+
+                if appModel.canCancelTurn {
                     Button {
                         Task {
                             await appModel.cancelActiveTurn()
@@ -2122,6 +2167,15 @@ private struct ComposerBar: View {
                     .accessibilityIdentifier("conversation-cancel-button")
                 }
             }
+            .padding(.leading, ComposerMetrics.textHorizontalInset)
+
+            if showsDisabledBanner {
+                Text(disabledBannerText)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, ComposerMetrics.textHorizontalInset)
+                    .accessibilityIdentifier("composer-disabled-banner")
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 12)
@@ -2134,15 +2188,6 @@ private struct ComposerBar: View {
                 .stroke(editorBorderColor, lineWidth: isFocused ? 1.25 : 1)
         }
         .shadow(color: editorShadowColor, radius: isFocused ? 14 : 6, y: isFocused ? 5 : 2)
-        .overlay(alignment: .bottomLeading) {
-            if showsDisabledBanner {
-                Text(disabledBannerText)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 10)
-            }
-        }
     }
 
     private var editorBorderColor: Color {
@@ -2191,6 +2236,41 @@ private struct ComposerBar: View {
         Task {
             if await appModel.sendPrompt(prompt) {
                 composerText = ""
+            }
+        }
+    }
+}
+
+private struct ComposerMenuChip: View {
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .lineLimit(1)
+        }
+        .font(.footnote.weight(.medium))
+        .foregroundColor(Color(nsColor: .placeholderTextColor).opacity(0.7))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.white.opacity(0.04), in: Capsule())
+        .overlay {
+            Capsule()
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+        }
+    }
+}
+
+private struct ComposerMenuItemLabel: View {
+    let title: String
+    let isSelected: Bool
+
+    var body: some View {
+        Group {
+            if isSelected {
+                Label(title, systemImage: "checkmark")
+            } else {
+                Text(title)
             }
         }
     }

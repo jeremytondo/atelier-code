@@ -149,6 +149,28 @@ struct AppModelTests {
         #expect(restoredModel.appearancePreference == .dark)
     }
 
+    @Test func roundTripsComposerSelections() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+
+        appModel.setComposerModelID("gpt-5.4")
+        appModel.setComposerReasoningEffort(.xhigh)
+
+        let restoredModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+
+        #expect(restoredModel.composerModelID == "gpt-5.4")
+        #expect(restoredModel.composerReasoningEffort == .xhigh)
+    }
+
     @Test func selectingWorkspaceReturnsFromSettingsToConversationView() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
@@ -513,6 +535,27 @@ struct AppModelTests {
         #expect(configuration.sandboxPolicy == "workspace-write")
         #expect(configuration.approvalPolicy == "on-request")
         #expect(configuration.summaryMode == "concise")
+    }
+
+    @Test func sendPromptUsesSelectedModelAndReasoningEffort() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "conversation-config-model")
+
+        appModel.setComposerModelID("gpt-5.4")
+        appModel.setComposerReasoningEffort(.high)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
+        _ = await appModel.sendPrompt("Create a README with the selected model")
+
+        let configuration = try #require(runtimeCoordinator.startTurnConfigurations.last ?? nil)
+        #expect(configuration.model == "gpt-5.4")
+        #expect(configuration.reasoningEffort == "high")
     }
 
     @Test func secondSendIsRejectedWhileWaitingForTurnStartAcknowledgement() async throws {
