@@ -944,6 +944,96 @@ struct AppModelTests {
         #expect(appModel.activeWorkspaceController?.activeThreadSession?.turnState.phase == .cancelled)
     }
 
+    @Test func threadLifecycleCapabilityBlocksDraftAndSendFlows() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        runtimeCoordinator.availableProviders = [
+            testProviderSummary(
+                supportsThreadLifecycle: false,
+                supportsApprovals: false,
+                supportsAuthentication: false,
+                supportedModes: []
+            )
+        ]
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "conversation-unsupported-threads")
+
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
+
+        let didCreateThread = await appModel.createThread()
+        let didSendPrompt = await appModel.sendPrompt("Hello")
+
+        #expect(appModel.selectedProviderSupportsThreadLifecycle == false)
+        #expect(appModel.canSendPrompt("Hello") == false)
+        #expect(didCreateThread == false)
+        #expect(didSendPrompt == false)
+        #expect(runtimeCoordinator.startThreadCount == 0)
+        #expect(runtimeCoordinator.startTurnPrompts.isEmpty)
+    }
+
+    @Test func sendPromptOmitsApprovalPolicyWhenProviderDoesNotSupportApprovals() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        runtimeCoordinator.availableProviders = [
+            testProviderSummary(supportsApprovals: false)
+        ]
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "conversation-approval-policy")
+
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
+        _ = await appModel.sendPrompt("Create a README")
+
+        let configuration = try #require(runtimeCoordinator.startTurnConfigurations.last ?? nil)
+        #expect(configuration.approvalPolicy == nil)
+    }
+
+    @Test func resolveApprovalIsBlockedWhenProviderDoesNotSupportApprovals() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        runtimeCoordinator.availableProviders = [
+            testProviderSummary(supportsApprovals: false)
+        ]
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "conversation-unsupported-approval")
+
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
+        _ = await appModel.sendPrompt("Wait for approval")
+
+        let session = try #require(appModel.activeWorkspaceController?.activeThreadSession)
+        session.enqueueApprovalRequest(
+            ApprovalRequest(
+                id: "approval-1",
+                kind: .command,
+                title: "Approve command execution",
+                detail: "swift test",
+                command: ApprovalCommandContext(command: "swift test", workingDirectory: workspaceURL.path),
+                files: [],
+                riskLevel: .medium
+            )
+        )
+
+        let didResolve = await appModel.resolveApproval(id: "approval-1", resolution: .approved)
+
+        #expect(didResolve == false)
+        #expect(runtimeCoordinator.resolveApprovalCalls.isEmpty)
+        #expect(session.pendingApprovals.first?.pendingResolution == nil)
+    }
+
     @Test func resolveApprovalForwardsDecisionToActiveRuntime() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
@@ -1349,6 +1439,7 @@ private final class TestRuntimeCoordinator {
     var startTurnPrompts: [String] = []
     var startTurnConfigurations: [BridgeTurnStartConfiguration?] = []
     var availableModels: [ComposerModelOption] = []
+    var availableProviders: [ProviderSummaryState] = [testProviderSummary()]
     var cancelCount = 0
     var resolveApprovalCalls: [(String, ApprovalResolution)] = []
     var queuedThreadListResponses: [[ThreadSummary]] = []
@@ -1402,6 +1493,7 @@ private final class TestWorkspaceRuntime: WorkspaceConversationRuntime {
 
     func start() async throws {
         coordinator.startCount += 1
+        controller.setAvailableProviders(coordinator.availableProviders)
         controller.setAvailableModels(coordinator.availableModels)
         controller.setBridgeLifecycleState(.idle)
         controller.setConnectionStatus(.ready)
@@ -1663,6 +1755,7 @@ private final class LifecycleProbeRuntime: WorkspaceConversationRuntime {
     }
 
     func start() async throws {
+        controller.setAvailableProviders([testProviderSummary()])
         controller.setBridgeLifecycleState(.starting)
         controller.setConnectionStatus(.connecting)
 
@@ -1750,6 +1843,29 @@ private final class LifecycleProbeRuntime: WorkspaceConversationRuntime {
     func resolveApproval(threadID: String, id: String, resolution: ApprovalResolution) async throws {
         controller.threadSession(id: threadID)?.resolveApprovalRequest(id: id, resolution: resolution)
     }
+}
+
+private func testProviderSummary(
+    id: String = BridgeProviderIdentifier.codex,
+    displayName: String = "Codex",
+    supportsThreadLifecycle: Bool = true,
+    supportsThreadArchiving: Bool = false,
+    supportsApprovals: Bool = true,
+    supportsAuthentication: Bool = true,
+    supportedModes: [String] = ["default", "plan", "review"]
+) -> ProviderSummaryState {
+    ProviderSummaryState(
+        id: id,
+        displayName: displayName,
+        status: "available",
+        capabilities: ProviderCapabilitiesState(
+            supportsThreadLifecycle: supportsThreadLifecycle,
+            supportsThreadArchiving: supportsThreadArchiving,
+            supportsApprovals: supportsApprovals,
+            supportsAuthentication: supportsAuthentication,
+            supportedModes: supportedModes
+        )
+    )
 }
 
 private func waitUntil(

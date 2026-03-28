@@ -136,6 +136,31 @@ final class AppModel {
         return workspaceControllers.first(where: { $0.workspace.canonicalPath == workspacePath })
     }
 
+    var selectedProviderDisplayName: String {
+        guard let controller = selectedWorkspaceController else {
+            return "Codex"
+        }
+
+        return controller.providerSummary(for: selectedProviderID(for: controller))?.displayName
+            ?? controller.implicitProviderDisplayName
+    }
+
+    var selectedProviderSupportsThreadLifecycle: Bool {
+        guard let controller = selectedWorkspaceController else {
+            return true
+        }
+
+        return selectedProviderCapabilities(for: controller).supportsThreadLifecycle
+    }
+
+    var selectedProviderSupportsApprovals: Bool {
+        guard let controller = selectedWorkspaceController else {
+            return true
+        }
+
+        return selectedProviderCapabilities(for: controller).supportsApprovals
+    }
+
     var selectedThreadSession: ThreadSession? {
         guard let selectedRoute,
               let conversationID = selectedRoute.conversationID else {
@@ -167,7 +192,11 @@ final class AppModel {
     }
 
     var availableComposerModels: [ComposerModelOption] {
-        selectedWorkspaceController?.availableModels ?? []
+        guard selectedProviderSupportsThreadLifecycle else {
+            return []
+        }
+
+        return selectedWorkspaceController?.availableModels ?? []
     }
 
     var defaultComposerModelOption: ComposerModelOption? {
@@ -539,6 +568,28 @@ final class AppModel {
         primaryView = .conversations
     }
 
+    func supportsThreadLifecycle(workspacePath: String, providerID: String? = nil) -> Bool {
+        let canonicalPath = WorkspaceRecord.canonicalizedPath(for: workspacePath)
+        guard let controller = workspaceController(for: canonicalPath) else {
+            return false
+        }
+
+        let resolvedProviderID = providerID
+            ?? (selectedRoute?.workspacePath == canonicalPath ? selectedRoute?.providerID : nil)
+        return controller.capabilities(for: resolvedProviderID).supportsThreadLifecycle
+    }
+
+    func supportsApprovals(workspacePath: String, providerID: String? = nil) -> Bool {
+        let canonicalPath = WorkspaceRecord.canonicalizedPath(for: workspacePath)
+        guard let controller = workspaceController(for: canonicalPath) else {
+            return false
+        }
+
+        let resolvedProviderID = providerID
+            ?? (selectedRoute?.workspacePath == canonicalPath ? selectedRoute?.providerID : nil)
+        return controller.capabilities(for: resolvedProviderID).supportsApprovals
+    }
+
     func selectWorkspace(path: String) {
         let canonicalPath = WorkspaceRecord.canonicalizedPath(for: path)
         guard let controller = workspaceController(for: canonicalPath) else {
@@ -574,6 +625,11 @@ final class AppModel {
             return false
         }
 
+        guard selectedProviderCapabilities(for: controller).supportsThreadLifecycle else {
+            controller.completeThreadListSync(archived: controller.isShowingArchivedThreads, listedAt: now())
+            return true
+        }
+
         do {
             try await runtime.listThreads(archived: controller.isShowingArchivedThreads)
             return true
@@ -598,6 +654,10 @@ final class AppModel {
         let canonicalPath = WorkspaceRecord.canonicalizedPath(for: workspacePath)
         guard let controller = workspaceController(for: canonicalPath),
               let summary = controller.threadSummary(for: conversationID) else {
+            return false
+        }
+
+        guard controller.capabilities(for: conversationID.providerID).supportsThreadLifecycle else {
             return false
         }
 
@@ -668,7 +728,8 @@ final class AppModel {
 
     @discardableResult
     func createThread() async -> Bool {
-        guard let controller = selectedWorkspaceController else {
+        guard let controller = selectedWorkspaceController,
+              selectedProviderCapabilities(for: controller).supportsThreadLifecycle else {
             return false
         }
 
@@ -703,6 +764,7 @@ final class AppModel {
     func forkThread(workspacePath: String, conversationID: ConversationIdentity) async -> Bool {
         let canonicalPath = WorkspaceRecord.canonicalizedPath(for: workspacePath)
         guard let controller = workspaceController(for: canonicalPath),
+              controller.capabilities(for: conversationID.providerID).supportsThreadLifecycle,
               let runtime = runtime(for: canonicalPath) else {
             return false
         }
@@ -828,6 +890,7 @@ final class AppModel {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let resolvedTitle = trimmedTitle.nilIfEmpty,
               let controller = workspaceController(for: canonicalPath),
+              controller.capabilities(for: conversationID.providerID).supportsThreadLifecycle,
               let runtime = runtime(for: canonicalPath) else {
             return false
         }
@@ -856,6 +919,7 @@ final class AppModel {
         guard let controller = selectedWorkspaceController,
               let selectedRoute,
               let conversationID = selectedRoute.conversationID,
+              controller.capabilities(for: conversationID.providerID).supportsThreadLifecycle,
               let runtime = runtime(for: controller.workspace.canonicalPath) else {
             return false
         }
@@ -891,6 +955,11 @@ final class AppModel {
                controller.threadSummary(for: conversationID)?.isArchived == true {
                 selectWorkspace(path: canonicalPath)
             }
+            return
+        }
+
+        guard selectedProviderCapabilities(for: controller).supportsThreadLifecycle else {
+            controller.completeThreadListSync(archived: true, listedAt: now())
             return
         }
 
@@ -1070,6 +1139,7 @@ final class AppModel {
         guard let controller = selectedWorkspaceController,
               let conversationID = selectedRoute?.conversationID,
               let session = controller.threadSession(for: conversationID),
+              controller.capabilities(for: conversationID.providerID).supportsApprovals,
               session.beginApprovalResolution(id: id, resolution: resolution),
               let runtime = runtime(for: controller.workspace.canonicalPath) else {
             return false
@@ -1097,6 +1167,19 @@ final class AppModel {
 
     private func persistPreferences() {
         try? preferencesStore.saveSnapshot(snapshot)
+    }
+
+    private func selectedProviderID(for controller: WorkspaceController) -> String {
+        if selectedRoute?.workspacePath == controller.workspace.canonicalPath,
+           let providerID = selectedRoute?.providerID {
+            return providerID
+        }
+
+        return controller.implicitProviderID
+    }
+
+    private func selectedProviderCapabilities(for controller: WorkspaceController) -> ProviderCapabilitiesState {
+        controller.capabilities(for: selectedProviderID(for: controller))
     }
 
     private var selectedWorkspaceGitStatusText: String {
@@ -1409,22 +1492,24 @@ final class AppModel {
     }
 
     private func defaultThreadConfiguration(for controller: WorkspaceController) -> BridgeConversationConfiguration {
-        BridgeConversationConfiguration(
+        let capabilities = selectedProviderCapabilities(for: controller)
+        return BridgeConversationConfiguration(
             cwd: controller.workspace.canonicalPath,
             model: effectiveComposerModelID,
             reasoningEffort: effectiveComposerReasoningEffort.bridgeValue,
             sandboxPolicy: SandboxPolicy.workspaceWrite.rawValue,
-            approvalPolicy: ApprovalPolicy.onRequest.rawValue
+            approvalPolicy: capabilities.supportsApprovals ? ApprovalPolicy.onRequest.rawValue : nil
         )
     }
 
     private func defaultTurnConfiguration(for controller: WorkspaceController) -> BridgeTurnStartConfiguration {
-        BridgeTurnStartConfiguration(
+        let capabilities = selectedProviderCapabilities(for: controller)
+        return BridgeTurnStartConfiguration(
             cwd: controller.workspace.canonicalPath,
             model: effectiveComposerModelID,
             reasoningEffort: effectiveComposerReasoningEffort.bridgeValue,
             sandboxPolicy: SandboxPolicy.workspaceWrite.rawValue,
-            approvalPolicy: ApprovalPolicy.onRequest.rawValue,
+            approvalPolicy: capabilities.supportsApprovals ? ApprovalPolicy.onRequest.rawValue : nil,
             summaryMode: SummaryMode.concise.rawValue,
             environment: nil
         )
@@ -1432,6 +1517,10 @@ final class AppModel {
 
     private func canSendNormalizedPrompt(_ prompt: String, with controller: WorkspaceController) -> Bool {
         guard prompt.isEmpty == false else {
+            return false
+        }
+
+        guard selectedProviderCapabilities(for: controller).supportsThreadLifecycle else {
             return false
         }
 

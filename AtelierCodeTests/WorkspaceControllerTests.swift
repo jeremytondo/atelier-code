@@ -248,4 +248,48 @@ struct WorkspaceControllerTests {
         #expect(controller.activeThreadSession === geminiSession)
         #expect(controller.lastActiveConversationID == geminiSession.conversationID)
     }
+
+    @Test func implicitProviderDefaultsPreferSelectionThenProviderListThenCodex() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "workspace-implicit-provider"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+
+        #expect(controller.implicitProviderID == BridgeProviderIdentifier.codex)
+        #expect(controller.capabilities().supportsThreadLifecycle)
+
+        controller.setAvailableProviders([
+            testProviderSummary(id: "gemini", displayName: "Gemini"),
+            testProviderSummary(id: BridgeProviderIdentifier.codex, displayName: "Codex")
+        ])
+
+        #expect(controller.implicitProviderID == "gemini")
+        #expect(controller.implicitProviderDisplayName == "Gemini")
+
+        controller.markThreadSelected(ConversationIdentity(providerID: BridgeProviderIdentifier.codex, threadID: "thread-1"))
+
+        #expect(controller.implicitProviderID == BridgeProviderIdentifier.codex)
+        #expect(controller.implicitProviderDisplayName == "Codex")
+    }
+}
+
+private func testProviderSummary(
+    id: String = BridgeProviderIdentifier.codex,
+    displayName: String = "Codex",
+    supportsThreadLifecycle: Bool = true,
+    supportsThreadArchiving: Bool = false,
+    supportsApprovals: Bool = true,
+    supportsAuthentication: Bool = true,
+    supportedModes: [String] = ["default", "plan", "review"]
+) -> ProviderSummaryState {
+    ProviderSummaryState(
+        id: id,
+        displayName: displayName,
+        status: "available",
+        capabilities: ProviderCapabilitiesState(
+            supportsThreadLifecycle: supportsThreadLifecycle,
+            supportsThreadArchiving: supportsThreadArchiving,
+            supportsApprovals: supportsApprovals,
+            supportsAuthentication: supportsAuthentication,
+            supportedModes: supportedModes
+        )
+    )
 }

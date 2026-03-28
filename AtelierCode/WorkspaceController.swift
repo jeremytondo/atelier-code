@@ -132,6 +132,16 @@ final class WorkspaceController {
         bridgeEnvironmentDiagnostics?.warningMessage
     }
 
+    var implicitProviderID: String {
+        lastActiveConversationID?.providerID
+            ?? availableProviders.first?.id
+            ?? BridgeProviderIdentifier.codex
+    }
+
+    var implicitProviderDisplayName: String {
+        providerSummary()?.displayName ?? "Codex"
+    }
+
     var persistedState: PersistedWorkspaceState {
         PersistedWorkspaceState(
             workspacePath: workspace.canonicalPath,
@@ -191,6 +201,15 @@ final class WorkspaceController {
 
     func setAvailableProviders(_ availableProviders: [ProviderSummaryState]) {
         self.availableProviders = availableProviders
+    }
+
+    func providerSummary(for providerID: String? = nil) -> ProviderSummaryState? {
+        let resolvedProviderID = providerID ?? implicitProviderID
+        return availableProviders.first(where: { $0.id == resolvedProviderID }) ?? availableProviders.first
+    }
+
+    func capabilities(for providerID: String? = nil) -> ProviderCapabilitiesState {
+        providerSummary(for: providerID)?.capabilities ?? .codexDefault
     }
 
     func setAuthState(_ authState: AuthState) {

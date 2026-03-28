@@ -51,6 +51,78 @@ struct WorkspaceBridgeRuntimeTests {
         #expect(sentMessageTypes.contains("thread.list"))
     }
 
+    @Test func startupSkipsUnsupportedProviderRequests() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-capability-skip"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4250)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(
+                requestID: "ateliercode-hello-1",
+                providersJSON: [
+                    providerJSON(
+                        id: "gemini",
+                        displayName: "Gemini",
+                        supportsThreadLifecycle: false,
+                        supportsApprovals: false,
+                        supportsAuthentication: false,
+                        supportedModes: []
+                    )
+                ]
+            )
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+
+        #expect(controller.connectionStatus == .ready)
+        #expect(controller.authState == .unknown)
+        #expect(controller.availableModels.isEmpty)
+        #expect(controller.threadSummaries.isEmpty)
+        #expect(controller.lastSuccessfulThreadListAt != nil)
+        #expect(sentMessageTypes(from: socketClient.sentTexts) == ["hello"])
+    }
+
+    @Test func startupCommandsUseImplicitProviderFromWelcome() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-implicit-provider"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4251)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(
+                requestID: "ateliercode-hello-1",
+                providersJSON: [providerJSON(id: "gemini", displayName: "Gemini")]
+            ),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            modelListResultJSON(requestID: "ateliercode-model-list"),
+            threadListResultJSON(
+                requestID: "ateliercode-thread-list-3",
+                threadTitle: "Gemini Thread",
+                providerID: "gemini"
+            )
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.threadSummary(id: "thread-1", providerID: "gemini") != nil }
+
+        #expect(latestCommandProvider(ofType: "account.read", from: socketClient.sentTexts) == "gemini")
+        #expect(latestCommandProvider(ofType: "model.list", from: socketClient.sentTexts) == "gemini")
+        #expect(latestCommandProvider(ofType: "thread.list", from: socketClient.sentTexts) == "gemini")
+    }
+
     @Test func modelListErrorsDoNotPoisonWorkspaceConnection() async throws {
         let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-model-list-error"), lastOpenedAt: .now)
         let controller = WorkspaceController(workspace: workspace)
@@ -1175,9 +1247,28 @@ private func startupRecordJSON(port: Int) -> String {
     """
 }
 
-private func welcomeJSON(requestID: String) -> String {
+private func welcomeJSON(
+    requestID: String,
+    providersJSON: [String] = [providerJSON()]
+) -> String {
+    let joinedProvidersJSON = providersJSON.joined(separator: ",")
+    return """
+    {"type":"welcome","timestamp":"2026-03-24T10:00:01Z","requestID":"\(requestID)","payload":{"bridgeVersion":"0.1.0","protocolVersion":1,"supportedProtocolVersions":[1],"sessionID":"session-1","transport":"websocket","providers":[\(joinedProvidersJSON)],"environment":{"source":"login_probe","shellPath":"/bin/zsh","probeError":null,"pathDirectoryCount":5,"homeDirectory":"/Users/tester"}}}
     """
-    {"type":"welcome","timestamp":"2026-03-24T10:00:01Z","requestID":"\(requestID)","payload":{"bridgeVersion":"0.1.0","protocolVersion":1,"supportedProtocolVersions":[1],"sessionID":"session-1","transport":"websocket","providers":[{"id":"codex","displayName":"Codex","status":"available","capabilities":{"supportsThreadLifecycle":true,"supportsThreadArchiving":false,"supportsApprovals":true,"supportsAuthentication":true,"supportedModes":["default"]}}],"environment":{"source":"login_probe","shellPath":"/bin/zsh","probeError":null,"pathDirectoryCount":5,"homeDirectory":"/Users/tester"}}}
+}
+
+private func providerJSON(
+    id: String = BridgeProviderIdentifier.codex,
+    displayName: String = "Codex",
+    supportsThreadLifecycle: Bool = true,
+    supportsThreadArchiving: Bool = false,
+    supportsApprovals: Bool = true,
+    supportsAuthentication: Bool = true,
+    supportedModes: [String] = ["default"]
+) -> String {
+    let supportedModesJSON = supportedModes.map { "\"\(jsonEscaped($0))\"" }.joined(separator: ",")
+    return """
+    {"id":"\(jsonEscaped(id))","displayName":"\(jsonEscaped(displayName))","status":"available","capabilities":{"supportsThreadLifecycle":\(supportsThreadLifecycle),"supportsThreadArchiving":\(supportsThreadArchiving),"supportsApprovals":\(supportsApprovals),"supportsAuthentication":\(supportsAuthentication),"supportedModes":[\(supportedModesJSON)]}}
     """
 }
 
@@ -1236,9 +1327,13 @@ private func requestErrorJSON(requestID: String, message: String) -> String {
     """
 }
 
-private func threadListResultJSON(requestID: String, threadTitle: String) -> String {
+private func threadListResultJSON(
+    requestID: String,
+    threadTitle: String,
+    providerID: String = BridgeProviderIdentifier.codex
+) -> String {
     """
-    {"type":"thread.list.result","timestamp":"2026-03-24T10:00:04Z","requestID":"\(requestID)","payload":{"threads":[{"id":"thread-1","providerID":"codex","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:04Z","archived":false,"running":false,"errorMessage":null}],"nextCursor":null}}
+    {"type":"thread.list.result","timestamp":"2026-03-24T10:00:04Z","requestID":"\(requestID)","payload":{"threads":[{"id":"thread-1","providerID":"\(jsonEscaped(providerID))","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:04Z","archived":false,"running":false,"errorMessage":null}],"nextCursor":null}}
     """
 }
 
@@ -1450,6 +1545,19 @@ private func latestCommandPayload(ofType type: String, from messages: [String]) 
         }
 
         return payload
+    }
+
+    return nil
+}
+
+private func latestCommandProvider(ofType type: String, from messages: [String]) -> String? {
+    for message in messages.reversed() {
+        guard let object = commandObject(from: message),
+              object["type"] as? String == type else {
+            continue
+        }
+
+        return object["provider"] as? String
     }
 
     return nil

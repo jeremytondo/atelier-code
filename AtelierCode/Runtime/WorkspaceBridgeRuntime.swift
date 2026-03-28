@@ -68,7 +68,6 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     private static let encoder = JSONEncoder()
     private static let decoder = JSONDecoder()
     private static let clientName = "AtelierCode"
-    private static let provider = "codex"
     private static let modelListRequestID = "ateliercode-model-list"
 
     let controller: WorkspaceController
@@ -177,9 +176,22 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 await self?.runReceiveLoop()
             }
 
-            try await refreshAccount()
-            try await refreshModels()
-            try await listThreads(archived: false)
+            let capabilities = controller.capabilities()
+            if capabilities.supportsAuthentication {
+                try await refreshAccount()
+            } else {
+                controller.setAuthState(.unknown)
+                controller.setPendingLogin(nil)
+                controller.setRateLimitState(nil)
+            }
+
+            if capabilities.supportsThreadLifecycle {
+                try await refreshModels()
+                try await listThreads(archived: false)
+            } else {
+                controller.setAvailableModels([])
+                controller.completeThreadListSync(archived: false, listedAt: now())
+            }
         } catch {
             handleBridgeFailure(message: error.localizedDescription)
             throw error
@@ -230,6 +242,11 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     }
 
     func refreshModels() async throws {
+        guard controller.capabilities().supportsThreadLifecycle else {
+            controller.setAvailableModels([])
+            return
+        }
+
         try await sendCommand(
             id: Self.modelListRequestID,
             type: .modelList,
@@ -238,6 +255,11 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     }
 
     func listThreads(archived: Bool) async throws {
+        guard controller.capabilities().supportsThreadLifecycle else {
+            controller.completeThreadListSync(archived: archived, listedAt: now())
+            return
+        }
+
         controller.beginThreadListSync(archived: archived)
 
         if archived {
@@ -258,6 +280,13 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     }
 
     func refreshAccount(forceRefresh: Bool = false) async throws {
+        guard controller.capabilities().supportsAuthentication else {
+            controller.setAuthState(.unknown)
+            controller.setPendingLogin(nil)
+            controller.setRateLimitState(nil)
+            return
+        }
+
         let requestID = nextRequestID(prefix: "account-read")
         pendingCommands[requestID] = .accountRead
         try await sendCommand(
@@ -1466,7 +1495,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 return controller.threadSummary(for: conversationID)?.providerID
                     ?? controller.threadSession(for: conversationID)?.providerID
             }
-            ?? Self.provider
+            ?? controller.implicitProviderID
 
         let command = BridgeCommandEnvelope(
             id: id,

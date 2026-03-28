@@ -206,6 +206,14 @@ struct ProviderCapabilitiesState: Equatable, Sendable {
     var supportsApprovals: Bool
     var supportsAuthentication: Bool
     var supportedModes: [String]
+
+    static let codexDefault = Self(
+        supportsThreadLifecycle: true,
+        supportsThreadArchiving: false,
+        supportsApprovals: true,
+        supportsAuthentication: true,
+        supportedModes: ["default", "plan", "review"]
+    )
 }
 
 struct ProviderSummaryState: Equatable, Sendable, Identifiable {
