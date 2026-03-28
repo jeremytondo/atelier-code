@@ -2873,37 +2873,54 @@ private final class PreviewWorkspaceRuntime: WorkspaceConversationRuntime {
         controller.openThread(id: UUID().uuidString, title: title ?? "Preview Thread", isVisibleInSidebar: false)
     }
 
-    func resumeThreadAndWait(id: String) async throws -> ThreadSession {
-        controller.resumeThread(id: id, title: "Preview Thread")
+    func resumeThreadAndWait(conversationID: ConversationIdentity) async throws -> ThreadSession {
+        controller.resumeThread(id: conversationID.threadID, providerID: conversationID.providerID, title: "Preview Thread")
     }
 
-    func readThreadAndWait(id: String, includeTurns: Bool) async throws -> ThreadSession {
-        controller.resumeThread(id: id, title: "Preview Thread")
+    func readThreadAndWait(conversationID: ConversationIdentity, includeTurns: Bool) async throws -> ThreadSession {
+        controller.resumeThread(id: conversationID.threadID, providerID: conversationID.providerID, title: "Preview Thread")
     }
 
-    func forkThreadAndWait(id: String) async throws -> ThreadSession {
-        controller.resumeThread(id: "\(id)-fork", title: "Preview Thread")
+    func forkThreadAndWait(conversationID: ConversationIdentity) async throws -> ThreadSession {
+        controller.resumeThread(
+            id: "\(conversationID.threadID)-fork",
+            providerID: conversationID.providerID,
+            title: "Preview Thread"
+        )
     }
 
-    func renameThread(id: String, title: String) async throws {
-        controller.updateThreadSummary(id: id) { summary in
+    func renameThread(conversationID: ConversationIdentity, title: String) async throws {
+        controller.updateThreadSummary(for: conversationID) { summary in
             summary.title = title
         }
-        controller.threadSession(id: id)?.updateThreadIdentity(id: id, title: title)
+        controller.threadSession(for: conversationID)?.updateThreadIdentity(
+            providerID: conversationID.providerID,
+            id: conversationID.threadID,
+            title: title
+        )
     }
 
-    func archiveThread(id: String) async throws {
-        controller.setThreadArchived(true, for: id)
+    func archiveThread(conversationID: ConversationIdentity) async throws {
+        controller.setThreadArchived(true, for: conversationID.threadID, providerID: conversationID.providerID)
     }
 
-    func unarchiveThreadAndWait(id: String) async throws -> ThreadSession {
-        controller.setThreadArchived(false, for: id)
-        return controller.resumeThread(id: id, title: "Preview Thread")
+    func unarchiveThreadAndWait(conversationID: ConversationIdentity) async throws -> ThreadSession {
+        controller.setThreadArchived(false, for: conversationID.threadID, providerID: conversationID.providerID)
+        return controller.resumeThread(
+            id: conversationID.threadID,
+            providerID: conversationID.providerID,
+            title: "Preview Thread"
+        )
     }
 
-    func rollbackThreadAndWait(id: String, numTurns: Int) async throws -> ThreadSession {
-        let messages = Array((controller.threadSession(id: id)?.messages ?? []).dropLast(max(0, numTurns)))
-        return controller.resumeThread(id: id, title: "Preview Thread", messages: messages)
+    func rollbackThreadAndWait(conversationID: ConversationIdentity, numTurns: Int) async throws -> ThreadSession {
+        let messages = Array((controller.threadSession(for: conversationID)?.messages ?? []).dropLast(max(0, numTurns)))
+        return controller.resumeThread(
+            id: conversationID.threadID,
+            providerID: conversationID.providerID,
+            title: "Preview Thread",
+            messages: messages
+        )
     }
 
     func startTurn(threadID: String, prompt: String, configuration: BridgeTurnStartConfiguration?) async throws {

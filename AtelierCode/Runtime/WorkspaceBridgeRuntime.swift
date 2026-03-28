@@ -354,7 +354,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         }
     }
 
-    func resumeThreadAndWait(id: String) async throws -> ThreadSession {
+    func resumeThreadAndWait(conversationID: ConversationIdentity) async throws -> ThreadSession {
         let requestID = nextRequestID(prefix: "thread-resume")
         pendingCommands[requestID] = .threadResume
 
@@ -366,11 +366,12 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             try await self.sendCommand(
                 id: requestID,
                 type: .threadResume,
-                threadID: id,
+                threadID: conversationID.threadID,
                 payload: BridgeThreadResumePayload(
                     workspacePath: self.controller.workspace.canonicalPath,
                     configuration: nil
-                )
+                ),
+                providerID: conversationID.providerID
             )
         }
     }
@@ -389,7 +390,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         )
     }
 
-    func readThreadAndWait(id: String, includeTurns: Bool = true) async throws -> ThreadSession {
+    func readThreadAndWait(
+        conversationID: ConversationIdentity,
+        includeTurns: Bool = true
+    ) async throws -> ThreadSession {
         let requestID = nextRequestID(prefix: "thread-read")
         pendingCommands[requestID] = .threadRead
 
@@ -401,13 +405,14 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             try await self.sendCommand(
                 id: requestID,
                 type: .threadRead,
-                threadID: id,
-                payload: BridgeThreadReadPayload(includeTurns: includeTurns ? true : nil)
+                threadID: conversationID.threadID,
+                payload: BridgeThreadReadPayload(includeTurns: includeTurns ? true : nil),
+                providerID: conversationID.providerID
             )
         }
     }
 
-    func forkThreadAndWait(id: String) async throws -> ThreadSession {
+    func forkThreadAndWait(conversationID: ConversationIdentity) async throws -> ThreadSession {
         let requestID = nextRequestID(prefix: "thread-fork")
         pendingCommands[requestID] = .threadFork
 
@@ -419,18 +424,19 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             try await self.sendCommand(
                 id: requestID,
                 type: .threadFork,
-                threadID: id,
+                threadID: conversationID.threadID,
                 payload: BridgeThreadForkPayload(
                     workspacePath: self.controller.workspace.canonicalPath,
                     configuration: nil
-                )
+                ),
+                providerID: conversationID.providerID
             )
         }
     }
 
-    func renameThread(id: String, title: String) async throws {
+    func renameThread(conversationID: ConversationIdentity, title: String) async throws {
         let requestID = nextRequestID(prefix: "thread-rename")
-        pendingCommands[requestID] = .threadRename(threadID: id)
+        pendingCommands[requestID] = .threadRename(threadID: conversationID.threadID)
 
         try await awaitVoidResponse(requestID: requestID) { [weak self] in
             guard let self else {
@@ -440,28 +446,28 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             try await self.sendCommand(
                 id: requestID,
                 type: .threadRename,
-                threadID: id,
-                payload: BridgeThreadRenamePayload(title: title)
+                threadID: conversationID.threadID,
+                payload: BridgeThreadRenamePayload(title: title),
+                providerID: conversationID.providerID
             )
         }
     }
 
-    func archiveThread(id: String) async throws {
-        applyLocalThreadArchive(threadID: id)
+    func archiveThread(conversationID: ConversationIdentity) async throws {
+        applyLocalThreadArchive(conversationID: conversationID)
     }
 
-    func unarchiveThreadAndWait(id: String) async throws -> ThreadSession {
-        applyLocalThreadUnarchive(threadID: id)
-        let conversationID = conversationIdentity(for: id)
+    func unarchiveThreadAndWait(conversationID: ConversationIdentity) async throws -> ThreadSession {
+        applyLocalThreadUnarchive(conversationID: conversationID)
         return controller.ensureThreadSession(
-            id: id,
+            id: conversationID.threadID,
             providerID: conversationID.providerID,
             title: controller.threadSummary(for: conversationID)?.title ?? "Recovered Conversation",
             markSelected: false
         )
     }
 
-    func rollbackThreadAndWait(id: String, numTurns: Int) async throws -> ThreadSession {
+    func rollbackThreadAndWait(conversationID: ConversationIdentity, numTurns: Int) async throws -> ThreadSession {
         let requestID = nextRequestID(prefix: "thread-rollback")
         pendingCommands[requestID] = .threadRollback
 
@@ -473,8 +479,9 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             try await self.sendCommand(
                 id: requestID,
                 type: .threadRollback,
-                threadID: id,
-                payload: BridgeThreadRollbackPayload(numTurns: numTurns)
+                threadID: conversationID.threadID,
+                payload: BridgeThreadRollbackPayload(numTurns: numTurns),
+                providerID: conversationID.providerID
             )
         }
     }
@@ -1627,12 +1634,11 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         return "ateliercode-\(prefix)-\(requestCounter)"
     }
 
-    private func applyLocalThreadArchive(threadID: String) {
-        let conversationID = conversationIdentity(for: threadID)
-        controller.setThreadArchived(true, for: threadID, providerID: conversationID.providerID)
-        controller.setThreadRunning(false, for: threadID, providerID: conversationID.providerID, at: now())
+    private func applyLocalThreadArchive(conversationID: ConversationIdentity) {
+        controller.setThreadArchived(true, for: conversationID.threadID, providerID: conversationID.providerID)
+        controller.setThreadRunning(false, for: conversationID.threadID, providerID: conversationID.providerID, at: now())
         controller.markThreadActivity(
-            id: threadID,
+            id: conversationID.threadID,
             providerID: conversationID.providerID,
             at: now(),
             hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
@@ -1640,11 +1646,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         refreshWorkspaceConnectionStatus()
     }
 
-    private func applyLocalThreadUnarchive(threadID: String) {
-        let conversationID = conversationIdentity(for: threadID)
-        controller.setThreadArchived(false, for: threadID, providerID: conversationID.providerID)
+    private func applyLocalThreadUnarchive(conversationID: ConversationIdentity) {
+        controller.setThreadArchived(false, for: conversationID.threadID, providerID: conversationID.providerID)
         controller.markThreadActivity(
-            id: threadID,
+            id: conversationID.threadID,
             providerID: conversationID.providerID,
             at: now(),
             hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true

@@ -372,6 +372,67 @@ struct AppModelTests {
         #expect(appModel.selectedThreadSession?.threadID == "thread-real")
     }
 
+    @Test func openingDuplicateThreadUsesSelectedConversationProvider() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitService = TestWorkspaceGitService()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitService: gitService,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "open-provider-aware-thread")
+        let codexConversationID = ConversationIdentity(providerID: BridgeProviderIdentifier.codex, threadID: "thread-shared")
+        let geminiConversationID = ConversationIdentity(providerID: "gemini", threadID: "thread-shared")
+
+        runtimeCoordinator.availableProviders = [
+            testProviderSummary(id: BridgeProviderIdentifier.codex, displayName: "Codex"),
+            testProviderSummary(id: "gemini", displayName: "Gemini")
+        ]
+        await gitService.enqueueStatuses([.branch("main")], for: workspaceURL.path)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil {
+            appModel.activeWorkspaceController?.workspace.canonicalPath == workspaceURL.path &&
+                appModel.activeWorkspaceController?.connectionStatus == .ready
+        }
+
+        guard let controller = appModel.activeWorkspaceController else {
+            Issue.record("Expected active workspace controller.")
+            return
+        }
+
+        controller.replaceThreadList([
+            ThreadSummary(
+                id: "thread-shared",
+                providerID: BridgeProviderIdentifier.codex,
+                title: "Codex Thread",
+                previewText: "Codex",
+                updatedAt: Date(timeIntervalSince1970: 20)
+            ),
+            ThreadSummary(
+                id: "thread-shared",
+                providerID: "gemini",
+                title: "Gemini Thread",
+                previewText: "Gemini",
+                updatedAt: Date(timeIntervalSince1970: 10)
+            )
+        ])
+        controller.openThread(id: "thread-shared", providerID: BridgeProviderIdentifier.codex, title: "Codex Thread")
+        controller.clearThreadSession(for: geminiConversationID)
+        controller.markThreadSelected(codexConversationID)
+        appModel.selectWorkspace(path: workspaceURL.path)
+
+        let didOpenGemini = await appModel.openThread(
+            workspacePath: workspaceURL.path,
+            conversationID: geminiConversationID
+        )
+
+        #expect(didOpenGemini)
+        #expect(runtimeCoordinator.resumedConversationIDs == [geminiConversationID])
+        #expect(appModel.selectedThreadSession?.conversationID == geminiConversationID)
+    }
+
     @Test func failedThreadOpenMarksOnlyThatThreadAndLeavesWorkspaceReady() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
@@ -1445,6 +1506,13 @@ private final class TestRuntimeCoordinator {
     var queuedThreadListResponses: [[ThreadSummary]] = []
     var resumeFailuresByThreadID: [String: String] = [:]
     var readFailuresByThreadID: [String: String] = [:]
+    var resumedConversationIDs: [ConversationIdentity] = []
+    var readConversationCalls: [(ConversationIdentity, Bool)] = []
+    var forkedConversationIDs: [ConversationIdentity] = []
+    var renamedConversationCalls: [(ConversationIdentity, String)] = []
+    var archivedConversationIDs: [ConversationIdentity] = []
+    var unarchivedConversationIDs: [ConversationIdentity] = []
+    var rolledBackConversationCalls: [(ConversationIdentity, Int)] = []
     var shouldDelayTurnStart = false
     var shouldDelayApprovalResolution = false
     private var pendingDelayedTurnStarts: [CheckedContinuation<Void, Never>] = []
@@ -1528,50 +1596,81 @@ private final class TestWorkspaceRuntime: WorkspaceConversationRuntime {
         )
     }
 
-    func resumeThreadAndWait(id: String) async throws -> ThreadSession {
-        if let message = coordinator.resumeFailuresByThreadID[id] {
+    func resumeThreadAndWait(conversationID: ConversationIdentity) async throws -> ThreadSession {
+        coordinator.resumedConversationIDs.append(conversationID)
+
+        if let message = coordinator.resumeFailuresByThreadID[conversationID.threadID] {
             throw TestWorkspaceRuntimeError(message: message)
         }
 
-        return controller.resumeThread(id: id, title: "Resumed Conversation")
-    }
-
-    func readThreadAndWait(id: String, includeTurns: Bool) async throws -> ThreadSession {
-        if let message = coordinator.readFailuresByThreadID[id] {
-            throw TestWorkspaceRuntimeError(message: message)
-        }
-
-        return controller.resumeThread(id: id, title: "Read Conversation")
-    }
-
-    func forkThreadAndWait(id: String) async throws -> ThreadSession {
-        coordinator.startThreadCount += 1
         return controller.resumeThread(
-            id: "\(id)-fork-\(coordinator.startThreadCount)",
-            title: "Forked Conversation",
-            messages: controller.threadSession(id: id)?.messages ?? []
+            id: conversationID.threadID,
+            providerID: conversationID.providerID,
+            title: "Resumed Conversation"
         )
     }
 
-    func renameThread(id: String, title: String) async throws {
-        controller.updateThreadSummary(id: id) { summary in
+    func readThreadAndWait(conversationID: ConversationIdentity, includeTurns: Bool) async throws -> ThreadSession {
+        coordinator.readConversationCalls.append((conversationID, includeTurns))
+
+        if let message = coordinator.readFailuresByThreadID[conversationID.threadID] {
+            throw TestWorkspaceRuntimeError(message: message)
+        }
+
+        return controller.resumeThread(
+            id: conversationID.threadID,
+            providerID: conversationID.providerID,
+            title: "Read Conversation"
+        )
+    }
+
+    func forkThreadAndWait(conversationID: ConversationIdentity) async throws -> ThreadSession {
+        coordinator.forkedConversationIDs.append(conversationID)
+        coordinator.startThreadCount += 1
+        return controller.resumeThread(
+            id: "\(conversationID.threadID)-fork-\(coordinator.startThreadCount)",
+            providerID: conversationID.providerID,
+            title: "Forked Conversation",
+            messages: controller.threadSession(for: conversationID)?.messages ?? []
+        )
+    }
+
+    func renameThread(conversationID: ConversationIdentity, title: String) async throws {
+        coordinator.renamedConversationCalls.append((conversationID, title))
+        controller.updateThreadSummary(for: conversationID) { summary in
             summary.title = title
         }
-        controller.threadSession(id: id)?.updateThreadIdentity(id: id, title: title)
+        controller.threadSession(for: conversationID)?.updateThreadIdentity(
+            providerID: conversationID.providerID,
+            id: conversationID.threadID,
+            title: title
+        )
     }
 
-    func archiveThread(id: String) async throws {
-        controller.setThreadArchived(true, for: id)
+    func archiveThread(conversationID: ConversationIdentity) async throws {
+        coordinator.archivedConversationIDs.append(conversationID)
+        controller.setThreadArchived(true, for: conversationID.threadID, providerID: conversationID.providerID)
     }
 
-    func unarchiveThreadAndWait(id: String) async throws -> ThreadSession {
-        controller.setThreadArchived(false, for: id)
-        return controller.resumeThread(id: id, title: "Resumed Conversation")
+    func unarchiveThreadAndWait(conversationID: ConversationIdentity) async throws -> ThreadSession {
+        coordinator.unarchivedConversationIDs.append(conversationID)
+        controller.setThreadArchived(false, for: conversationID.threadID, providerID: conversationID.providerID)
+        return controller.resumeThread(
+            id: conversationID.threadID,
+            providerID: conversationID.providerID,
+            title: "Resumed Conversation"
+        )
     }
 
-    func rollbackThreadAndWait(id: String, numTurns: Int) async throws -> ThreadSession {
-        let messages = Array((controller.threadSession(id: id)?.messages ?? []).dropLast(max(0, numTurns)))
-        return controller.resumeThread(id: id, title: "Resumed Conversation", messages: messages)
+    func rollbackThreadAndWait(conversationID: ConversationIdentity, numTurns: Int) async throws -> ThreadSession {
+        coordinator.rolledBackConversationCalls.append((conversationID, numTurns))
+        let messages = Array((controller.threadSession(for: conversationID)?.messages ?? []).dropLast(max(0, numTurns)))
+        return controller.resumeThread(
+            id: conversationID.threadID,
+            providerID: conversationID.providerID,
+            title: "Resumed Conversation",
+            messages: messages
+        )
     }
 
     func startTurn(threadID: String, prompt: String, configuration: BridgeTurnStartConfiguration?) async throws {
@@ -1791,37 +1890,54 @@ private final class LifecycleProbeRuntime: WorkspaceConversationRuntime {
         controller.openThread(id: UUID().uuidString, title: title ?? "New Conversation", isVisibleInSidebar: false)
     }
 
-    func resumeThreadAndWait(id: String) async throws -> ThreadSession {
-        controller.resumeThread(id: id, title: "Recovered Conversation")
+    func resumeThreadAndWait(conversationID: ConversationIdentity) async throws -> ThreadSession {
+        controller.resumeThread(id: conversationID.threadID, providerID: conversationID.providerID, title: "Recovered Conversation")
     }
 
-    func readThreadAndWait(id: String, includeTurns: Bool) async throws -> ThreadSession {
-        controller.resumeThread(id: id, title: "Recovered Conversation")
+    func readThreadAndWait(conversationID: ConversationIdentity, includeTurns: Bool) async throws -> ThreadSession {
+        controller.resumeThread(id: conversationID.threadID, providerID: conversationID.providerID, title: "Recovered Conversation")
     }
 
-    func forkThreadAndWait(id: String) async throws -> ThreadSession {
-        controller.resumeThread(id: "\(id)-fork", title: "Recovered Conversation")
+    func forkThreadAndWait(conversationID: ConversationIdentity) async throws -> ThreadSession {
+        controller.resumeThread(
+            id: "\(conversationID.threadID)-fork",
+            providerID: conversationID.providerID,
+            title: "Recovered Conversation"
+        )
     }
 
-    func renameThread(id: String, title: String) async throws {
-        controller.updateThreadSummary(id: id) { summary in
+    func renameThread(conversationID: ConversationIdentity, title: String) async throws {
+        controller.updateThreadSummary(for: conversationID) { summary in
             summary.title = title
         }
-        controller.threadSession(id: id)?.updateThreadIdentity(id: id, title: title)
+        controller.threadSession(for: conversationID)?.updateThreadIdentity(
+            providerID: conversationID.providerID,
+            id: conversationID.threadID,
+            title: title
+        )
     }
 
-    func archiveThread(id: String) async throws {
-        controller.setThreadArchived(true, for: id)
+    func archiveThread(conversationID: ConversationIdentity) async throws {
+        controller.setThreadArchived(true, for: conversationID.threadID, providerID: conversationID.providerID)
     }
 
-    func unarchiveThreadAndWait(id: String) async throws -> ThreadSession {
-        controller.setThreadArchived(false, for: id)
-        return controller.resumeThread(id: id, title: "Recovered Conversation")
+    func unarchiveThreadAndWait(conversationID: ConversationIdentity) async throws -> ThreadSession {
+        controller.setThreadArchived(false, for: conversationID.threadID, providerID: conversationID.providerID)
+        return controller.resumeThread(
+            id: conversationID.threadID,
+            providerID: conversationID.providerID,
+            title: "Recovered Conversation"
+        )
     }
 
-    func rollbackThreadAndWait(id: String, numTurns: Int) async throws -> ThreadSession {
-        let messages = Array((controller.threadSession(id: id)?.messages ?? []).dropLast(max(0, numTurns)))
-        return controller.resumeThread(id: id, title: "Recovered Conversation", messages: messages)
+    func rollbackThreadAndWait(conversationID: ConversationIdentity, numTurns: Int) async throws -> ThreadSession {
+        let messages = Array((controller.threadSession(for: conversationID)?.messages ?? []).dropLast(max(0, numTurns)))
+        return controller.resumeThread(
+            id: conversationID.threadID,
+            providerID: conversationID.providerID,
+            title: "Recovered Conversation",
+            messages: messages
+        )
     }
 
     func startTurn(threadID: String, prompt: String, configuration: BridgeTurnStartConfiguration?) async throws {

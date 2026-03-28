@@ -170,7 +170,9 @@ struct WorkspaceBridgeRuntimeTests {
         try await runtime.start()
         try await waitUntil { controller.connectionStatus == .ready && controller.threadSummary(id: "thread-1") != nil }
 
-        let resumeTask = Task { try await runtime.resumeThreadAndWait(id: "thread-1") }
+        let resumeTask = Task {
+            try await runtime.resumeThreadAndWait(conversationID: ConversationIdentity(threadID: "thread-1"))
+        }
         try await waitUntil { pendingCommandCount(in: runtime) == 1 }
 
         socketClient.enqueue(requestErrorJSON(
@@ -264,7 +266,7 @@ struct WorkspaceBridgeRuntimeTests {
         let session = try await startTask.value
         let sentCountBeforeArchive = socketClient.sentTexts.count
 
-        try await runtime.archiveThread(id: session.threadID)
+        try await runtime.archiveThread(conversationID: session.conversationID)
 
         #expect(session.messages.isEmpty)
         #expect(controller.threadSummary(id: session.threadID)?.isArchived == true)
@@ -969,7 +971,10 @@ struct WorkspaceBridgeRuntimeTests {
 
         let session = controller.openThread(id: "thread-1", title: "Thread")
         let renameTask = Task {
-            try await runtime.renameThread(id: "thread-1", title: "Renamed Thread")
+            try await runtime.renameThread(
+                conversationID: ConversationIdentity(threadID: "thread-1"),
+                title: "Renamed Thread"
+            )
         }
 
         try await waitUntil {
@@ -994,6 +999,68 @@ struct WorkspaceBridgeRuntimeTests {
 
         #expect(controller.threadSummary(id: "thread-1")?.title == "Renamed Thread")
         #expect(session.title == "Renamed Thread")
+    }
+
+    @Test func renameThreadUsesExplicitProviderWhenThreadIDsCollide() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-thread-rename-provider"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4750)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        let codexConversationID = ConversationIdentity(providerID: BridgeProviderIdentifier.codex, threadID: "thread-1")
+        let geminiConversationID = ConversationIdentity(providerID: "gemini", threadID: "thread-1")
+        controller.setAvailableProviders([
+            testProviderSummary(id: BridgeProviderIdentifier.codex, displayName: "Codex"),
+            testProviderSummary(id: "gemini", displayName: "Gemini")
+        ])
+        controller.openThread(id: "thread-1", providerID: BridgeProviderIdentifier.codex, title: "Codex Thread")
+        let geminiSession = controller.openThread(id: "thread-1", providerID: "gemini", title: "Gemini Thread")
+        controller.markThreadSelected(codexConversationID)
+
+        let renameTask = Task {
+            try await runtime.renameThread(conversationID: geminiConversationID, title: "Renamed Gemini Thread")
+        }
+
+        try await waitUntil {
+            pendingCommandCount(in: runtime) == 1 &&
+            latestCommandProvider(ofType: "thread.rename", from: socketClient.sentTexts) == "gemini" &&
+            latestCommandPayload(ofType: "thread.rename", from: socketClient.sentTexts)?["title"] as? String == "Renamed Gemini Thread"
+        }
+
+        #expect(latestCommandProvider(ofType: "thread.rename", from: socketClient.sentTexts) == "gemini")
+
+        socketClient.enqueue(threadStartedJSON(
+            requestID: "ateliercode-thread-rename-4",
+            threadID: "thread-1",
+            threadTitle: "Renamed Gemini Thread",
+            providerID: "gemini"
+        ))
+
+        try await renameTask.value
+        try await waitUntil {
+            controller.threadSummary(for: geminiConversationID)?.title == "Renamed Gemini Thread" &&
+            geminiSession.title == "Renamed Gemini Thread" &&
+            controller.threadSummary(for: codexConversationID)?.title == "Codex Thread" &&
+            pendingCommandCount(in: runtime) == 0
+        }
+
+        #expect(controller.threadSummary(for: geminiConversationID)?.title == "Renamed Gemini Thread")
+        #expect(controller.threadSummary(for: codexConversationID)?.title == "Codex Thread")
     }
 
     @Test func cancelledStartThreadAndWaitIgnoresLateThreadStartedEvent() async throws {
@@ -1366,9 +1433,14 @@ private func turnStartedJSON(requestID: String, threadID: String, turnID: String
     """
 }
 
-private func threadStartedJSON(requestID: String, threadID: String, threadTitle: String) -> String {
+private func threadStartedJSON(
+    requestID: String,
+    threadID: String,
+    threadTitle: String,
+    providerID: String = BridgeProviderIdentifier.codex
+) -> String {
     """
-    {"type":"thread.started","timestamp":"2026-03-24T10:00:05Z","requestID":"\(requestID)","threadID":"\(threadID)","payload":{"thread":{"id":"\(threadID)","providerID":"codex","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:05Z","archived":false,"running":false,"errorMessage":null}}}
+    {"type":"thread.started","timestamp":"2026-03-24T10:00:05Z","requestID":"\(requestID)","threadID":"\(threadID)","payload":{"thread":{"id":"\(threadID)","providerID":"\(jsonEscaped(providerID))","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:05Z","archived":false,"running":false,"errorMessage":null}}}
     """
 }
 
@@ -1561,6 +1633,29 @@ private func latestCommandProvider(ofType type: String, from messages: [String])
     }
 
     return nil
+}
+
+private func testProviderSummary(
+    id: String = BridgeProviderIdentifier.codex,
+    displayName: String = "Codex",
+    supportsThreadLifecycle: Bool = true,
+    supportsThreadArchiving: Bool = false,
+    supportsApprovals: Bool = true,
+    supportsAuthentication: Bool = true,
+    supportedModes: [String] = ["default", "plan", "review"]
+) -> ProviderSummaryState {
+    ProviderSummaryState(
+        id: id,
+        displayName: displayName,
+        status: "available",
+        capabilities: ProviderCapabilitiesState(
+            supportsThreadLifecycle: supportsThreadLifecycle,
+            supportsThreadArchiving: supportsThreadArchiving,
+            supportsApprovals: supportsApprovals,
+            supportsAuthentication: supportsAuthentication,
+            supportedModes: supportedModes
+        )
+    )
 }
 
 private func commandObject(from message: String) -> [String: Any]? {

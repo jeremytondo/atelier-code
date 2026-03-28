@@ -675,9 +675,12 @@ final class AppModel {
                 }
 
                 if summary.isArchived {
-                    _ = try await runtime.readThreadAndWait(id: conversationID.threadID, includeTurns: true)
+                    _ = try await runtime.readThreadAndWait(
+                        conversationID: conversationID,
+                        includeTurns: true
+                    )
                 } else {
-                    _ = try await runtime.resumeThreadAndWait(id: conversationID.threadID)
+                    _ = try await runtime.resumeThreadAndWait(conversationID: conversationID)
                 }
             }
 
@@ -770,7 +773,7 @@ final class AppModel {
         }
 
         do {
-            let session = try await runtime.forkThreadAndWait(id: conversationID.threadID)
+            let session = try await runtime.forkThreadAndWait(conversationID: conversationID)
             controller.markThreadSelected(session.conversationID)
             updateSelectedRoute(workspacePath: canonicalPath, conversationID: session.conversationID)
             persistPreferences()
@@ -811,7 +814,7 @@ final class AppModel {
         }
 
         do {
-            try await runtime.archiveThread(id: conversationID.threadID)
+            try await runtime.archiveThread(conversationID: conversationID)
             controller.setThreadArchived(true, for: conversationID.threadID, providerID: conversationID.providerID)
             controller.markThreadActivity(
                 id: conversationID.threadID,
@@ -862,7 +865,7 @@ final class AppModel {
         }
 
         do {
-            let session = try await runtime.unarchiveThreadAndWait(id: conversationID.threadID)
+            let session = try await runtime.unarchiveThreadAndWait(conversationID: conversationID)
             controller.markThreadSelected(session.conversationID)
             updateSelectedRoute(workspacePath: canonicalPath, conversationID: session.conversationID)
             persistPreferences()
@@ -896,7 +899,7 @@ final class AppModel {
         }
 
         do {
-            try await runtime.renameThread(id: conversationID.threadID, title: resolvedTitle)
+            try await runtime.renameThread(conversationID: conversationID, title: resolvedTitle)
             controller.updateThreadSummary(for: conversationID) { summary in
                 summary.title = resolvedTitle
             }
@@ -925,7 +928,10 @@ final class AppModel {
         }
 
         do {
-            let session = try await runtime.rollbackThreadAndWait(id: conversationID.threadID, numTurns: 1)
+            let session = try await runtime.rollbackThreadAndWait(
+                conversationID: conversationID,
+                numTurns: 1
+            )
             controller.markThreadSelected(session.conversationID)
             updateSelectedRoute(workspacePath: controller.workspace.canonicalPath, conversationID: session.conversationID)
             persistPreferences()
@@ -1037,7 +1043,7 @@ final class AppModel {
                 }
 
                 if controller.threadSession(for: existingConversationID) == nil {
-                    _ = try await runtime.resumeThreadAndWait(id: existingConversationID.threadID)
+                    _ = try await runtime.resumeThreadAndWait(conversationID: existingConversationID)
                 }
 
                 conversationID = existingConversationID
