@@ -631,6 +631,12 @@ private struct WorkspaceThreadRow: View {
 
     @ViewBuilder
     private var threadActionMenuItems: some View {
+        if threadSummary.isLocalOnly {
+            Button("Remove from Sidebar") {
+                _ = appModel.removeCachedThread(workspacePath: workspacePath, threadID: threadSummary.id)
+            }
+        }
+
         Button(threadSummary.isArchived ? "Unarchive" : "Archive") {
             if threadSummary.isArchived {
                 Task {

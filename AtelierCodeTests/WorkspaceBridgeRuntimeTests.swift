@@ -77,6 +77,47 @@ struct WorkspaceBridgeRuntimeTests {
         #expect(controller.availableModels.isEmpty)
     }
 
+    @Test func threadResumeErrorsDoNotPoisonWorkspaceConnection() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-thread-resume-error"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4247)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        let resumeTask = Task { try await runtime.resumeThreadAndWait(id: "thread-1") }
+        try await waitUntil { pendingCommandCount(in: runtime) == 1 }
+
+        socketClient.enqueue(requestErrorJSON(
+            requestID: "ateliercode-thread-resume-4",
+            message: "Thread is missing on disk"
+        ))
+
+        do {
+            _ = try await resumeTask.value
+            Issue.record("Expected resumeThreadAndWait to fail.")
+        } catch {
+            #expect(error.localizedDescription == "Thread is missing on disk")
+        }
+
+        try await waitUntil { controller.connectionStatus == .ready && pendingCommandCount(in: runtime) == 0 }
+
+        #expect(controller.connectionStatus == .ready)
+    }
+
     @Test func providerStatusUpdatesEnvironmentWarningAndExecutablePath() async throws {
         let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-provider-status"), lastOpenedAt: .now)
         let controller = WorkspaceController(workspace: workspace)
@@ -1148,6 +1189,12 @@ private func modelListResultJSON(requestID: String) -> String {
 }
 
 private func modelListErrorJSON(requestID: String, message: String) -> String {
+    """
+    {"type":"error","timestamp":"2026-03-24T10:00:03Z","requestID":"\(requestID)","payload":{"code":"provider_command_failed","message":"\(jsonEscaped(message))"}}
+    """
+}
+
+private func requestErrorJSON(requestID: String, message: String) -> String {
     """
     {"type":"error","timestamp":"2026-03-24T10:00:03Z","requestID":"\(requestID)","payload":{"code":"provider_command_failed","message":"\(jsonEscaped(message))"}}
     """

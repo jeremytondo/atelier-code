@@ -320,6 +320,104 @@ struct AppModelTests {
         ])
     }
 
+    @Test func openingOrphanedLocalOnlyThreadRemovesItAndKeepsWorkspaceUsable() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitService = TestWorkspaceGitService()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitService: gitService,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "open-orphaned-local-thread")
+
+        await gitService.enqueueStatuses([.branch("main")], for: workspaceURL.path)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.workspace.canonicalPath == workspaceURL.path }
+
+        guard let controller = appModel.activeWorkspaceController else {
+            Issue.record("Expected active workspace controller.")
+            return
+        }
+
+        controller.replaceThreadList([
+            ThreadSummary(
+                id: "thread-real",
+                title: "Real Thread",
+                previewText: "Available",
+                updatedAt: Date(timeIntervalSince1970: 10)
+            )
+        ])
+        controller.openThread(id: "thread-local", title: "Ghost Thread", isVisibleInSidebar: true)
+        controller.clearThreadSession(id: "thread-local")
+        controller.markThreadSelected("thread-local")
+        appModel.selectWorkspace(path: workspaceURL.path)
+
+        let didOpenGhost = await appModel.openThread(workspacePath: workspaceURL.path, threadID: "thread-local")
+
+        #expect(didOpenGhost == false)
+        #expect(controller.threadSummary(id: "thread-local") == nil)
+        #expect(appModel.selectedRoute?.threadID == "thread-real")
+        #expect(controller.connectionStatus == .ready)
+
+        let didOpenReal = await appModel.openThread(workspacePath: workspaceURL.path, threadID: "thread-real")
+
+        #expect(didOpenReal)
+        #expect(appModel.selectedThreadSession?.threadID == "thread-real")
+    }
+
+    @Test func failedThreadOpenMarksOnlyThatThreadAndLeavesWorkspaceReady() async throws {
+        let store = InMemoryAppPreferencesStore()
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let gitService = TestWorkspaceGitService()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            gitService: gitService,
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+        let workspaceURL = try temporaryDirectory(named: "failed-thread-open")
+
+        runtimeCoordinator.resumeFailuresByThreadID["thread-bad"] = "Missing thread history"
+        await gitService.enqueueStatuses([.branch("main")], for: workspaceURL.path)
+        appModel.activateWorkspace(at: workspaceURL)
+        try await waitUntil { appModel.activeWorkspaceController?.workspace.canonicalPath == workspaceURL.path }
+
+        guard let controller = appModel.activeWorkspaceController else {
+            Issue.record("Expected active workspace controller.")
+            return
+        }
+
+        controller.replaceThreadList([
+            ThreadSummary(
+                id: "thread-bad",
+                title: "Broken Thread",
+                previewText: "Missing",
+                updatedAt: Date(timeIntervalSince1970: 20)
+            ),
+            ThreadSummary(
+                id: "thread-good",
+                title: "Healthy Thread",
+                previewText: "Available",
+                updatedAt: Date(timeIntervalSince1970: 10)
+            )
+        ])
+
+        let didOpenBad = await appModel.openThread(workspacePath: workspaceURL.path, threadID: "thread-bad")
+
+        #expect(didOpenBad == false)
+        #expect(controller.connectionStatus == .ready)
+        #expect(controller.threadSummary(id: "thread-bad")?.lastErrorMessage == "Missing thread history")
+        #expect(controller.threadSummary(id: "thread-bad")?.isStale == true)
+
+        let didOpenGood = await appModel.openThread(workspacePath: workspaceURL.path, threadID: "thread-good")
+
+        #expect(didOpenGood)
+        #expect(appModel.selectedThreadSession?.threadID == "thread-good")
+        #expect(controller.connectionStatus == .ready)
+    }
+
     @Test func openingBranchPickerLoadsBranchesAndResetsWhenWorkspaceChanges() async throws {
         let store = InMemoryAppPreferencesStore()
         let runtimeCoordinator = TestRuntimeCoordinator()
@@ -1192,6 +1290,8 @@ private final class TestRuntimeCoordinator {
     var cancelCount = 0
     var resolveApprovalCalls: [(String, ApprovalResolution)] = []
     var queuedThreadListResponses: [[ThreadSummary]] = []
+    var resumeFailuresByThreadID: [String: String] = [:]
+    var readFailuresByThreadID: [String: String] = [:]
     var shouldDelayTurnStart = false
     var shouldDelayApprovalResolution = false
     private var pendingDelayedTurnStarts: [CheckedContinuation<Void, Never>] = []
@@ -1275,11 +1375,19 @@ private final class TestWorkspaceRuntime: WorkspaceConversationRuntime {
     }
 
     func resumeThreadAndWait(id: String) async throws -> ThreadSession {
-        controller.resumeThread(id: id, title: "Resumed Conversation")
+        if let message = coordinator.resumeFailuresByThreadID[id] {
+            throw TestWorkspaceRuntimeError(message: message)
+        }
+
+        return controller.resumeThread(id: id, title: "Resumed Conversation")
     }
 
     func readThreadAndWait(id: String, includeTurns: Bool) async throws -> ThreadSession {
-        controller.resumeThread(id: id, title: "Read Conversation")
+        if let message = coordinator.readFailuresByThreadID[id] {
+            throw TestWorkspaceRuntimeError(message: message)
+        }
+
+        return controller.resumeThread(id: id, title: "Read Conversation")
     }
 
     func forkThreadAndWait(id: String) async throws -> ThreadSession {
@@ -1343,6 +1451,14 @@ private final class TestWorkspaceRuntime: WorkspaceConversationRuntime {
         coordinator.resolveApprovalCalls.append((id, resolution))
         await coordinator.awaitDelayedApprovalResolutionIfNeeded()
         controller.threadSession(id: threadID)?.resolveApprovalRequest(id: id, resolution: resolution)
+    }
+}
+
+private struct TestWorkspaceRuntimeError: LocalizedError {
+    let message: String
+
+    var errorDescription: String? {
+        message
     }
 }
 

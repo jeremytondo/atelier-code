@@ -593,6 +593,11 @@ final class AppModel {
             return false
         }
 
+        if controller.threadSession(id: threadID) == nil, summary.isLocalOnly {
+            removeCachedThread(workspacePath: canonicalPath, threadID: threadID)
+            return false
+        }
+
         do {
             showConversations()
             if controller.threadSession(id: threadID) == nil {
@@ -615,9 +620,34 @@ final class AppModel {
         } catch is CancellationError {
             return false
         } catch {
-            controller.setConnectionStatus(.error(message: error.localizedDescription))
+            handleThreadOpenFailure(
+                error,
+                workspacePath: canonicalPath,
+                threadID: threadID
+            )
             return false
         }
+    }
+
+    @discardableResult
+    func removeCachedThread(workspacePath: String, threadID: String) -> Bool {
+        let canonicalPath = WorkspaceRecord.canonicalizedPath(for: workspacePath)
+        guard let controller = workspaceController(for: canonicalPath),
+              controller.threadSummary(id: threadID) != nil else {
+            return false
+        }
+
+        controller.removeThread(id: threadID)
+
+        if selectedRoute?.workspacePath == canonicalPath,
+           selectedRoute?.threadID == threadID {
+            let nextThreadID = preferredThreadID(for: controller)
+            controller.markThreadSelected(nextThreadID)
+            updateSelectedRoute(workspacePath: canonicalPath, threadID: nextThreadID)
+        }
+
+        persistPreferences()
+        return true
     }
 
     @discardableResult
@@ -1401,6 +1431,44 @@ final class AppModel {
         case .connecting, .disconnected, .error:
             return false
         }
+    }
+
+    private func handleThreadOpenFailure(
+        _ error: Error,
+        workspacePath: String,
+        threadID: String
+    ) {
+        guard let controller = workspaceController(for: workspacePath) else {
+            return
+        }
+
+        controller.updateThreadSummary(id: threadID) { summary in
+            summary.isRunning = false
+            summary.hasUnreadActivity = false
+            summary.lastErrorMessage = error.localizedDescription
+            summary.isStale = true
+        }
+
+        if selectedRoute?.workspacePath == workspacePath,
+           selectedRoute?.threadID == threadID {
+            let nextThreadID = controller.visibleThreadSummaries
+                .first(where: { $0.id != threadID })?
+                .id
+            controller.markThreadSelected(nextThreadID)
+            updateSelectedRoute(workspacePath: workspacePath, threadID: nextThreadID)
+            persistPreferences()
+        }
+
+        recoverWorkspaceConnectionStatusIfNeeded(for: controller)
+    }
+
+    private func recoverWorkspaceConnectionStatusIfNeeded(for controller: WorkspaceController) {
+        guard case .error = controller.connectionStatus else {
+            return
+        }
+
+        let status: ConnectionStatus = controller.hasRunningThreads ? .streaming : .ready
+        controller.setConnectionStatus(status)
     }
 
     private func isActiveRuntime(_ runtime: any WorkspaceConversationRuntime, for workspacePath: String) -> Bool {

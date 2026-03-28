@@ -413,7 +413,14 @@ final class WorkspaceController {
 
         if lastActiveThreadID == id {
             lastActiveThreadID = nil
+            lastActiveProviderID = nil
         }
+    }
+
+    func removeThread(id: String) {
+        clearThreadSession(id: id)
+        threadListRepository.removeThreadSummary(id: id)
+        refreshThreadListProjection()
     }
 
     func setAwaitingTurnStart(_ isAwaitingTurnStart: Bool, for threadID: String? = nil) {

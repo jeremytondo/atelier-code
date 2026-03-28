@@ -1205,6 +1205,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
 
         if let requestID,
            let pendingCommand = pendingCommands.removeValue(forKey: requestID) {
+            shouldUpdateConnectionStatus = false
+
             switch pendingCommand {
             case .threadStart, .threadResume, .threadRead, .threadFork, .threadUnarchive, .threadRollback:
                 pendingThreadSessions.removeValue(forKey: requestID)?.resume(
@@ -1231,6 +1233,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 controller.setAwaitingTurnStart(false, for: threadID)
                 controller.setCurrentTurnID(nil, for: threadID)
                 controller.threadSession(id: threadID)?.failTurn(payload.message)
+                controller.updateThreadSummary(id: threadID) { summary in
+                    summary.isRunning = false
+                    summary.lastErrorMessage = payload.message
+                }
             case .approvalResolve(let threadID, let approvalID):
                 controller.threadSession(id: threadID)?.clearApprovalResolution(id: approvalID)
                 pendingApprovalResolutions.removeValue(forKey: requestID)?.resume(
@@ -1245,6 +1251,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
 
         if shouldUpdateConnectionStatus {
             controller.setConnectionStatus(.error(message: payload.message))
+        } else {
+            refreshWorkspaceConnectionStatus()
         }
     }
 

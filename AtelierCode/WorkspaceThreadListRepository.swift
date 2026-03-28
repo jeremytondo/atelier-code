@@ -56,6 +56,10 @@ final class WorkspaceThreadListRepository {
         lastSuccessfulListAtByArchived.removeAll()
     }
 
+    func removeThreadSummary(id: String) {
+        threadSummariesByID.removeValue(forKey: id)
+    }
+
     func syncState(for archived: Bool) -> ThreadListSyncState {
         syncStatesByArchived[archived] ?? .idle
     }
