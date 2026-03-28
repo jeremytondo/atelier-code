@@ -265,6 +265,11 @@ final class WorkspaceController {
         refreshThreadListProjection()
     }
 
+    func completeThreadListSync(archived: Bool, listedAt: Date = .now) {
+        threadListRepository.markListSuccessful(archived: archived, listedAt: listedAt)
+        refreshThreadListProjection()
+    }
+
     func replaceThreadList(
         _ threadSummaries: [ThreadSummary],
         archived: Bool = false,

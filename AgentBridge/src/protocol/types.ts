@@ -20,8 +20,6 @@ export type BridgeCommandType =
   | "thread.read"
   | "thread.fork"
   | "thread.rename"
-  | "thread.archive"
-  | "thread.unarchive"
   | "thread.rollback"
   | "turn.start"
   | "turn.cancel"
@@ -32,8 +30,6 @@ export type BridgeCommandType =
 export type BridgeEventType =
   | "model.list.result"
   | "thread.started"
-  | "thread.archived"
-  | "thread.unarchived"
   | "turn.started"
   | "message.delta"
   | "thinking.delta"
@@ -270,10 +266,6 @@ export interface ThreadRenamePayload {
   title: string;
 }
 
-export interface ThreadArchivePayload {}
-
-export interface ThreadUnarchivePayload {}
-
 export interface ThreadRollbackPayload {
   numTurns: number;
 }
@@ -328,14 +320,6 @@ export interface ThreadRenameCommand extends BridgeCommandEnvelope<"thread.renam
   threadID: string;
 }
 
-export interface ThreadArchiveCommand extends BridgeCommandEnvelope<"thread.archive", ThreadArchivePayload> {
-  threadID: string;
-}
-
-export interface ThreadUnarchiveCommand extends BridgeCommandEnvelope<"thread.unarchive", ThreadUnarchivePayload> {
-  threadID: string;
-}
-
 export interface ThreadRollbackCommand extends BridgeCommandEnvelope<"thread.rollback", ThreadRollbackPayload> {
   threadID: string;
 }
@@ -370,8 +354,6 @@ export type BridgeCommand =
   | ThreadReadCommand
   | ThreadForkCommand
   | ThreadRenameCommand
-  | ThreadArchiveCommand
-  | ThreadUnarchiveCommand
   | ThreadRollbackCommand
   | TurnStartCommand
   | TurnCancelCommand
@@ -387,14 +369,6 @@ export interface TurnStartedPayload {
 
 export interface ThreadStartedPayload {
   thread: ThreadSummary;
-}
-
-export interface ThreadArchivedPayload {
-  threadID: string;
-}
-
-export interface ThreadUnarchivedPayload {
-  threadID: string;
 }
 
 export interface MessageDeltaPayload {
@@ -513,15 +487,6 @@ export interface TurnStartedEvent extends BridgeEventEnvelope<"turn.started", Tu
 }
 
 export interface ThreadStartedEvent extends BridgeEventEnvelope<"thread.started", ThreadStartedPayload> {
-  threadID: string;
-}
-
-export interface ThreadArchivedEvent extends BridgeEventEnvelope<"thread.archived", ThreadArchivedPayload> {
-  threadID: string;
-}
-
-export interface ThreadUnarchivedEvent
-  extends BridgeEventEnvelope<"thread.unarchived", ThreadUnarchivedPayload> {
   threadID: string;
 }
 

@@ -76,6 +76,11 @@ final class WorkspaceThreadListRepository {
         syncStatesByArchived[archived] = .failed
     }
 
+    func markListSuccessful(archived: Bool, listedAt: Date) {
+        syncStatesByArchived[archived] = .idle
+        lastSuccessfulListAtByArchived[archived] = listedAt
+    }
+
     func replaceThreadList(
         _ incoming: [ThreadSummary],
         archived: Bool,

@@ -200,6 +200,39 @@ struct WorkspaceBridgeRuntimeTests {
         #expect(socketClient.sentTexts.count == sentCountBeforeArchive)
     }
 
+    @Test func archivedThreadListingCompletesLocallyWithoutSendingBridgeRequests() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-archived-list"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4248)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        controller.setThreadArchived(true, for: "thread-1")
+        controller.setShowingArchivedThreads(true)
+        let sentCountBeforeArchivedList = socketClient.sentTexts.count
+
+        try await runtime.listThreads(archived: true)
+
+        #expect(controller.threadSummary(id: "thread-1")?.isArchived == true)
+        #expect(controller.threadListSyncState == .idle)
+        #expect(controller.lastSuccessfulThreadListAt != nil)
+        #expect(socketClient.sentTexts.count == sentCountBeforeArchivedList)
+    }
+
     @Test func accountLoginResultOpensBrowserAndClearsPendingStateOnAuthChange() async throws {
         let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-login"), lastOpenedAt: .now)
         let controller = WorkspaceController(workspace: workspace)
@@ -1141,7 +1174,7 @@ private func startupRecordJSON(port: Int) -> String {
 
 private func welcomeJSON(requestID: String) -> String {
     """
-    {"type":"welcome","timestamp":"2026-03-24T10:00:01Z","requestID":"\(requestID)","payload":{"bridgeVersion":"0.1.0","protocolVersion":1,"supportedProtocolVersions":[1],"sessionID":"session-1","transport":"websocket","providers":[{"id":"codex","displayName":"Codex","status":"available","capabilities":{"supportsThreadLifecycle":true,"supportsThreadArchiving":true,"supportsApprovals":true,"supportsAuthentication":true,"supportedModes":["default"]}}],"environment":{"source":"login_probe","shellPath":"/bin/zsh","probeError":null,"pathDirectoryCount":5,"homeDirectory":"/Users/tester"}}}
+    {"type":"welcome","timestamp":"2026-03-24T10:00:01Z","requestID":"\(requestID)","payload":{"bridgeVersion":"0.1.0","protocolVersion":1,"supportedProtocolVersions":[1],"sessionID":"session-1","transport":"websocket","providers":[{"id":"codex","displayName":"Codex","status":"available","capabilities":{"supportsThreadLifecycle":true,"supportsThreadArchiving":false,"supportsApprovals":true,"supportsAuthentication":true,"supportedModes":["default"]}}],"environment":{"source":"login_probe","shellPath":"/bin/zsh","probeError":null,"pathDirectoryCount":5,"homeDirectory":"/Users/tester"}}}
     """
 }
 

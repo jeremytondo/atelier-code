@@ -50,8 +50,6 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         case threadRead
         case threadFork
         case threadRename(threadID: String)
-        case threadArchive(threadID: String)
-        case threadUnarchive
         case threadRollback
         case threadList(archived: Bool)
         case turnStart(threadID: String, prompt: String)
@@ -242,6 +240,11 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     func listThreads(archived: Bool) async throws {
         controller.beginThreadListSync(archived: archived)
 
+        if archived {
+            controller.completeThreadListSync(archived: true, listedAt: now())
+            return
+        }
+
         do {
             try await sendThreadListRequest(
                 archived: archived,
@@ -415,54 +418,17 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     }
 
     func archiveThread(id: String) async throws {
-        if shouldArchiveThreadLocally(id: id) {
-            applyLocalThreadArchive(threadID: id)
-            return
-        }
-
-        let requestID = nextRequestID(prefix: "thread-archive")
-        pendingCommands[requestID] = .threadArchive(threadID: id)
-
-        try await awaitVoidResponse(requestID: requestID) { [weak self] in
-            guard let self else {
-                throw CancellationError()
-            }
-
-            try await self.sendCommand(
-                id: requestID,
-                type: .threadArchive,
-                threadID: id,
-                payload: BridgeThreadArchivePayload()
-            )
-        }
+        applyLocalThreadArchive(threadID: id)
     }
 
     func unarchiveThreadAndWait(id: String) async throws -> ThreadSession {
-        if shouldArchiveThreadLocally(id: id) {
-            applyLocalThreadUnarchive(threadID: id)
-            return controller.ensureThreadSession(
-                id: id,
-                providerID: controller.threadSummary(id: id)?.providerID ?? BridgeProviderIdentifier.codex,
-                title: controller.threadSummary(id: id)?.title ?? "Recovered Conversation",
-                markSelected: false
-            )
-        }
-
-        let requestID = nextRequestID(prefix: "thread-unarchive")
-        pendingCommands[requestID] = .threadUnarchive
-
-        return try await awaitThreadSession(requestID: requestID) { [weak self] in
-            guard let self else {
-                throw CancellationError()
-            }
-
-            try await self.sendCommand(
-                id: requestID,
-                type: .threadUnarchive,
-                threadID: id,
-                payload: BridgeThreadUnarchivePayload()
-            )
-        }
+        applyLocalThreadUnarchive(threadID: id)
+        return controller.ensureThreadSession(
+            id: id,
+            providerID: controller.threadSummary(id: id)?.providerID ?? BridgeProviderIdentifier.codex,
+            title: controller.threadSummary(id: id)?.title ?? "Recovered Conversation",
+            markSelected: false
+        )
     }
 
     func rollbackThreadAndWait(id: String, numTurns: Int) async throws -> ThreadSession {
@@ -635,10 +601,6 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             handleModelListResult(payload, requestID: event.requestID)
         case .threadStarted(let payload):
             handleThreadStarted(payload, requestID: event.requestID)
-        case .threadArchived(let payload):
-            handleThreadArchived(payload, requestID: event.requestID)
-        case .threadUnarchived(let payload):
-            handleThreadUnarchived(payload, requestID: event.requestID)
         case .turnStarted:
             handleTurnStarted(event)
         case .messageDelta(let payload):
@@ -931,7 +893,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
            let pendingCommand = pendingCommands.removeValue(forKey: requestID) {
             let session: ThreadSession
             switch pendingCommand {
-            case .threadResume, .threadRead, .threadFork, .threadRollback, .threadUnarchive:
+            case .threadResume, .threadRead, .threadFork, .threadRollback:
                 session = controller.resumeThread(
                     id: summary.id,
                     providerID: summary.providerID,
@@ -1029,34 +991,6 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             archived: archived,
             listedAt: listedAt
         )
-    }
-
-    private func handleThreadArchived(_ payload: BridgeThreadArchivedPayload, requestID: String?) {
-        if let requestID,
-           let pendingCommand = pendingCommands.removeValue(forKey: requestID),
-           case .threadArchive(let threadID) = pendingCommand,
-           threadID == payload.threadID {
-            pendingVoidResponses.removeValue(forKey: requestID)?.resume()
-        }
-
-        controller.setThreadArchived(true, for: payload.threadID)
-        controller.setThreadRunning(false, for: payload.threadID, at: now())
-        controller.markThreadActivity(
-            id: payload.threadID,
-            at: now(),
-            hasUnreadActivity: controller.lastActiveThreadID == payload.threadID ? false : true
-        )
-        refreshWorkspaceConnectionStatus()
-    }
-
-    private func handleThreadUnarchived(_ payload: BridgeThreadUnarchivedPayload, requestID: String?) {
-        controller.setThreadArchived(false, for: payload.threadID)
-        controller.markThreadActivity(
-            id: payload.threadID,
-            at: now(),
-            hasUnreadActivity: controller.lastActiveThreadID == payload.threadID ? false : true
-        )
-        refreshWorkspaceConnectionStatus()
     }
 
     private func handleTurnStarted(_ event: BridgeEventEnvelope) {
@@ -1208,24 +1142,13 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             shouldUpdateConnectionStatus = false
 
             switch pendingCommand {
-            case .threadStart, .threadResume, .threadRead, .threadFork, .threadUnarchive, .threadRollback:
+            case .threadStart, .threadResume, .threadRead, .threadFork, .threadRollback:
                 pendingThreadSessions.removeValue(forKey: requestID)?.resume(
                     throwing: RuntimeBridgeError.requestFailed(message: payload.message)
                 )
             case .threadList:
                 pendingThreadListsByRequestID.removeValue(forKey: requestID)
             case .threadRename:
-                pendingVoidResponses.removeValue(forKey: requestID)?.resume(
-                    throwing: RuntimeBridgeError.requestFailed(message: payload.message)
-                )
-            case .threadArchive(let threadID):
-                if shouldTreatArchiveErrorAsLocalSuccess(message: payload.message, threadID: threadID) {
-                    pendingVoidResponses.removeValue(forKey: requestID)?.resume()
-                    applyLocalThreadArchive(threadID: threadID)
-                    refreshWorkspaceConnectionStatus()
-                    return
-                }
-
                 pendingVoidResponses.removeValue(forKey: requestID)?.resume(
                     throwing: RuntimeBridgeError.requestFailed(message: payload.message)
                 )
@@ -1577,24 +1500,6 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     private func nextRequestID(prefix: String) -> String {
         requestCounter += 1
         return "ateliercode-\(prefix)-\(requestCounter)"
-    }
-
-    private func shouldArchiveThreadLocally(id: String) -> Bool {
-        guard let session = controller.threadSession(id: id) else {
-            return false
-        }
-
-        return session.messages.isEmpty &&
-            session.turnState.phase == .idle &&
-            session.turnItems.isEmpty &&
-            session.pendingApprovals.isEmpty &&
-            session.planState == nil &&
-            session.aggregatedDiff == nil
-    }
-
-    private func shouldTreatArchiveErrorAsLocalSuccess(message: String, threadID: String) -> Bool {
-        shouldArchiveThreadLocally(id: threadID) &&
-            message.localizedCaseInsensitiveContains("no rollout found")
     }
 
     private func applyLocalThreadArchive(threadID: String) {

@@ -5,7 +5,6 @@ import type {
   ConversationConfiguration,
   ModelListPayload,
   ProviderCapabilities,
-  ThreadArchivePayload,
   ThreadForkPayload,
   ThreadListPayload,
   ThreadReadPayload,
@@ -13,7 +12,6 @@ import type {
   ThreadRollbackPayload,
   ThreadResumePayload,
   ThreadStartPayload,
-  ThreadUnarchivePayload,
   TurnStartPayload,
 } from "./types";
 import type { CodexTransportRequestID } from "../codex/codex-transport";
@@ -92,16 +90,6 @@ export interface BridgeProviderAdapter<Thread, Model, Account, RateLimits> {
     requestID: CodexTransportRequestID,
     threadID: string,
     payload: ThreadRenamePayload,
-  ): Promise<RuntimeThreadState<Thread>>;
-  archiveThread(
-    requestID: CodexTransportRequestID,
-    threadID: string,
-    payload: ThreadArchivePayload,
-  ): Promise<void>;
-  unarchiveThread(
-    requestID: CodexTransportRequestID,
-    threadID: string,
-    payload: ThreadUnarchivePayload,
   ): Promise<RuntimeThreadState<Thread>>;
   rollbackThread(
     requestID: CodexTransportRequestID,

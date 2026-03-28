@@ -363,6 +363,7 @@ describe("CodexClient", () => {
         limit: undefined,
         archived: undefined,
         cwd: "/tmp/project",
+        sourceKinds: ["cli", "vscode", "appServer"],
       },
     });
   });

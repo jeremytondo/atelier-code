@@ -7,7 +7,6 @@ import type {
   ProviderCapabilities,
   ReasoningEffort,
   ThreadArchiveFilter,
-  ThreadArchivePayload,
   ThreadForkPayload,
   ThreadListPayload,
   ThreadReadPayload,
@@ -15,7 +14,6 @@ import type {
   ThreadResumePayload,
   ThreadRollbackPayload,
   ThreadStartPayload,
-  ThreadUnarchivePayload,
   TurnStartPayload,
 } from "../protocol/types";
 import type {
@@ -55,7 +53,7 @@ export const CODEX_PROVIDER_ID = "codex";
 
 export const CODEX_PROVIDER_CAPABILITIES: ProviderCapabilities = {
   supportsThreadLifecycle: true,
-  supportsThreadArchiving: true,
+  supportsThreadArchiving: false,
   supportsApprovals: true,
   supportsAuthentication: true,
   supportedModes: ["default", "plan", "review"],
@@ -107,7 +105,6 @@ export type CodexThreadResumeResult = CodexThreadLifecycleResult;
 export type CodexThreadReadResult = CodexThreadLifecycleResult;
 export type CodexThreadForkResult = CodexThreadLifecycleResult;
 export type CodexThreadRenameResult = CodexThreadLifecycleResult;
-export type CodexThreadUnarchiveResult = CodexThreadLifecycleResult;
 export type CodexThreadRollbackResult = CodexThreadLifecycleResult;
 
 export interface CodexTurnStartResult {
@@ -264,16 +261,6 @@ export class CodexClient implements CodexClientAdapter {
     };
   }
 
-  async archiveThread(
-    requestID: CodexTransportRequestID,
-    threadID: string,
-    _payload: ThreadArchivePayload,
-  ): Promise<void> {
-    await this.rawClient.threadArchive(requestID, {
-      threadId: threadID,
-    });
-  }
-
   async renameThread(
     requestID: CodexTransportRequestID,
     threadID: string,
@@ -292,22 +279,6 @@ export class CodexClient implements CodexClientAdapter {
     });
     const thread = toCodexThread(response.thread);
     thread.name = title;
-
-    return {
-      thread,
-      defaults: this.threadDefaultsByID.get(thread.id) ?? null,
-    };
-  }
-
-  async unarchiveThread(
-    requestID: CodexTransportRequestID,
-    threadID: string,
-    _payload: ThreadUnarchivePayload,
-  ): Promise<CodexThreadUnarchiveResult> {
-    const response = await this.rawClient.threadUnarchive(requestID, {
-      threadId: threadID,
-    });
-    const thread = toCodexThread(response.thread);
 
     return {
       thread,
@@ -341,6 +312,7 @@ export class CodexClient implements CodexClientAdapter {
       limit: payload.limit,
       archived: mapArchiveFilter(payload.archived),
       cwd: payload.workspacePath,
+      sourceKinds: ["cli", "vscode", "appServer"],
     };
     const response = await this.rawClient.threadList(requestID, params);
     const archived = payload.archived === "only";

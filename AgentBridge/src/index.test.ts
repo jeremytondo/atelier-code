@@ -6,7 +6,6 @@ import type {
   ApprovalResolvePayload,
   BridgeEnvironmentDiagnostics,
   ModelListPayload,
-  ThreadArchivePayload,
   ThreadForkPayload,
   ThreadListPayload,
   ThreadRenamePayload,
@@ -14,7 +13,6 @@ import type {
   ThreadRollbackPayload,
   ThreadResumePayload,
   ThreadStartPayload,
-  ThreadUnarchivePayload,
   TurnStartPayload,
 } from "./protocol/types";
 import {
@@ -35,7 +33,6 @@ import type {
   CodexThreadResumeResult,
   CodexThreadRollbackResult,
   CodexThreadStartResult,
-  CodexThreadUnarchiveResult,
   CodexTurnStartResult,
 } from "./codex/codex-client";
 
@@ -43,7 +40,7 @@ describe("executeBridgeCommand", () => {
   test("emits direct thread and account result events", async () => {
     const client = new FakeCodexClient();
 
-    const threadStarted = await executeBridgeCommand(client, {
+    const threadStarted = await executeBridgeCommand(connectedProviders(client), {
       id: "req-thread",
       type: "thread.start",
       timestamp: new Date().toISOString(),
@@ -53,7 +50,7 @@ describe("executeBridgeCommand", () => {
         title: "Phase 3",
       },
     });
-    const threadList = await executeBridgeCommand(client, {
+    const threadList = await executeBridgeCommand(connectedProviders(client), {
       id: "req-list",
       type: "thread.list",
       timestamp: new Date().toISOString(),
@@ -63,7 +60,7 @@ describe("executeBridgeCommand", () => {
         limit: 10,
       },
     });
-    const accountRead = await executeBridgeCommand(client, {
+    const accountRead = await executeBridgeCommand(connectedProviders(client), {
       id: "req-account",
       type: "account.read",
       timestamp: new Date().toISOString(),
@@ -113,7 +110,7 @@ describe("executeBridgeCommand", () => {
   test("emits a model list result event for model discovery", async () => {
     const client = new FakeCodexClient();
 
-    const events = await executeBridgeCommand(client, {
+    const events = await executeBridgeCommand(connectedProviders(client), {
       id: "req-models",
       type: "model.list",
       timestamp: new Date().toISOString(),
@@ -144,7 +141,7 @@ describe("executeBridgeCommand", () => {
   test("emits a correlated turn started event for turn start commands", async () => {
     const client = new FakeCodexClient();
 
-    const events = await executeBridgeCommand(client, {
+    const events = await executeBridgeCommand(connectedProviders(client), {
       id: "req-turn",
       type: "turn.start",
       timestamp: new Date().toISOString(),
@@ -168,25 +165,9 @@ describe("executeBridgeCommand", () => {
   test("emits direct thread management events", async () => {
     const client = new FakeCodexClient();
 
-    const readEvents = await executeBridgeCommand(client, {
+    const readEvents = await executeBridgeCommand(connectedProviders(client), {
       id: "req-read",
       type: "thread.read",
-      timestamp: new Date().toISOString(),
-      provider: "codex",
-      threadID: "thread-1",
-      payload: {},
-    });
-    const archiveEvents = await executeBridgeCommand(client, {
-      id: "req-archive",
-      type: "thread.archive",
-      timestamp: new Date().toISOString(),
-      provider: "codex",
-      threadID: "thread-1",
-      payload: {},
-    });
-    const unarchiveEvents = await executeBridgeCommand(client, {
-      id: "req-unarchive",
-      type: "thread.unarchive",
       timestamp: new Date().toISOString(),
       provider: "codex",
       threadID: "thread-1",
@@ -200,22 +181,8 @@ describe("executeBridgeCommand", () => {
         threadID: "thread-1",
       }),
     ]);
-    expect(archiveEvents).toEqual([
-      expect.objectContaining({
-        type: "thread.archived",
-        requestID: "req-archive",
-        threadID: "thread-1",
-      }),
-    ]);
-    expect(unarchiveEvents).toEqual([
-      expect.objectContaining({
-        type: "thread.started",
-        requestID: "req-unarchive",
-        threadID: "thread-1",
-      }),
-    ]);
 
-    const renameEvents = await executeBridgeCommand(client, {
+    const renameEvents = await executeBridgeCommand(connectedProviders(client), {
       id: "req-rename",
       type: "thread.rename",
       timestamp: new Date().toISOString(),
@@ -243,7 +210,7 @@ describe("executeBridgeCommand", () => {
   test("emits an approval resolved event after forwarding an approval decision", async () => {
     const client = new FakeCodexClient();
 
-    const events = await executeBridgeCommand(client, {
+    const events = await executeBridgeCommand(connectedProviders(client), {
       id: "req-approval",
       type: "approval.resolve",
       timestamp: new Date().toISOString(),
@@ -273,7 +240,7 @@ describe("executeBridgeCommand", () => {
   test("preserves browser login handoff details in account login result events", async () => {
     const client = new FakeCodexClient();
 
-    const loginEvents = await executeBridgeCommand(client, {
+    const loginEvents = await executeBridgeCommand(connectedProviders(client), {
       id: "req-login",
       type: "account.login",
       timestamp: new Date().toISOString(),
@@ -299,7 +266,7 @@ describe("executeBridgeCommand", () => {
   test("surfaces client failures as bridge errors", async () => {
     const client = new FailingCodexClient();
 
-    const events = await executeBridgeCommand(client, {
+    const events = await executeBridgeCommand(connectedProviders(client), {
       id: "req-list",
       type: "thread.list",
       timestamp: new Date().toISOString(),
@@ -315,6 +282,56 @@ describe("executeBridgeCommand", () => {
         requestID: "req-list",
         payload: expect.objectContaining({
           code: "provider_command_failed",
+        }),
+      }),
+    ]);
+  });
+
+  test("dispatches direct command results using the requested provider identity", async () => {
+    const client = new FakeCodexClient("other");
+
+    const events = await executeBridgeCommand(connectedProviders(client), {
+      id: "req-thread",
+      type: "thread.start",
+      timestamp: new Date().toISOString(),
+      provider: "other",
+      payload: {
+        workspacePath: "/tmp/project",
+        title: "Other Provider",
+      },
+    });
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "thread.started",
+        provider: "other",
+        payload: expect.objectContaining({
+          thread: expect.objectContaining({
+            providerID: "other",
+          }),
+        }),
+      }),
+    ]);
+  });
+
+  test("returns a provider-not-ready error when the requested provider is disconnected", async () => {
+    const events = await executeBridgeCommand({}, {
+      id: "req-thread",
+      type: "thread.start",
+      timestamp: new Date().toISOString(),
+      provider: "codex",
+      payload: {
+        workspacePath: "/tmp/project",
+      },
+    });
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "error",
+        requestID: "req-thread",
+        provider: "codex",
+        payload: expect.objectContaining({
+          code: "provider_not_ready",
         }),
       }),
     ]);
@@ -359,26 +376,14 @@ describe("bridge startup diagnostics", () => {
   });
 
   test("includes executable and environment diagnostics in provider status events", () => {
-    const status = buildProviderStatusEvent("ready", "Codex is ready.", {
-      baseEnvironment: {
-        environment: {
-          PATH: "/opt/homebrew/bin:/usr/bin:/bin",
-        },
-        diagnostics: {
-          source: "fallback",
-          shellPath: "/bin/zsh",
-          probeError: "timed out",
-          pathDirectoryCount: 3,
-          homeDirectory: "/Users/tester",
-        },
-      },
-      executable: {
-        executableName: "codex",
-        status: "found",
-        resolvedPath: "/opt/homebrew/bin/codex",
-        source: "path",
-        baseEnvironmentSource: "fallback",
-        checkedPaths: ["/opt/homebrew/bin/codex"],
+    const status = buildProviderStatusEvent("codex", "ready", "Codex is ready.", {
+      executablePath: "/opt/homebrew/bin/codex",
+      environment: {
+        source: "fallback",
+        shellPath: "/bin/zsh",
+        probeError: "timed out",
+        pathDirectoryCount: 3,
+        homeDirectory: "/Users/tester",
       },
     });
 
@@ -403,8 +408,12 @@ describe("bridge startup diagnostics", () => {
 });
 
 class FakeCodexClient implements CodexClientAdapter {
-  readonly providerID = CODEX_PROVIDER_ID;
+  readonly providerID: string;
   readonly capabilities = CODEX_PROVIDER_CAPABILITIES;
+
+  constructor(providerID = CODEX_PROVIDER_ID) {
+    this.providerID = providerID;
+  }
 
   async connect(): Promise<void> {}
 
@@ -504,12 +513,6 @@ class FakeCodexClient implements CodexClientAdapter {
     };
   }
 
-  async archiveThread(
-    _requestID: string,
-    _threadID: string,
-    _payload: ThreadArchivePayload,
-  ): Promise<void> {}
-
   async renameThread(
     _requestID: string,
     threadID: string,
@@ -521,25 +524,6 @@ class FakeCodexClient implements CodexClientAdapter {
         preview: "Renamed preview",
         updatedAt: 1_700_000_005,
         name: payload.title,
-        status: { type: "idle" },
-        turns: [],
-        archived: false,
-      },
-      defaults: null,
-    };
-  }
-
-  async unarchiveThread(
-    _requestID: string,
-    threadID: string,
-    _payload: ThreadUnarchivePayload,
-  ): Promise<CodexThreadUnarchiveResult> {
-    return {
-      thread: {
-        id: threadID,
-        preview: "Unarchived preview",
-        updatedAt: 1_700_000_003,
-        name: "Unarchived Thread",
         status: { type: "idle" },
         turns: [],
         archived: false,
@@ -633,4 +617,12 @@ class FailingCodexClient extends FakeCodexClient {
   override async listThreads(): Promise<CodexThreadListResult> {
     throw new Error("boom");
   }
+}
+
+function connectedProviders(client: CodexClientAdapter): Parameters<typeof executeBridgeCommand>[0] {
+  return {
+    [client.providerID]: {
+      client,
+    },
+  } as Parameters<typeof executeBridgeCommand>[0];
 }

@@ -13,8 +13,6 @@ enum BridgeCommandType: String, Encodable, Sendable {
     case threadRead = "thread.read"
     case threadFork = "thread.fork"
     case threadRename = "thread.rename"
-    case threadArchive = "thread.archive"
-    case threadUnarchive = "thread.unarchive"
     case threadRollback = "thread.rollback"
     case turnStart = "turn.start"
     case turnCancel = "turn.cancel"
@@ -27,8 +25,6 @@ enum BridgeCommandType: String, Encodable, Sendable {
 enum BridgeEventType: String, Decodable, Sendable {
     case modelListResult = "model.list.result"
     case threadStarted = "thread.started"
-    case threadArchived = "thread.archived"
-    case threadUnarchived = "thread.unarchived"
     case turnStarted = "turn.started"
     case messageDelta = "message.delta"
     case thinkingDelta = "thinking.delta"
@@ -229,10 +225,6 @@ struct BridgeThreadRenamePayload: Encodable, Sendable {
     let title: String
 }
 
-struct BridgeThreadArchivePayload: Encodable, Sendable {}
-
-struct BridgeThreadUnarchivePayload: Encodable, Sendable {}
-
 struct BridgeThreadRollbackPayload: Encodable, Sendable {
     let numTurns: Int
 }
@@ -308,14 +300,6 @@ struct BridgeTurnStartedPayload: Decodable, Equatable, Sendable {
 
 struct BridgeThreadStartedPayload: Decodable, Equatable, Sendable {
     let thread: BridgeThreadSummaryDTO
-}
-
-struct BridgeThreadArchivedPayload: Decodable, Equatable, Sendable {
-    let threadID: String
-}
-
-struct BridgeThreadUnarchivedPayload: Decodable, Equatable, Sendable {
-    let threadID: String
 }
 
 struct BridgeMessageDeltaPayload: Decodable, Equatable, Sendable {
@@ -531,8 +515,6 @@ struct BridgeProviderStatusPayload: Decodable, Equatable, Sendable {
 enum BridgeEventPayload: Equatable, Sendable {
     case modelListResult(BridgeModelListResultPayload)
     case threadStarted(BridgeThreadStartedPayload)
-    case threadArchived(BridgeThreadArchivedPayload)
-    case threadUnarchived(BridgeThreadUnarchivedPayload)
     case turnStarted(BridgeTurnStartedPayload)
     case messageDelta(BridgeMessageDeltaPayload)
     case thinkingDelta(BridgeThinkingDeltaPayload)
@@ -595,10 +577,6 @@ struct BridgeEventEnvelope: Decodable, Equatable, Sendable {
             payload = .modelListResult(try container.decode(BridgeModelListResultPayload.self, forKey: .payload))
         case .threadStarted:
             payload = .threadStarted(try container.decode(BridgeThreadStartedPayload.self, forKey: .payload))
-        case .threadArchived:
-            payload = .threadArchived(try container.decode(BridgeThreadArchivedPayload.self, forKey: .payload))
-        case .threadUnarchived:
-            payload = .threadUnarchived(try container.decode(BridgeThreadUnarchivedPayload.self, forKey: .payload))
         case .turnStarted:
             payload = .turnStarted(try container.decode(BridgeTurnStartedPayload.self, forKey: .payload))
         case .messageDelta:
