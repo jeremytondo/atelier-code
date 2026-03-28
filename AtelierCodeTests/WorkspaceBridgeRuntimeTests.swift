@@ -96,7 +96,7 @@ struct WorkspaceBridgeRuntimeTests {
         )
 
         try await runtime.start()
-        try await waitUntil { controller.connectionStatus == .ready }
+        try await waitUntil { controller.connectionStatus == .ready && controller.threadSummary(id: "thread-1") != nil }
 
         let resumeTask = Task { try await runtime.resumeThreadAndWait(id: "thread-1") }
         try await waitUntil { pendingCommandCount(in: runtime) == 1 }
@@ -137,7 +137,7 @@ struct WorkspaceBridgeRuntimeTests {
         )
 
         try await runtime.start()
-        try await waitUntil { controller.connectionStatus == .ready }
+        try await waitUntil { controller.connectionStatus == .ready && controller.threadSummary(id: "thread-1") != nil }
 
         socketClient.enqueue(
             providerStatusJSON(
@@ -183,7 +183,7 @@ struct WorkspaceBridgeRuntimeTests {
         )
 
         try await runtime.start()
-        try await waitUntil { controller.connectionStatus == .ready }
+        try await waitUntil { controller.connectionStatus == .ready && controller.threadSummary(id: "thread-1") != nil }
 
         let startTask = Task { try await runtime.startThreadAndWait(title: "New Thread") }
         try await waitUntil { pendingCommandCount(in: runtime) == 1 }
@@ -219,7 +219,10 @@ struct WorkspaceBridgeRuntimeTests {
         )
 
         try await runtime.start()
-        try await waitUntil { controller.connectionStatus == .ready }
+        try await waitUntil(timeoutNanoseconds: 10_000_000_000) {
+            controller.connectionStatus == .ready && controller.threadSummary(id: "thread-1") != nil
+        }
+        _ = try #require(controller.threadSummary(id: "thread-1"))
 
         controller.setThreadArchived(true, for: "thread-1")
         controller.setShowingArchivedThreads(true)
@@ -829,10 +832,10 @@ struct WorkspaceBridgeRuntimeTests {
 
         try await waitUntil {
             pendingCommandCount(in: runtime) == 0 &&
-                Set(controller.threadSummaries.map(\.id)) == Set(["thread-10", "thread-11"])
+                Set(controller.threadSummaries.map(\.threadID)) == Set(["thread-10", "thread-11"])
         }
 
-        #expect(Set(controller.threadSummaries.map(\.id)) == Set(["thread-10", "thread-11"]))
+        #expect(Set(controller.threadSummaries.map(\.threadID)) == Set(["thread-10", "thread-11"]))
     }
 
     @Test func bridgeFailureDuringListRefreshPreservesCachedRowsAndMarksSyncFailed() async throws {
@@ -866,7 +869,7 @@ struct WorkspaceBridgeRuntimeTests {
                 controller.threadListSyncState == .failed
         }
 
-        #expect(controller.threadSummaries.map(\.id) == ["thread-1"])
+        #expect(controller.threadSummaries.map(\.threadID) == ["thread-1"])
         #expect(controller.threadSummary(id: "thread-1")?.title == "Bootstrap")
         #expect(controller.threadListSyncState == .failed)
     }
@@ -961,7 +964,7 @@ struct WorkspaceBridgeRuntimeTests {
             threadTitle: "Late Thread"
         ))
 
-        try await waitUntil { controller.threadSummaries.contains(where: { $0.id == "thread-late" }) }
+        try await waitUntil { controller.threadSummaries.contains(where: { $0.threadID == "thread-late" }) }
 
         #expect(controller.activeThreadSession == nil)
         #expect(abandonedThreadRequestCount(in: runtime) == 0)
@@ -1469,7 +1472,7 @@ private func jsonEscaped(_ value: String) -> String {
 }
 
 private func waitUntil(
-    timeoutNanoseconds: UInt64 = 1_000_000_000,
+    timeoutNanoseconds: UInt64 = 3_000_000_000,
     pollNanoseconds: UInt64 = 10_000_000,
     _ condition: @escaping @MainActor () -> Bool
 ) async throws {

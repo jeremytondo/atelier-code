@@ -36,6 +36,10 @@ final class ThreadSession {
         self.aggregatedDiff = aggregatedDiff
     }
 
+    var conversationID: ConversationIdentity {
+        ConversationIdentity(providerID: providerID, threadID: threadID)
+    }
+
     var activityItems: [ActivityItem] {
         turnItems.compactMap(\.activityItem)
     }

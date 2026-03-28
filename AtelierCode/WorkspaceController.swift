@@ -29,13 +29,8 @@ final class WorkspaceController {
     private(set) var availableModels: [ComposerModelOption]
     private(set) var gitStatus: WorkspaceGitStatus
     private(set) var localGitBranches: [String]
-    private(set) var threadSessionsByID: [String: ThreadSession]
-    private(set) var lastActiveProviderID: String? {
-        didSet {
-            persistableStateDidChange?()
-        }
-    }
-    private(set) var lastActiveThreadID: String? {
+    private(set) var threadSessionsByID: [ConversationIdentity: ThreadSession]
+    private(set) var lastActiveConversationID: ConversationIdentity? {
         didSet {
             persistableStateDidChange?()
         }
@@ -53,8 +48,8 @@ final class WorkspaceController {
     }
 
     @ObservationIgnored private let threadListRepository: WorkspaceThreadListRepository
-    @ObservationIgnored private var awaitingTurnStartThreadIDs: Set<String>
-    @ObservationIgnored private var currentTurnIDsByThreadID: [String: String]
+    @ObservationIgnored private var awaitingTurnStartThreadIDs: Set<ConversationIdentity>
+    @ObservationIgnored private var currentTurnIDsByThreadID: [ConversationIdentity: String]
     @ObservationIgnored var persistableStateDidChange: (() -> Void)?
 
     init(workspace: WorkspaceRecord) {
@@ -74,8 +69,7 @@ final class WorkspaceController {
         self.gitStatus = .unavailable(.lookupFailed)
         self.localGitBranches = []
         self.threadSessionsByID = [:]
-        self.lastActiveProviderID = nil
-        self.lastActiveThreadID = nil
+        self.lastActiveConversationID = nil
         self.isShowingArchivedThreads = false
         self.isExpanded = true
         self.isShowingAllVisibleThreads = false
@@ -84,20 +78,28 @@ final class WorkspaceController {
         self.currentTurnIDsByThreadID = [:]
     }
 
+    var lastActiveProviderID: String? {
+        lastActiveConversationID?.providerID
+    }
+
+    var lastActiveThreadID: String? {
+        lastActiveConversationID?.threadID
+    }
+
     var activeThreadSession: ThreadSession? {
-        guard let lastActiveThreadID else {
+        guard let lastActiveConversationID else {
             return nil
         }
 
-        return threadSessionsByID[lastActiveThreadID]
+        return threadSessionsByID[lastActiveConversationID]
     }
 
     var isAwaitingTurnStart: Bool {
-        guard let lastActiveThreadID else {
+        guard let lastActiveConversationID else {
             return false
         }
 
-        return awaitingTurnStartThreadIDs.contains(lastActiveThreadID)
+        return awaitingTurnStartThreadIDs.contains(lastActiveConversationID)
     }
 
     var visibleThreadSummaries: [ThreadSummary] {
@@ -136,8 +138,7 @@ final class WorkspaceController {
             uiState: PersistedWorkspaceUIState(
                 isExpanded: isExpanded,
                 isShowingAllVisibleThreads: isShowingAllVisibleThreads,
-                lastActiveProviderID: lastActiveProviderID,
-                lastActiveThreadID: lastActiveThreadID
+                lastActiveConversationID: lastActiveConversationID
             ),
             cachedThreadList: threadListRepository.persistedState()
         )
@@ -163,8 +164,7 @@ final class WorkspaceController {
         gitStatus = .unavailable(.lookupFailed)
         localGitBranches = []
         threadSessionsByID.removeAll()
-        lastActiveProviderID = nil
-        lastActiveThreadID = nil
+        lastActiveConversationID = nil
         isShowingArchivedThreads = false
         isExpanded = true
         isShowingAllVisibleThreads = false
@@ -245,13 +245,8 @@ final class WorkspaceController {
 
         isExpanded = persistedState.uiState.isExpanded
         isShowingAllVisibleThreads = persistedState.uiState.isShowingAllVisibleThreads
-        lastActiveProviderID = persistedState.uiState.lastActiveProviderID
-            ?? (persistedState.uiState.lastActiveThreadID == nil ? nil : BridgeProviderIdentifier.codex)
-        lastActiveThreadID = persistedState.uiState.lastActiveThreadID.flatMap { threadID in
-            threadListRepository.threadSummary(id: threadID) != nil ? threadID : nil
-        }
-        if lastActiveThreadID == nil {
-            lastActiveProviderID = nil
+        lastActiveConversationID = persistedState.uiState.lastActiveConversationID.flatMap { conversationID in
+            threadListRepository.threadSummary(for: conversationID) != nil ? conversationID : nil
         }
     }
 
@@ -279,8 +274,8 @@ final class WorkspaceController {
             threadSummaries,
             archived: archived,
             listedAt: listedAt,
-            selectedThreadID: lastActiveThreadID,
-            loadedThreadIDs: Set(threadSessionsByID.keys)
+            selectedConversationID: lastActiveConversationID,
+            loadedConversationIDs: Set(threadSessionsByID.keys)
         )
         refreshThreadListProjection()
     }
@@ -290,35 +285,65 @@ final class WorkspaceController {
         refreshThreadListProjection()
     }
 
-    func updateThreadSummary(id: String, clearsStale: Bool = false, mutate: (inout ThreadSummary) -> Void) {
-        threadListRepository.updateThreadSummary(id: id, clearsStale: clearsStale, mutate: mutate)
+    func updateThreadSummary(
+        id: String,
+        providerID: String = BridgeProviderIdentifier.codex,
+        clearsStale: Bool = false,
+        mutate: (inout ThreadSummary) -> Void
+    ) {
+        threadListRepository.updateThreadSummary(
+            id: id,
+            providerID: providerID,
+            clearsStale: clearsStale,
+            mutate: mutate
+        )
         refreshThreadListProjection()
     }
 
-    func threadSummary(id: String) -> ThreadSummary? {
-        threadListRepository.threadSummary(id: id)
+    func updateThreadSummary(
+        for identity: ConversationIdentity,
+        clearsStale: Bool = false,
+        mutate: (inout ThreadSummary) -> Void
+    ) {
+        threadListRepository.updateThreadSummary(
+            for: identity,
+            clearsStale: clearsStale,
+            mutate: mutate
+        )
+        refreshThreadListProjection()
     }
 
-    func markThreadSelected(_ id: String?) {
-        if let id, let providerID = threadSummary(id: id)?.providerID ?? threadSessionsByID[id]?.providerID {
-            lastActiveProviderID = providerID
-        } else if id == nil {
-            lastActiveProviderID = nil
-        }
-        lastActiveThreadID = id
+    func threadSummary(id: String, providerID: String = BridgeProviderIdentifier.codex) -> ThreadSummary? {
+        threadListRepository.threadSummary(id: id, providerID: providerID)
+    }
 
-        guard let id else {
+    func threadSummary(for identity: ConversationIdentity) -> ThreadSummary? {
+        threadListRepository.threadSummary(for: identity)
+    }
+
+    func markThreadSelected(_ id: String?, providerID: String = BridgeProviderIdentifier.codex) {
+        markThreadSelected(id.map { ConversationIdentity(providerID: providerID, threadID: $0) })
+    }
+
+    func markThreadSelected(_ identity: ConversationIdentity?) {
+        lastActiveConversationID = identity
+
+        guard let identity else {
             return
         }
 
-        threadListRepository.updateThreadSummary(id: id) { summary in
+        threadListRepository.updateThreadSummary(for: identity) { summary in
             summary.hasUnreadActivity = false
         }
         refreshThreadListProjection()
     }
 
-    func threadSession(id: String) -> ThreadSession? {
-        threadSessionsByID[id]
+    func threadSession(id: String, providerID: String = BridgeProviderIdentifier.codex) -> ThreadSession? {
+        threadSession(for: ConversationIdentity(providerID: providerID, threadID: id))
+    }
+
+    func threadSession(for identity: ConversationIdentity) -> ThreadSession? {
+        threadSessionsByID[identity]
     }
 
     @discardableResult
@@ -328,10 +353,11 @@ final class WorkspaceController {
         title: String,
         isVisibleInSidebar: Bool = true
     ) -> ThreadSession {
-        let existingSummary = threadSummary(id: id)
-        let session = threadSessionsByID[id] ?? ThreadSession(providerID: providerID, threadID: id, title: title)
+        let identity = ConversationIdentity(providerID: providerID, threadID: id)
+        let existingSummary = threadSummary(for: identity)
+        let session = threadSessionsByID[identity] ?? ThreadSession(providerID: providerID, threadID: id, title: title)
         session.startThread(providerID: providerID, id: id, title: title)
-        threadSessionsByID[id] = session
+        threadSessionsByID[identity] = session
         upsertThreadSummary(
             ThreadSummary(
                 id: id,
@@ -346,7 +372,7 @@ final class WorkspaceController {
                 lastErrorMessage: existingSummary?.lastErrorMessage
             )
         )
-        markThreadSelected(id)
+        markThreadSelected(identity)
         return session
     }
 
@@ -357,10 +383,11 @@ final class WorkspaceController {
         title: String,
         messages: [ConversationMessage] = []
     ) -> ThreadSession {
-        let existingSummary = threadSummary(id: id)
-        let session = threadSessionsByID[id] ?? ThreadSession(providerID: providerID, threadID: id, title: title)
+        let identity = ConversationIdentity(providerID: providerID, threadID: id)
+        let existingSummary = threadSummary(for: identity)
+        let session = threadSessionsByID[identity] ?? ThreadSession(providerID: providerID, threadID: id, title: title)
         session.resumeThread(providerID: providerID, id: id, title: title, messages: messages)
-        threadSessionsByID[id] = session
+        threadSessionsByID[identity] = session
         upsertThreadSummary(
             ThreadSummary(
                 id: id,
@@ -375,7 +402,7 @@ final class WorkspaceController {
                 lastErrorMessage: existingSummary?.lastErrorMessage
             )
         )
-        markThreadSelected(id)
+        markThreadSelected(identity)
         return session
     }
 
@@ -386,110 +413,144 @@ final class WorkspaceController {
         title: String,
         markSelected: Bool = false
     ) -> ThreadSession {
-        if let session = threadSessionsByID[id] {
+        let identity = ConversationIdentity(providerID: providerID, threadID: id)
+        if let session = threadSessionsByID[identity] {
             session.updateThreadIdentity(providerID: providerID, id: id, title: title)
             if markSelected {
-                markThreadSelected(id)
+                markThreadSelected(identity)
             }
             return session
         }
 
         let session = ThreadSession(providerID: providerID, threadID: id, title: title)
-        threadSessionsByID[id] = session
+        threadSessionsByID[identity] = session
         if markSelected {
-            markThreadSelected(id)
+            markThreadSelected(identity)
         }
         return session
     }
 
     @discardableResult
-    func ensureActiveThreadSession(id: String, title: String) -> ThreadSession {
-        ensureThreadSession(id: id, title: title, markSelected: true)
+    func ensureActiveThreadSession(id: String, providerID: String = BridgeProviderIdentifier.codex, title: String) -> ThreadSession {
+        ensureThreadSession(id: id, providerID: providerID, title: title, markSelected: true)
     }
 
     func clearActiveThreadSession() {
-        lastActiveThreadID = nil
+        lastActiveConversationID = nil
     }
 
-    func clearThreadSession(id: String) {
-        threadSessionsByID.removeValue(forKey: id)
-        awaitingTurnStartThreadIDs.remove(id)
-        currentTurnIDsByThreadID.removeValue(forKey: id)
+    func clearThreadSession(id: String, providerID: String = BridgeProviderIdentifier.codex) {
+        clearThreadSession(for: ConversationIdentity(providerID: providerID, threadID: id))
+    }
 
-        if lastActiveThreadID == id {
-            lastActiveThreadID = nil
-            lastActiveProviderID = nil
+    func clearThreadSession(for identity: ConversationIdentity) {
+        threadSessionsByID.removeValue(forKey: identity)
+        awaitingTurnStartThreadIDs.remove(identity)
+        currentTurnIDsByThreadID.removeValue(forKey: identity)
+
+        if lastActiveConversationID == identity {
+            lastActiveConversationID = nil
         }
     }
 
-    func removeThread(id: String) {
-        clearThreadSession(id: id)
-        threadListRepository.removeThreadSummary(id: id)
+    func removeThread(id: String, providerID: String = BridgeProviderIdentifier.codex) {
+        removeThread(for: ConversationIdentity(providerID: providerID, threadID: id))
+    }
+
+    func removeThread(for identity: ConversationIdentity) {
+        clearThreadSession(for: identity)
+        threadListRepository.removeThreadSummary(for: identity)
         refreshThreadListProjection()
     }
 
-    func setAwaitingTurnStart(_ isAwaitingTurnStart: Bool, for threadID: String? = nil) {
-        let resolvedThreadID = threadID ?? lastActiveThreadID
-        guard let resolvedThreadID else {
+    func setAwaitingTurnStart(
+        _ isAwaitingTurnStart: Bool,
+        for threadID: String? = nil,
+        providerID: String = BridgeProviderIdentifier.codex
+    ) {
+        let resolvedConversationID = threadID.map {
+            ConversationIdentity(providerID: providerID, threadID: $0)
+        } ?? lastActiveConversationID
+        guard let resolvedConversationID else {
             return
         }
 
         if isAwaitingTurnStart {
-            awaitingTurnStartThreadIDs.insert(resolvedThreadID)
+            awaitingTurnStartThreadIDs.insert(resolvedConversationID)
         } else {
-            awaitingTurnStartThreadIDs.remove(resolvedThreadID)
+            awaitingTurnStartThreadIDs.remove(resolvedConversationID)
         }
 
-        updateThreadSummary(id: resolvedThreadID) { summary in
-            summary.isRunning = isAwaitingTurnStart || currentTurnIDsByThreadID[resolvedThreadID] != nil
+        updateThreadSummary(for: resolvedConversationID) { summary in
+            summary.isRunning = isAwaitingTurnStart || currentTurnIDsByThreadID[resolvedConversationID] != nil
             if isAwaitingTurnStart {
                 summary.updatedAt = .now
             }
         }
     }
 
-    func isAwaitingTurnStart(threadID: String) -> Bool {
-        awaitingTurnStartThreadIDs.contains(threadID)
+    func isAwaitingTurnStart(threadID: String, providerID: String = BridgeProviderIdentifier.codex) -> Bool {
+        awaitingTurnStartThreadIDs.contains(ConversationIdentity(providerID: providerID, threadID: threadID))
     }
 
-    func setCurrentTurnID(_ turnID: String?, for threadID: String) {
+    func setCurrentTurnID(
+        _ turnID: String?,
+        for threadID: String,
+        providerID: String = BridgeProviderIdentifier.codex
+    ) {
+        let identity = ConversationIdentity(providerID: providerID, threadID: threadID)
         if let turnID {
-            currentTurnIDsByThreadID[threadID] = turnID
+            currentTurnIDsByThreadID[identity] = turnID
         } else {
-            currentTurnIDsByThreadID.removeValue(forKey: threadID)
+            currentTurnIDsByThreadID.removeValue(forKey: identity)
         }
 
-        updateThreadSummary(id: threadID) { summary in
-            summary.isRunning = turnID != nil || awaitingTurnStartThreadIDs.contains(threadID)
+        updateThreadSummary(for: identity) { summary in
+            summary.isRunning = turnID != nil || awaitingTurnStartThreadIDs.contains(identity)
             if turnID != nil {
                 summary.updatedAt = .now
             }
         }
     }
 
-    func currentTurnID(for threadID: String) -> String? {
-        currentTurnIDsByThreadID[threadID]
+    func currentTurnID(for threadID: String, providerID: String = BridgeProviderIdentifier.codex) -> String? {
+        currentTurnIDsByThreadID[ConversationIdentity(providerID: providerID, threadID: threadID)]
     }
 
-    func setThreadRunning(_ isRunning: Bool, for threadID: String, at date: Date = .now) {
-        updateThreadSummary(id: threadID) { summary in
+    func setThreadRunning(
+        _ isRunning: Bool,
+        for threadID: String,
+        providerID: String = BridgeProviderIdentifier.codex,
+        at date: Date = .now
+    ) {
+        updateThreadSummary(id: threadID, providerID: providerID) { summary in
             summary.isRunning = isRunning
             summary.updatedAt = date
         }
     }
 
-    func setThreadArchived(_ isArchived: Bool, for threadID: String) {
-        updateThreadSummary(id: threadID, clearsStale: true) { summary in
+    func setThreadArchived(
+        _ isArchived: Bool,
+        for threadID: String,
+        providerID: String = BridgeProviderIdentifier.codex
+    ) {
+        updateThreadSummary(id: threadID, providerID: providerID, clearsStale: true) { summary in
             summary.isArchived = isArchived
             summary.updatedAt = .now
         }
     }
 
-    func setThreadSidebarVisibility(_ isVisibleInSidebar: Bool, for threadID: String) {
-        let fallbackTitle = threadSession(id: threadID)?.title ?? "New Conversation"
+    func setThreadSidebarVisibility(
+        _ isVisibleInSidebar: Bool,
+        for threadID: String,
+        providerID: String = BridgeProviderIdentifier.codex
+    ) {
+        let identity = ConversationIdentity(providerID: providerID, threadID: threadID)
+        let fallbackTitle = threadSession(for: identity)?.title ?? "New Conversation"
         let defaultSummary = isVisibleInSidebar
             ? ThreadSummary(
                 id: threadID,
+                providerID: providerID,
                 title: fallbackTitle,
                 previewText: "",
                 updatedAt: .now,
@@ -498,7 +559,7 @@ final class WorkspaceController {
             : nil
 
         threadListRepository.updateThreadSummary(
-            id: threadID,
+            for: identity,
             defaultSummary: defaultSummary,
             clearsStale: isVisibleInSidebar
         ) { summary in
@@ -509,13 +570,14 @@ final class WorkspaceController {
 
     func markThreadActivity(
         id: String,
+        providerID: String = BridgeProviderIdentifier.codex,
         at date: Date = .now,
         previewText: String? = nil,
         isRunning: Bool? = nil,
         hasUnreadActivity: Bool? = nil,
         lastErrorMessage: String? = nil
     ) {
-        updateThreadSummary(id: id, clearsStale: true) { summary in
+        updateThreadSummary(id: id, providerID: providerID, clearsStale: true) { summary in
             summary.updatedAt = date
             if let previewText, previewText.isEmpty == false {
                 summary.previewText = previewText

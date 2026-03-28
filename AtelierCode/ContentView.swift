@@ -449,7 +449,7 @@ private struct WorkspaceThreadRow: View {
     private var isSelected: Bool {
         appModel.selectedRoute?.workspacePath == workspacePath
             && appModel.selectedRoute?.providerID == threadSummary.providerID
-            && appModel.selectedRoute?.threadID == threadSummary.id
+            && appModel.selectedRoute?.threadID == threadSummary.threadID
     }
 
     private var showsHoverActions: Bool {
@@ -633,18 +633,27 @@ private struct WorkspaceThreadRow: View {
     private var threadActionMenuItems: some View {
         if threadSummary.isLocalOnly {
             Button("Remove from Sidebar") {
-                _ = appModel.removeCachedThread(workspacePath: workspacePath, threadID: threadSummary.id)
+                _ = appModel.removeCachedThread(
+                    workspacePath: workspacePath,
+                    conversationID: threadSummary.conversationID
+                )
             }
         }
 
         Button(threadSummary.isArchived ? "Unarchive" : "Archive") {
             if threadSummary.isArchived {
                 Task {
-                    _ = await appModel.unarchiveThread(workspacePath: workspacePath, threadID: threadSummary.id)
+                    _ = await appModel.unarchiveThread(
+                        workspacePath: workspacePath,
+                        conversationID: threadSummary.conversationID
+                    )
                 }
             } else {
                 Task {
-                    _ = await appModel.archiveThread(workspacePath: workspacePath, threadID: threadSummary.id)
+                    _ = await appModel.archiveThread(
+                        workspacePath: workspacePath,
+                        conversationID: threadSummary.conversationID
+                    )
                 }
             }
         }
@@ -655,7 +664,10 @@ private struct WorkspaceThreadRow: View {
 
         Button("Fork") {
             Task {
-                _ = await appModel.forkThread(workspacePath: workspacePath, threadID: threadSummary.id)
+                _ = await appModel.forkThread(
+                    workspacePath: workspacePath,
+                    conversationID: threadSummary.conversationID
+                )
             }
         }
     }
@@ -685,7 +697,7 @@ private struct WorkspaceThreadRow: View {
         Task {
             let succeeded = await appModel.renameThread(
                 workspacePath: workspacePath,
-                threadID: threadSummary.id,
+                conversationID: threadSummary.conversationID,
                 title: nextTitle
             )
 
@@ -705,7 +717,7 @@ private struct WorkspaceThreadRow: View {
         Task {
             _ = await appModel.openThread(
                 workspacePath: workspacePath,
-                threadID: threadSummary.id
+                conversationID: threadSummary.conversationID
             )
         }
     }

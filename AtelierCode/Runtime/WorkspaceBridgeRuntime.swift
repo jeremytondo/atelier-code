@@ -62,7 +62,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
 
     private struct PendingThreadListRequest {
         let archived: Bool
-        var summariesByID: [String: ThreadSummary]
+        var summariesByID: [ConversationIdentity: ThreadSummary]
     }
 
     private static let encoder = JSONEncoder()
@@ -208,8 +208,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         pendingThreadListsByRequestID.removeAll()
         abandonedThreadRequestIDs.removeAll()
         for summary in controller.threadSummaries {
-            controller.setCurrentTurnID(nil, for: summary.id)
-            controller.setAwaitingTurnStart(false, for: summary.id)
+            controller.setCurrentTurnID(nil, for: summary.threadID, providerID: summary.providerID)
+            controller.setAwaitingTurnStart(false, for: summary.threadID, providerID: summary.providerID)
         }
 
         for continuation in pendingThreadSessions.values {
@@ -423,10 +423,11 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
 
     func unarchiveThreadAndWait(id: String) async throws -> ThreadSession {
         applyLocalThreadUnarchive(threadID: id)
+        let conversationID = conversationIdentity(for: id)
         return controller.ensureThreadSession(
             id: id,
-            providerID: controller.threadSummary(id: id)?.providerID ?? BridgeProviderIdentifier.codex,
-            title: controller.threadSummary(id: id)?.title ?? "Recovered Conversation",
+            providerID: conversationID.providerID,
+            title: controller.threadSummary(for: conversationID)?.title ?? "Recovered Conversation",
             markSelected: false
         )
     }
@@ -450,18 +451,19 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     }
 
     func startTurn(prompt: String, configuration: BridgeTurnStartConfiguration? = nil) async throws {
-        guard let threadID = controller.lastActiveThreadID else {
+        guard let conversationID = controller.lastActiveConversationID else {
             throw WorkspaceBridgeRuntimeError.missingActiveThread
         }
 
-        try await startTurn(threadID: threadID, prompt: prompt, configuration: configuration)
+        try await startTurn(threadID: conversationID.threadID, prompt: prompt, configuration: configuration)
     }
 
     func startTurn(threadID: String, prompt: String, configuration: BridgeTurnStartConfiguration? = nil) async throws {
-        let title = controller.threadSummary(id: threadID)?.title ?? controller.threadSession(id: threadID)?.title ?? "Thread"
-        let providerID = controller.threadSummary(id: threadID)?.providerID
-            ?? controller.threadSession(id: threadID)?.providerID
-            ?? BridgeProviderIdentifier.codex
+        let conversationID = conversationIdentity(for: threadID)
+        let title = controller.threadSummary(for: conversationID)?.title
+            ?? controller.threadSession(for: conversationID)?.title
+            ?? "Thread"
+        let providerID = conversationID.providerID
         let session = controller.ensureThreadSession(
             id: threadID,
             providerID: providerID,
@@ -475,15 +477,16 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
 
         controller.markThreadActivity(
             id: threadID,
+            providerID: providerID,
             at: now(),
             previewText: prompt,
             isRunning: true,
-            hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+            hasUnreadActivity: controller.lastActiveConversationID == session.conversationID ? false : true
         )
 
         let requestID = nextRequestID(prefix: "turn-start")
         pendingCommands[requestID] = .turnStart(threadID: threadID, prompt: prompt)
-        controller.setAwaitingTurnStart(true, for: threadID)
+        controller.setAwaitingTurnStart(true, for: threadID, providerID: providerID)
         try await sendCommand(
             id: requestID,
             type: .turnStart,
@@ -493,15 +496,22 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     }
 
     func cancelTurn(reason: String? = nil) async throws {
-        guard let threadID = controller.lastActiveThreadID else {
+        guard let conversationID = controller.lastActiveConversationID else {
             throw WorkspaceBridgeRuntimeError.missingActiveThread
         }
 
-        try await cancelTurn(threadID: threadID, reason: reason)
+        try await cancelTurn(threadID: conversationID.threadID, reason: reason)
     }
 
     func cancelTurn(threadID: String, reason: String? = nil) async throws {
-        guard let currentTurnID = controller.currentTurnID(for: threadID) else {
+        let providerID = controller.lastActiveConversationID?.threadID == threadID
+            ? controller.lastActiveConversationID?.providerID
+            : controller.threadSummary(for: conversationIdentity(for: threadID))?.providerID
+                ?? controller.threadSession(for: conversationIdentity(for: threadID))?.providerID
+        guard let currentTurnID = controller.currentTurnID(
+            for: threadID,
+            providerID: providerID ?? BridgeProviderIdentifier.codex
+        ) else {
             throw WorkspaceBridgeRuntimeError.missingActiveThread
         }
 
@@ -513,16 +523,17 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             type: .turnCancel,
             threadID: threadID,
             turnID: currentTurnID,
-            payload: BridgeTurnCancelPayload(reason: reason)
+            payload: BridgeTurnCancelPayload(reason: reason),
+            providerID: providerID
         )
     }
 
     func resolveApproval(id: String, resolution: ApprovalResolution) async throws {
-        guard let threadID = controller.lastActiveThreadID else {
+        guard let conversationID = controller.lastActiveConversationID else {
             throw WorkspaceBridgeRuntimeError.missingActiveThread
         }
 
-        try await resolveApproval(threadID: threadID, id: id, resolution: resolution)
+        try await resolveApproval(threadID: conversationID.threadID, id: id, resolution: resolution)
     }
 
     func resolveApproval(threadID: String, id: String, resolution: ApprovalResolution) async throws {
@@ -535,7 +546,11 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         resolution: ApprovalResolution,
         rememberDecision: Bool = false
     ) async throws {
-        guard controller.threadSession(id: threadID) != nil else {
+        let providerID = controller.lastActiveConversationID?.threadID == threadID
+            ? controller.lastActiveConversationID?.providerID
+            : controller.threadSummary(for: conversationIdentity(for: threadID))?.providerID
+                ?? controller.threadSession(for: conversationIdentity(for: threadID))?.providerID
+        guard controller.threadSession(id: threadID, providerID: providerID ?? BridgeProviderIdentifier.codex) != nil else {
             throw WorkspaceBridgeRuntimeError.missingActiveThread
         }
 
@@ -556,12 +571,16 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                         id: requestID,
                         type: .approvalResolve,
                         threadID: threadID,
-                        turnID: self.controller.currentTurnID(for: threadID),
+                        turnID: self.controller.currentTurnID(
+                            for: threadID,
+                            providerID: providerID ?? BridgeProviderIdentifier.codex
+                        ),
                         payload: BridgeApprovalResolvePayload(
                             approvalID: id,
                             resolution: resolution.bridgeValue,
                             rememberDecision: rememberDecision ? true : nil
-                        )
+                        ),
+                        providerID: providerID
                     )
                 } catch {
                     self.pendingCommands.removeValue(forKey: requestID)
@@ -604,8 +623,12 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         case .turnStarted:
             handleTurnStarted(event)
         case .messageDelta(let payload):
-            guard let threadID = event.threadID,
-                  let session = session(for: threadID) else {
+            guard let threadID = event.threadID else {
+                return
+            }
+
+            let conversationID = conversationIdentity(for: threadID, providerID: event.provider)
+            guard let session = session(for: conversationID) else {
                 return
             }
 
@@ -615,14 +638,19 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             )
             controller.markThreadActivity(
                 id: threadID,
+                providerID: conversationID.providerID,
                 at: bridgeDate(from: event.timestamp) ?? now(),
                 previewText: payload.delta,
                 isRunning: true,
-                hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+                hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
             )
         case .thinkingDelta(let payload):
-            guard let threadID = event.threadID,
-                  let session = session(for: threadID) else {
+            guard let threadID = event.threadID else {
+                return
+            }
+
+            let conversationID = conversationIdentity(for: threadID, providerID: event.provider)
+            guard let session = session(for: conversationID) else {
                 return
             }
 
@@ -632,13 +660,18 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             )
             controller.markThreadActivity(
                 id: threadID,
+                providerID: conversationID.providerID,
                 at: bridgeDate(from: event.timestamp) ?? now(),
                 isRunning: true,
-                hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+                hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
             )
         case .toolStarted(let payload):
-            guard let threadID = event.threadID,
-                  let session = session(for: threadID) else {
+            guard let threadID = event.threadID else {
+                return
+            }
+
+            let conversationID = conversationIdentity(for: threadID, providerID: event.provider)
+            guard let session = session(for: conversationID) else {
                 return
             }
 
@@ -656,15 +689,20 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             )
             controller.markThreadActivity(
                 id: threadID,
+                providerID: conversationID.providerID,
                 at: bridgeDate(from: event.timestamp) ?? now(),
                 previewText: payload.title,
                 isRunning: true,
-                hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+                hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
             )
         case .toolOutput(let payload):
             guard let threadID = event.threadID,
-                  let session = session(for: threadID),
                   let activityID = event.activityID else {
+                return
+            }
+
+            let conversationID = conversationIdentity(for: threadID, providerID: event.provider)
+            guard let session = session(for: conversationID) else {
                 return
             }
 
@@ -681,14 +719,19 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             session.appendActivityOutput(id: activityID, delta: payload.delta)
             controller.markThreadActivity(
                 id: threadID,
+                providerID: conversationID.providerID,
                 at: bridgeDate(from: event.timestamp) ?? now(),
                 isRunning: true,
-                hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+                hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
             )
         case .toolCompleted(let payload):
             guard let threadID = event.threadID,
-                  let session = session(for: threadID),
                   let activityID = event.activityID else {
+                return
+            }
+
+            let conversationID = conversationIdentity(for: threadID, providerID: event.provider)
+            guard let session = session(for: conversationID) else {
                 return
             }
 
@@ -702,7 +745,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 )
             }
 
-            completeActivityWhenVisible(threadID: event.threadID, activityID: activityID) { session in
+            completeActivityWhenVisible(conversationID: conversationID, activityID: activityID) { session in
                 session.completeActivity(
                     id: activityID,
                     status: payload.status.activityStatus,
@@ -712,13 +755,18 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             }
             controller.markThreadActivity(
                 id: threadID,
+                providerID: conversationID.providerID,
                 at: bridgeDate(from: event.timestamp) ?? now(),
                 isRunning: true,
-                hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+                hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
             )
         case .fileChangeStarted(let payload):
-            guard let threadID = event.threadID,
-                  let session = session(for: threadID) else {
+            guard let threadID = event.threadID else {
+                return
+            }
+
+            let conversationID = conversationIdentity(for: threadID, providerID: event.provider)
+            guard let session = session(for: conversationID) else {
                 return
             }
 
@@ -735,15 +783,20 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             )
             controller.markThreadActivity(
                 id: threadID,
+                providerID: conversationID.providerID,
                 at: bridgeDate(from: event.timestamp) ?? now(),
                 previewText: payload.title,
                 isRunning: true,
-                hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+                hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
             )
         case .fileChangeCompleted(let payload):
             guard let threadID = event.threadID,
-                  let session = session(for: threadID),
                   let activityID = event.activityID else {
+                return
+            }
+
+            let conversationID = conversationIdentity(for: threadID, providerID: event.provider)
+            guard let session = session(for: conversationID) else {
                 return
             }
 
@@ -758,7 +811,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 )
             }
 
-            completeActivityWhenVisible(threadID: event.threadID, activityID: activityID) { session in
+            completeActivityWhenVisible(conversationID: conversationID, activityID: activityID) { session in
                 session.completeActivity(
                     id: activityID,
                     status: payload.status.activityStatus,
@@ -768,22 +821,28 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             }
             controller.markThreadActivity(
                 id: threadID,
+                providerID: conversationID.providerID,
                 at: bridgeDate(from: event.timestamp) ?? now(),
                 isRunning: true,
-                hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+                hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
             )
         case .approvalRequested(let payload):
-            guard let threadID = event.threadID,
-                  let session = session(for: threadID) else {
+            guard let threadID = event.threadID else {
+                return
+            }
+
+            let conversationID = conversationIdentity(for: threadID, providerID: event.provider)
+            guard let session = session(for: conversationID) else {
                 return
             }
 
             session.enqueueApprovalRequest(payload.toApprovalRequest())
             controller.markThreadActivity(
                 id: threadID,
+                providerID: conversationID.providerID,
                 at: bridgeDate(from: event.timestamp) ?? now(),
                 isRunning: true,
-                hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+                hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
             )
         case .approvalResolved(let payload):
             if let requestID = event.requestID {
@@ -791,8 +850,12 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 pendingApprovalResolutions.removeValue(forKey: requestID)?.resume()
             }
 
-            guard let threadID = event.threadID,
-                  let session = session(for: threadID) else {
+            guard let threadID = event.threadID else {
+                return
+            }
+
+            let conversationID = conversationIdentity(for: threadID, providerID: event.provider)
+            guard let session = session(for: conversationID) else {
                 return
             }
 
@@ -802,13 +865,18 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             )
             controller.markThreadActivity(
                 id: threadID,
+                providerID: conversationID.providerID,
                 at: bridgeDate(from: event.timestamp) ?? now(),
                 isRunning: true,
-                hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+                hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
             )
         case .diffUpdated(let payload):
-            guard let threadID = event.threadID,
-                  let session = session(for: threadID) else {
+            guard let threadID = event.threadID else {
+                return
+            }
+
+            let conversationID = conversationIdentity(for: threadID, providerID: event.provider)
+            guard let session = session(for: conversationID) else {
                 return
             }
 
@@ -820,13 +888,18 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             )
             controller.markThreadActivity(
                 id: threadID,
+                providerID: conversationID.providerID,
                 at: bridgeDate(from: event.timestamp) ?? now(),
                 isRunning: true,
-                hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+                hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
             )
         case .planUpdated(let payload):
-            guard let threadID = event.threadID,
-                  let session = session(for: threadID) else {
+            guard let threadID = event.threadID else {
+                return
+            }
+
+            let conversationID = conversationIdentity(for: threadID, providerID: event.provider)
+            guard let session = session(for: conversationID) else {
                 return
             }
 
@@ -838,9 +911,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             )
             controller.markThreadActivity(
                 id: threadID,
+                providerID: conversationID.providerID,
                 at: bridgeDate(from: event.timestamp) ?? now(),
                 isRunning: true,
-                hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+                hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
             )
         case .turnCompleted(let payload):
             handleTurnCompleted(payload, event: event)
@@ -878,7 +952,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
 
         if case .threadStart? = pendingCommand,
            payload.thread.messages?.isEmpty != false {
-            summary.isVisibleInSidebar = controller.threadSummary(id: summary.id)?.isVisibleInSidebar ?? false
+            summary.isVisibleInSidebar = controller.threadSummary(for: summary.conversationID)?.isVisibleInSidebar ?? false
         }
 
         controller.upsertThreadSummary(summary)
@@ -895,7 +969,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             switch pendingCommand {
             case .threadResume, .threadRead, .threadFork, .threadRollback:
                 session = controller.resumeThread(
-                    id: summary.id,
+                    id: summary.threadID,
                     providerID: summary.providerID,
                     title: summary.title,
                     messages: payload.thread.messages?.map { $0.toConversationMessage() } ?? []
@@ -903,28 +977,28 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             case .threadStart:
                 if let messages = payload.thread.messages, messages.isEmpty == false {
                     session = controller.resumeThread(
-                        id: summary.id,
+                        id: summary.threadID,
                         providerID: summary.providerID,
                         title: summary.title,
                         messages: messages.map { $0.toConversationMessage() }
                     )
                 } else {
                     session = controller.openThread(
-                        id: summary.id,
+                        id: summary.threadID,
                         providerID: summary.providerID,
                         title: summary.title,
                         isVisibleInSidebar: summary.isVisibleInSidebar
                     )
                 }
             case .threadRename(let threadID):
-                if let session = controller.threadSession(id: threadID) {
-                    session.updateThreadIdentity(providerID: summary.providerID, id: summary.id, title: summary.title)
+                if let session = controller.threadSession(id: threadID, providerID: summary.providerID) {
+                    session.updateThreadIdentity(providerID: summary.providerID, id: summary.threadID, title: summary.title)
                 }
                 pendingVoidResponses.removeValue(forKey: requestID)?.resume()
                 return
             default:
                 session = controller.ensureThreadSession(
-                    id: summary.id,
+                    id: summary.threadID,
                     providerID: summary.providerID,
                     title: summary.title,
                     markSelected: false
@@ -938,7 +1012,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         }
 
         _ = controller.ensureThreadSession(
-            id: summary.id,
+            id: summary.threadID,
             providerID: summary.providerID,
             title: summary.title,
             markSelected: false
@@ -969,7 +1043,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
 
         var accumulatedSummariesByID = requestState?.summariesByID ?? [:]
         for summary in payload.threads.map({ $0.toThreadSummary() }) {
-            accumulatedSummariesByID[summary.id] = summary
+            accumulatedSummariesByID[summary.conversationID] = summary
         }
 
         if let nextCursor = payload.nextCursor,
@@ -993,21 +1067,27 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         )
     }
 
+    private func conversationIdentity(for threadID: String, providerID: String? = nil) -> ConversationIdentity {
+        let resolvedProviderID = providerID
+            ?? (controller.lastActiveConversationID?.threadID == threadID ? controller.lastActiveConversationID?.providerID : nil)
+            ?? controller.threadSummaries.first(where: { $0.threadID == threadID })?.providerID
+            ?? controller.threadSessionsByID.keys.first(where: { $0.threadID == threadID })?.providerID
+            ?? BridgeProviderIdentifier.codex
+        return ConversationIdentity(providerID: resolvedProviderID, threadID: threadID)
+    }
+
     private func handleTurnStarted(_ event: BridgeEventEnvelope) {
         guard let threadID = event.threadID else {
             return
         }
 
-        let title = controller.threadSummaries.first(where: { $0.id == threadID })?.title
-            ?? controller.threadSession(id: threadID)?.title
+        let conversationID = conversationIdentity(for: threadID, providerID: event.provider)
+        let title = controller.threadSummary(for: conversationID)?.title
+            ?? controller.threadSession(for: conversationID)?.title
             ?? "Thread"
-        let providerID = event.provider
-            ?? controller.threadSummary(id: threadID)?.providerID
-            ?? controller.threadSession(id: threadID)?.providerID
-            ?? BridgeProviderIdentifier.codex
         let session = controller.ensureThreadSession(
             id: threadID,
-            providerID: providerID,
+            providerID: conversationID.providerID,
             title: title,
             markSelected: false
         )
@@ -1021,21 +1101,26 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             session.beginTurn()
         }
 
-        controller.setCurrentTurnID(event.turnID, for: threadID)
-        controller.setAwaitingTurnStart(false, for: threadID)
-        controller.setThreadSidebarVisibility(true, for: threadID)
+        controller.setCurrentTurnID(event.turnID, for: threadID, providerID: conversationID.providerID)
+        controller.setAwaitingTurnStart(false, for: threadID, providerID: conversationID.providerID)
+        controller.setThreadSidebarVisibility(true, for: threadID, providerID: conversationID.providerID)
         controller.markThreadActivity(
             id: threadID,
+            providerID: conversationID.providerID,
             at: bridgeDate(from: event.timestamp) ?? now(),
             isRunning: true,
-            hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+            hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
         )
         refreshWorkspaceConnectionStatus()
     }
 
     private func handleTurnCompleted(_ payload: BridgeTurnCompletedPayload, event: BridgeEventEnvelope) {
-        guard let threadID = event.threadID,
-              let session = session(for: threadID) else {
+        guard let threadID = event.threadID else {
+            return
+        }
+
+        let conversationID = conversationIdentity(for: threadID, providerID: event.provider)
+        guard let session = session(for: conversationID) else {
             return
         }
 
@@ -1049,20 +1134,21 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             }
         }
 
-        controller.setCurrentTurnID(nil, for: threadID)
+        controller.setCurrentTurnID(nil, for: threadID, providerID: conversationID.providerID)
 
         cancelPendingActivityCompletions()
-        controller.setAwaitingTurnStart(false, for: threadID)
+        controller.setAwaitingTurnStart(false, for: threadID, providerID: conversationID.providerID)
 
         switch payload.status {
         case .completed:
             session.completeTurn()
             controller.markThreadActivity(
                 id: threadID,
+                providerID: conversationID.providerID,
                 at: bridgeDate(from: event.timestamp) ?? now(),
-                previewText: session.messages.last?.text ?? controller.threadSummary(id: threadID)?.previewText,
+                previewText: session.messages.last?.text ?? controller.threadSummary(for: conversationID)?.previewText,
                 isRunning: false,
-                hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true,
+                hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true,
                 lastErrorMessage: nil
             )
             refreshWorkspaceConnectionStatus()
@@ -1070,9 +1156,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             session.cancelTurn()
             controller.markThreadActivity(
                 id: threadID,
+                providerID: conversationID.providerID,
                 at: bridgeDate(from: event.timestamp) ?? now(),
                 isRunning: false,
-                hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true,
+                hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true,
                 lastErrorMessage: nil
             )
             refreshWorkspaceConnectionStatus()
@@ -1081,10 +1168,11 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             session.failTurn(message)
             controller.markThreadActivity(
                 id: threadID,
+                providerID: conversationID.providerID,
                 at: bridgeDate(from: event.timestamp) ?? now(),
                 previewText: message,
                 isRunning: false,
-                hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true,
+                hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true,
                 lastErrorMessage: message
             )
             refreshWorkspaceConnectionStatus()
@@ -1153,15 +1241,16 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                     throwing: RuntimeBridgeError.requestFailed(message: payload.message)
                 )
             case .turnStart(let threadID, _):
-                controller.setAwaitingTurnStart(false, for: threadID)
-                controller.setCurrentTurnID(nil, for: threadID)
-                controller.threadSession(id: threadID)?.failTurn(payload.message)
-                controller.updateThreadSummary(id: threadID) { summary in
+                let conversationID = conversationIdentity(for: threadID)
+                controller.setAwaitingTurnStart(false, for: threadID, providerID: conversationID.providerID)
+                controller.setCurrentTurnID(nil, for: threadID, providerID: conversationID.providerID)
+                controller.threadSession(for: conversationID)?.failTurn(payload.message)
+                controller.updateThreadSummary(for: conversationID) { summary in
                     summary.isRunning = false
                     summary.lastErrorMessage = payload.message
                 }
             case .approvalResolve(let threadID, let approvalID):
-                controller.threadSession(id: threadID)?.clearApprovalResolution(id: approvalID)
+                controller.threadSession(for: conversationIdentity(for: threadID))?.clearApprovalResolution(id: approvalID)
                 pendingApprovalResolutions.removeValue(forKey: requestID)?.resume(
                     throwing: RuntimeBridgeError.requestFailed(message: payload.message)
                 )
@@ -1196,12 +1285,12 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             controller.setConnectionStatus(status)
         case .degraded, .error:
             for summary in controller.threadSummaries {
-                controller.setAwaitingTurnStart(false, for: summary.id)
+                controller.setAwaitingTurnStart(false, for: summary.threadID, providerID: summary.providerID)
             }
             controller.setConnectionStatus(.error(message: payload.detail))
         case .disconnected:
             for summary in controller.threadSummaries {
-                controller.setAwaitingTurnStart(false, for: summary.id)
+                controller.setAwaitingTurnStart(false, for: summary.threadID, providerID: summary.providerID)
             }
             controller.setConnectionStatus(.disconnected)
         }
@@ -1209,33 +1298,38 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
 
     private func adoptTurnContextIfNeeded(from event: BridgeEventEnvelope) {
         guard let turnID = event.turnID,
-              let threadID = event.threadID,
-              controller.currentTurnID(for: threadID) == nil,
-              controller.isAwaitingTurnStart(threadID: threadID) else {
+              let threadID = event.threadID else {
             return
         }
 
-        controller.setCurrentTurnID(turnID, for: threadID)
-        controller.setAwaitingTurnStart(false, for: threadID)
-        controller.setThreadSidebarVisibility(true, for: threadID)
+        let conversationID = conversationIdentity(for: threadID, providerID: event.provider)
+        guard controller.currentTurnID(for: threadID, providerID: conversationID.providerID) == nil,
+              controller.isAwaitingTurnStart(threadID: threadID, providerID: conversationID.providerID) else {
+            return
+        }
+
+        controller.setCurrentTurnID(turnID, for: threadID, providerID: conversationID.providerID)
+        controller.setAwaitingTurnStart(false, for: threadID, providerID: conversationID.providerID)
+        controller.setThreadSidebarVisibility(true, for: threadID, providerID: conversationID.providerID)
         controller.markThreadActivity(
             id: threadID,
+            providerID: conversationID.providerID,
             at: bridgeDate(from: event.timestamp) ?? now(),
             isRunning: true,
-            hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+            hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
         )
         refreshWorkspaceConnectionStatus()
     }
 
-    private func session(for threadID: String) -> ThreadSession? {
-        let title = controller.threadSummary(id: threadID)?.title
-            ?? controller.threadSession(id: threadID)?.title
+    private func session(for conversationID: ConversationIdentity) -> ThreadSession? {
+        let title = controller.threadSummary(for: conversationID)?.title
+            ?? controller.threadSession(for: conversationID)?.title
             ?? "Thread"
-        if controller.threadSummary(id: threadID) == nil {
+        if controller.threadSummary(for: conversationID) == nil {
             controller.upsertThreadSummary(
                 ThreadSummary(
-                    id: threadID,
-                    providerID: controller.threadSession(id: threadID)?.providerID ?? BridgeProviderIdentifier.codex,
+                    id: conversationID.threadID,
+                    providerID: controller.threadSession(for: conversationID)?.providerID ?? BridgeProviderIdentifier.codex,
                     title: title,
                     previewText: "",
                     updatedAt: now()
@@ -1243,9 +1337,9 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             )
         }
         return controller.ensureThreadSession(
-            id: threadID,
-            providerID: controller.threadSummary(id: threadID)?.providerID
-                ?? controller.threadSession(id: threadID)?.providerID
+            id: conversationID.threadID,
+            providerID: controller.threadSummary(for: conversationID)?.providerID
+                ?? controller.threadSession(for: conversationID)?.providerID
                 ?? BridgeProviderIdentifier.codex,
             title: title,
             markSelected: false
@@ -1259,7 +1353,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     }
 
     private func completeActivityWhenVisible(
-        threadID: String?,
+        conversationID: ConversationIdentity?,
         activityID: String,
         applyCompletion: @escaping @MainActor (ThreadSession) -> Void
     ) {
@@ -1268,8 +1362,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         let remaining = max(0, minimumVisibleRunningActivityDuration - elapsed)
 
         guard remaining > 0 else {
-            if let threadID,
-               let session = session(for: threadID) {
+            if let conversationID,
+               let session = session(for: conversationID) {
                 applyCompletion(session)
             }
 
@@ -1289,8 +1383,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 return
             }
 
-            if let threadID,
-               let session = self.session(for: threadID) {
+            if let conversationID,
+               let session = self.session(for: conversationID) {
                 applyCompletion(session)
             }
 
@@ -1313,7 +1407,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     private func sendThreadListRequest(
         archived: Bool,
         cursor: String?,
-        accumulatedSummariesByID: [String: ThreadSummary]
+        accumulatedSummariesByID: [ConversationIdentity: ThreadSummary]
     ) async throws {
         let requestID = nextRequestID(prefix: archived ? "thread-list-archived" : "thread-list")
         pendingCommands[requestID] = .threadList(archived: archived)
@@ -1368,7 +1462,9 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
 
         let resolvedProviderID = providerID
             ?? threadID.flatMap {
-                controller.threadSummary(id: $0)?.providerID ?? controller.threadSession(id: $0)?.providerID
+                let conversationID = conversationIdentity(for: $0)
+                return controller.threadSummary(for: conversationID)?.providerID
+                    ?? controller.threadSession(for: conversationID)?.providerID
             }
             ?? Self.provider
 
@@ -1471,9 +1567,9 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         }
 
         for summary in controller.threadSummaries {
-            controller.setCurrentTurnID(nil, for: summary.id)
-            controller.setAwaitingTurnStart(false, for: summary.id)
-            controller.setThreadRunning(false, for: summary.id)
+            controller.setCurrentTurnID(nil, for: summary.threadID, providerID: summary.providerID)
+            controller.setAwaitingTurnStart(false, for: summary.threadID, providerID: summary.providerID)
+            controller.setThreadRunning(false, for: summary.threadID, providerID: summary.providerID)
         }
 
         controller.setConnectionStatus(.error(message: message))
@@ -1491,8 +1587,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         }
 
         for summary in controller.threadSummaries {
-            if controller.threadSession(id: summary.id)?.turnState.phase == .inProgress {
-                controller.threadSession(id: summary.id)?.failTurn(message)
+            if controller.threadSession(for: summary.conversationID)?.turnState.phase == .inProgress {
+                controller.threadSession(for: summary.conversationID)?.failTurn(message)
             }
         }
     }
@@ -1503,22 +1599,26 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
     }
 
     private func applyLocalThreadArchive(threadID: String) {
-        controller.setThreadArchived(true, for: threadID)
-        controller.setThreadRunning(false, for: threadID, at: now())
+        let conversationID = conversationIdentity(for: threadID)
+        controller.setThreadArchived(true, for: threadID, providerID: conversationID.providerID)
+        controller.setThreadRunning(false, for: threadID, providerID: conversationID.providerID, at: now())
         controller.markThreadActivity(
             id: threadID,
+            providerID: conversationID.providerID,
             at: now(),
-            hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+            hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
         )
         refreshWorkspaceConnectionStatus()
     }
 
     private func applyLocalThreadUnarchive(threadID: String) {
-        controller.setThreadArchived(false, for: threadID)
+        let conversationID = conversationIdentity(for: threadID)
+        controller.setThreadArchived(false, for: threadID, providerID: conversationID.providerID)
         controller.markThreadActivity(
             id: threadID,
+            providerID: conversationID.providerID,
             at: now(),
-            hasUnreadActivity: controller.lastActiveThreadID == threadID ? false : true
+            hasUnreadActivity: controller.lastActiveConversationID == conversationID ? false : true
         )
         refreshWorkspaceConnectionStatus()
     }

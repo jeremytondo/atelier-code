@@ -63,7 +63,7 @@ struct WorkspaceControllerTests {
         let session = controller.openThread(id: "thread-2", title: "Second")
         controller.clearActiveThreadSession()
 
-        #expect(Set(controller.threadSummaries.map(\.id)) == Set(threadSummaries.map(\.id)))
+        #expect(Set(controller.threadSummaries.map(\.conversationID)) == Set(threadSummaries.map(\.conversationID)))
         #expect(session.threadID == "thread-2")
         #expect(controller.activeThreadSession == nil)
     }
@@ -91,7 +91,7 @@ struct WorkspaceControllerTests {
             ThreadSummary(id: "thread-1", title: "Updated", previewText: "Latest", updatedAt: .now.addingTimeInterval(10))
         )
 
-        #expect(controller.threadSummaries.map(\.id) == ["thread-1", "thread-2"])
+        #expect(controller.threadSummaries.map(\.threadID) == ["thread-1", "thread-2"])
         #expect(controller.threadSummaries.first?.title == "Updated")
     }
 
@@ -110,20 +110,20 @@ struct WorkspaceControllerTests {
         controller.replaceThreadList(threadSummaries)
 
         #expect(controller.displayedThreadSummaries.count == WorkspaceController.collapsedVisibleThreadLimit)
-        #expect(controller.displayedThreadSummaries.map(\.id) == Array(threadSummaries.prefix(WorkspaceController.collapsedVisibleThreadLimit)).map(\.id))
+        #expect(controller.displayedThreadSummaries.map(\.threadID) == Array(threadSummaries.prefix(WorkspaceController.collapsedVisibleThreadLimit)).map(\.threadID))
         #expect(controller.canShowMoreVisibleThreads)
         #expect(controller.canShowLessVisibleThreads == false)
 
         controller.setShowingAllVisibleThreads(true)
 
-        #expect(controller.displayedThreadSummaries.map(\.id) == threadSummaries.map(\.id))
+        #expect(controller.displayedThreadSummaries.map(\.threadID) == threadSummaries.map(\.threadID))
         #expect(controller.canShowMoreVisibleThreads == false)
         #expect(controller.canShowLessVisibleThreads)
 
         controller.setShowingAllVisibleThreads(false)
 
         #expect(controller.displayedThreadSummaries.count == WorkspaceController.collapsedVisibleThreadLimit)
-        #expect(controller.displayedThreadSummaries.map(\.id) == Array(threadSummaries.prefix(WorkspaceController.collapsedVisibleThreadLimit)).map(\.id))
+        #expect(controller.displayedThreadSummaries.map(\.threadID) == Array(threadSummaries.prefix(WorkspaceController.collapsedVisibleThreadLimit)).map(\.threadID))
     }
 
     @Test func locallyPromotedThreadsSurviveListRefreshWithoutBecomingStale() async throws {
@@ -139,7 +139,7 @@ struct WorkspaceControllerTests {
         controller.replaceThreadList([])
 
         #expect(controller.threadSummary(id: "draft-thread")?.isVisibleInSidebar == true)
-        #expect(controller.visibleThreadSummaries.map(\.id) == ["draft-thread"])
+        #expect(controller.visibleThreadSummaries.map(\.threadID) == ["draft-thread"])
         #expect(controller.threadSummary(id: "draft-thread")?.isLocalOnly == true)
         #expect(controller.threadSummary(id: "draft-thread")?.isStale == false)
     }
@@ -154,7 +154,7 @@ struct WorkspaceControllerTests {
         ])
 
         #expect(controller.threadSummary(id: "thread-123")?.title == "Start the real conversation.")
-        #expect(controller.visibleThreadSummaries.map(\.id) == ["thread-123"])
+        #expect(controller.visibleThreadSummaries.map(\.threadID) == ["thread-123"])
     }
 
     @Test func locallyCreatedSidebarThreadSurvivesRefreshEvenIfSessionIsCleared() async throws {
@@ -167,7 +167,7 @@ struct WorkspaceControllerTests {
         controller.replaceThreadList([])
 
         #expect(controller.threadSummary(id: "thread-keep")?.title == "Keep Me")
-        #expect(controller.visibleThreadSummaries.map(\.id) == ["thread-keep"])
+        #expect(controller.visibleThreadSummaries.map(\.threadID) == ["thread-keep"])
         #expect(controller.threadSummary(id: "thread-keep")?.isLocalOnly == true)
         #expect(controller.threadSummary(id: "thread-keep")?.isStale == false)
     }
@@ -184,7 +184,7 @@ struct WorkspaceControllerTests {
         controller.replaceThreadList([])
 
         #expect(controller.threadSummary(id: "thread-active")?.title == "Active")
-        #expect(controller.visibleThreadSummaries.map(\.id) == ["thread-active"])
+        #expect(controller.visibleThreadSummaries.map(\.threadID) == ["thread-active"])
         #expect(controller.threadSummary(id: "thread-active")?.isStale == true)
     }
 
@@ -213,8 +213,39 @@ struct WorkspaceControllerTests {
             )
         }, listedAt: baseline.addingTimeInterval(180))
 
-        #expect(controller.displayedThreadSummaries.first?.id == "thread-5")
+        #expect(controller.displayedThreadSummaries.first?.threadID == "thread-5")
         #expect(controller.threadSummary(id: "thread-5")?.previewText == "Fresh local work")
         #expect(controller.threadSummary(id: "thread-5")?.updatedAt == promotedDate)
+    }
+
+    @Test func sameThreadIDCanCoexistAcrossProvidersInSessionsAndSelection() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "workspace-provider-collision"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+
+        let codexSession = controller.openThread(
+            id: "thread-shared",
+            providerID: BridgeProviderIdentifier.codex,
+            title: "Codex Thread"
+        )
+        let geminiSession = controller.openThread(
+            id: "thread-shared",
+            providerID: "gemini",
+            title: "Gemini Thread"
+        )
+
+        #expect(controller.threadSessionsByID.count == 2)
+        #expect(controller.threadSummary(
+            for: ConversationIdentity(providerID: BridgeProviderIdentifier.codex, threadID: "thread-shared")
+        )?.title == "Codex Thread")
+        #expect(controller.threadSummary(
+            for: ConversationIdentity(providerID: "gemini", threadID: "thread-shared")
+        )?.title == "Gemini Thread")
+
+        controller.markThreadSelected(codexSession.conversationID)
+        #expect(controller.activeThreadSession === codexSession)
+
+        controller.markThreadSelected(geminiSession.conversationID)
+        #expect(controller.activeThreadSession === geminiSession)
+        #expect(controller.lastActiveConversationID == geminiSession.conversationID)
     }
 }

@@ -138,20 +138,20 @@ final class AppModel {
 
     var selectedThreadSession: ThreadSession? {
         guard let selectedRoute,
-              let threadID = selectedRoute.threadID else {
+              let conversationID = selectedRoute.conversationID else {
             return nil
         }
 
-        return selectedWorkspaceController?.threadSession(id: threadID)
+        return selectedWorkspaceController?.threadSession(for: conversationID)
     }
 
     var selectedThreadSummary: ThreadSummary? {
         guard let selectedRoute,
-              let threadID = selectedRoute.threadID else {
+              let conversationID = selectedRoute.conversationID else {
             return nil
         }
 
-        return selectedWorkspaceController?.threadSummary(id: threadID)
+        return selectedWorkspaceController?.threadSummary(for: conversationID)
     }
 
     var snapshot: AppPreferencesSnapshot {
@@ -417,7 +417,7 @@ final class AppModel {
 
         if let controller = workspaceController(for: workspace.canonicalPath) {
             updateWorkspaceRecord(workspace)
-            controller.markThreadSelected(controller.lastActiveThreadID)
+            controller.markThreadSelected(controller.lastActiveConversationID)
             selectWorkspace(path: workspace.canonicalPath)
             persistPreferences()
             return
@@ -546,9 +546,9 @@ final class AppModel {
         }
 
         showConversations()
-        let threadID = preferredThreadID(for: controller)
-        controller.markThreadSelected(threadID)
-        updateSelectedRoute(workspacePath: canonicalPath, threadID: threadID)
+        let conversationID = preferredConversationID(for: controller)
+        controller.markThreadSelected(conversationID)
+        updateSelectedRoute(workspacePath: canonicalPath, conversationID: conversationID)
         startWorkspaceRuntimeIfNeeded(for: canonicalPath)
         persistPreferences()
     }
@@ -560,7 +560,7 @@ final class AppModel {
         }
 
         showConversations()
-        updateSelectedRoute(workspacePath: canonicalPath, threadID: nil)
+        updateSelectedRoute(workspacePath: canonicalPath, conversationID: nil)
         startWorkspaceRuntimeIfNeeded(for: canonicalPath)
         persistPreferences()
     }
@@ -587,34 +587,42 @@ final class AppModel {
 
     @discardableResult
     func openThread(workspacePath: String, threadID: String) async -> Bool {
+        await openThread(
+            workspacePath: workspacePath,
+            conversationID: ConversationIdentity(threadID: threadID)
+        )
+    }
+
+    @discardableResult
+    func openThread(workspacePath: String, conversationID: ConversationIdentity) async -> Bool {
         let canonicalPath = WorkspaceRecord.canonicalizedPath(for: workspacePath)
         guard let controller = workspaceController(for: canonicalPath),
-              let summary = controller.threadSummary(id: threadID) else {
+              let summary = controller.threadSummary(for: conversationID) else {
             return false
         }
 
-        if controller.threadSession(id: threadID) == nil, summary.isLocalOnly {
-            removeCachedThread(workspacePath: canonicalPath, threadID: threadID)
+        if controller.threadSession(for: conversationID) == nil, summary.isLocalOnly {
+            removeCachedThread(workspacePath: canonicalPath, conversationID: conversationID)
             return false
         }
 
         do {
             showConversations()
-            if controller.threadSession(id: threadID) == nil {
+            if controller.threadSession(for: conversationID) == nil {
                 guard await ensureRuntimeReady(for: canonicalPath),
                       let runtime = runtime(for: canonicalPath) else {
                     return false
                 }
 
                 if summary.isArchived {
-                    _ = try await runtime.readThreadAndWait(id: threadID, includeTurns: true)
+                    _ = try await runtime.readThreadAndWait(id: conversationID.threadID, includeTurns: true)
                 } else {
-                    _ = try await runtime.resumeThreadAndWait(id: threadID)
+                    _ = try await runtime.resumeThreadAndWait(id: conversationID.threadID)
                 }
             }
 
-            controller.markThreadSelected(threadID)
-            updateSelectedRoute(workspacePath: canonicalPath, threadID: threadID)
+            controller.markThreadSelected(conversationID)
+            updateSelectedRoute(workspacePath: canonicalPath, conversationID: conversationID)
             persistPreferences()
             return true
         } catch is CancellationError {
@@ -623,7 +631,7 @@ final class AppModel {
             handleThreadOpenFailure(
                 error,
                 workspacePath: canonicalPath,
-                threadID: threadID
+                conversationID: conversationID
             )
             return false
         }
@@ -631,19 +639,27 @@ final class AppModel {
 
     @discardableResult
     func removeCachedThread(workspacePath: String, threadID: String) -> Bool {
+        removeCachedThread(
+            workspacePath: workspacePath,
+            conversationID: ConversationIdentity(threadID: threadID)
+        )
+    }
+
+    @discardableResult
+    func removeCachedThread(workspacePath: String, conversationID: ConversationIdentity) -> Bool {
         let canonicalPath = WorkspaceRecord.canonicalizedPath(for: workspacePath)
         guard let controller = workspaceController(for: canonicalPath),
-              controller.threadSummary(id: threadID) != nil else {
+              controller.threadSummary(for: conversationID) != nil else {
             return false
         }
 
-        controller.removeThread(id: threadID)
+        controller.removeThread(for: conversationID)
 
         if selectedRoute?.workspacePath == canonicalPath,
-           selectedRoute?.threadID == threadID {
-            let nextThreadID = preferredThreadID(for: controller)
-            controller.markThreadSelected(nextThreadID)
-            updateSelectedRoute(workspacePath: canonicalPath, threadID: nextThreadID)
+           selectedRoute?.conversationID == conversationID {
+            let nextConversationID = preferredConversationID(for: controller)
+            controller.markThreadSelected(nextConversationID)
+            updateSelectedRoute(workspacePath: canonicalPath, conversationID: nextConversationID)
         }
 
         persistPreferences()
@@ -658,7 +674,7 @@ final class AppModel {
 
         showConversations()
         controller.clearActiveThreadSession()
-        updateSelectedRoute(workspacePath: controller.workspace.canonicalPath, threadID: nil)
+        updateSelectedRoute(workspacePath: controller.workspace.canonicalPath, conversationID: nil)
         startWorkspaceRuntimeIfNeeded(for: controller.workspace.canonicalPath)
         persistPreferences()
         return true
@@ -668,15 +684,23 @@ final class AppModel {
     func forkSelectedThread() async -> Bool {
         guard let controller = selectedWorkspaceController,
               let selectedRoute,
-              let threadID = selectedRoute.threadID else {
+              let conversationID = selectedRoute.conversationID else {
             return false
         }
 
-        return await forkThread(workspacePath: controller.workspace.canonicalPath, threadID: threadID)
+        return await forkThread(workspacePath: controller.workspace.canonicalPath, conversationID: conversationID)
     }
 
     @discardableResult
     func forkThread(workspacePath: String, threadID: String) async -> Bool {
+        await forkThread(
+            workspacePath: workspacePath,
+            conversationID: ConversationIdentity(threadID: threadID)
+        )
+    }
+
+    @discardableResult
+    func forkThread(workspacePath: String, conversationID: ConversationIdentity) async -> Bool {
         let canonicalPath = WorkspaceRecord.canonicalizedPath(for: workspacePath)
         guard let controller = workspaceController(for: canonicalPath),
               let runtime = runtime(for: canonicalPath) else {
@@ -684,9 +708,9 @@ final class AppModel {
         }
 
         do {
-            let session = try await runtime.forkThreadAndWait(id: threadID)
-            controller.markThreadSelected(session.threadID)
-            updateSelectedRoute(workspacePath: canonicalPath, threadID: session.threadID)
+            let session = try await runtime.forkThreadAndWait(id: conversationID.threadID)
+            controller.markThreadSelected(session.conversationID)
+            updateSelectedRoute(workspacePath: canonicalPath, conversationID: session.conversationID)
             persistPreferences()
             return true
         } catch is CancellationError {
@@ -701,15 +725,23 @@ final class AppModel {
     func archiveSelectedThread() async -> Bool {
         guard let controller = selectedWorkspaceController,
               let selectedRoute,
-              let threadID = selectedRoute.threadID else {
+              let conversationID = selectedRoute.conversationID else {
             return false
         }
 
-        return await archiveThread(workspacePath: controller.workspace.canonicalPath, threadID: threadID)
+        return await archiveThread(workspacePath: controller.workspace.canonicalPath, conversationID: conversationID)
     }
 
     @discardableResult
     func archiveThread(workspacePath: String, threadID: String) async -> Bool {
+        await archiveThread(
+            workspacePath: workspacePath,
+            conversationID: ConversationIdentity(threadID: threadID)
+        )
+    }
+
+    @discardableResult
+    func archiveThread(workspacePath: String, conversationID: ConversationIdentity) async -> Bool {
         let canonicalPath = WorkspaceRecord.canonicalizedPath(for: workspacePath)
         guard let controller = workspaceController(for: canonicalPath),
               let runtime = runtime(for: canonicalPath) else {
@@ -717,17 +749,18 @@ final class AppModel {
         }
 
         do {
-            try await runtime.archiveThread(id: threadID)
-            controller.setThreadArchived(true, for: threadID)
+            try await runtime.archiveThread(id: conversationID.threadID)
+            controller.setThreadArchived(true, for: conversationID.threadID, providerID: conversationID.providerID)
             controller.markThreadActivity(
-                id: threadID,
+                id: conversationID.threadID,
+                providerID: conversationID.providerID,
                 at: now(),
                 isRunning: false,
                 hasUnreadActivity: false
             )
-            if selectedRoute?.workspacePath == canonicalPath, selectedRoute?.threadID == threadID, controller.isShowingArchivedThreads {
-                controller.markThreadSelected(threadID)
-            } else if selectedRoute?.workspacePath == canonicalPath, selectedRoute?.threadID == threadID {
+            if selectedRoute?.workspacePath == canonicalPath, selectedRoute?.conversationID == conversationID, controller.isShowingArchivedThreads {
+                controller.markThreadSelected(conversationID)
+            } else if selectedRoute?.workspacePath == canonicalPath, selectedRoute?.conversationID == conversationID {
                 selectWorkspace(path: canonicalPath)
             }
             return true
@@ -743,15 +776,23 @@ final class AppModel {
     func unarchiveSelectedThread() async -> Bool {
         guard let controller = selectedWorkspaceController,
               let selectedRoute,
-              let threadID = selectedRoute.threadID else {
+              let conversationID = selectedRoute.conversationID else {
             return false
         }
 
-        return await unarchiveThread(workspacePath: controller.workspace.canonicalPath, threadID: threadID)
+        return await unarchiveThread(workspacePath: controller.workspace.canonicalPath, conversationID: conversationID)
     }
 
     @discardableResult
     func unarchiveThread(workspacePath: String, threadID: String) async -> Bool {
+        await unarchiveThread(
+            workspacePath: workspacePath,
+            conversationID: ConversationIdentity(threadID: threadID)
+        )
+    }
+
+    @discardableResult
+    func unarchiveThread(workspacePath: String, conversationID: ConversationIdentity) async -> Bool {
         let canonicalPath = WorkspaceRecord.canonicalizedPath(for: workspacePath)
         guard let controller = workspaceController(for: canonicalPath),
               let runtime = runtime(for: canonicalPath) else {
@@ -759,9 +800,9 @@ final class AppModel {
         }
 
         do {
-            let session = try await runtime.unarchiveThreadAndWait(id: threadID)
-            controller.markThreadSelected(session.threadID)
-            updateSelectedRoute(workspacePath: canonicalPath, threadID: session.threadID)
+            let session = try await runtime.unarchiveThreadAndWait(id: conversationID.threadID)
+            controller.markThreadSelected(session.conversationID)
+            updateSelectedRoute(workspacePath: canonicalPath, conversationID: session.conversationID)
             persistPreferences()
             return true
         } catch is CancellationError {
@@ -774,6 +815,15 @@ final class AppModel {
 
     @discardableResult
     func renameThread(workspacePath: String, threadID: String, title: String) async -> Bool {
+        await renameThread(
+            workspacePath: workspacePath,
+            conversationID: ConversationIdentity(threadID: threadID),
+            title: title
+        )
+    }
+
+    @discardableResult
+    func renameThread(workspacePath: String, conversationID: ConversationIdentity, title: String) async -> Bool {
         let canonicalPath = WorkspaceRecord.canonicalizedPath(for: workspacePath)
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let resolvedTitle = trimmedTitle.nilIfEmpty,
@@ -783,11 +833,15 @@ final class AppModel {
         }
 
         do {
-            try await runtime.renameThread(id: threadID, title: resolvedTitle)
-            controller.updateThreadSummary(id: threadID) { summary in
+            try await runtime.renameThread(id: conversationID.threadID, title: resolvedTitle)
+            controller.updateThreadSummary(for: conversationID) { summary in
                 summary.title = resolvedTitle
             }
-            controller.threadSession(id: threadID)?.updateThreadIdentity(id: threadID, title: resolvedTitle)
+            controller.threadSession(for: conversationID)?.updateThreadIdentity(
+                providerID: conversationID.providerID,
+                id: conversationID.threadID,
+                title: resolvedTitle
+            )
             return true
         } catch is CancellationError {
             return false
@@ -801,15 +855,15 @@ final class AppModel {
     func rollbackSelectedThread() async -> Bool {
         guard let controller = selectedWorkspaceController,
               let selectedRoute,
-              let threadID = selectedRoute.threadID,
+              let conversationID = selectedRoute.conversationID,
               let runtime = runtime(for: controller.workspace.canonicalPath) else {
             return false
         }
 
         do {
-            let session = try await runtime.rollbackThreadAndWait(id: threadID, numTurns: 1)
-            controller.markThreadSelected(session.threadID)
-            updateSelectedRoute(workspacePath: controller.workspace.canonicalPath, threadID: session.threadID)
+            let session = try await runtime.rollbackThreadAndWait(id: conversationID.threadID, numTurns: 1)
+            controller.markThreadSelected(session.conversationID)
+            updateSelectedRoute(workspacePath: controller.workspace.canonicalPath, conversationID: session.conversationID)
             persistPreferences()
             return true
         } catch is CancellationError {
@@ -833,8 +887,8 @@ final class AppModel {
               let runtime = runtime(for: canonicalPath) else {
             if let selectedRoute,
                selectedRoute.workspacePath == canonicalPath,
-               let threadID = selectedRoute.threadID,
-               controller.threadSummary(id: threadID)?.isArchived == true {
+               let conversationID = selectedRoute.conversationID,
+               controller.threadSummary(for: conversationID)?.isArchived == true {
                 selectWorkspace(path: canonicalPath)
             }
             return
@@ -878,10 +932,13 @@ final class AppModel {
     var canCancelTurn: Bool {
         guard let controller = selectedWorkspaceController,
               let selectedRoute,
-              let threadID = selectedRoute.threadID,
+              let conversationID = selectedRoute.conversationID,
               let session = selectedThreadSession,
               session.turnState.phase == .inProgress,
-              controller.currentTurnID(for: threadID) != nil else {
+              controller.currentTurnID(
+                  for: conversationID.threadID,
+                  providerID: conversationID.providerID
+              ) != nil else {
             return false
         }
 
@@ -903,64 +960,84 @@ final class AppModel {
         }
 
         do {
-            let threadID: String
+            let conversationID: ConversationIdentity
 
-            if let existingThreadID = selectedRoute?.threadID {
+            if let existingConversationID = selectedRoute?.conversationID {
                 if selectedThreadSummary?.isArchived == true {
                     return false
                 }
 
-                if controller.threadSession(id: existingThreadID) == nil {
-                    _ = try await runtime.resumeThreadAndWait(id: existingThreadID)
+                if controller.threadSession(for: existingConversationID) == nil {
+                    _ = try await runtime.resumeThreadAndWait(id: existingConversationID.threadID)
                 }
 
-                threadID = existingThreadID
+                conversationID = existingConversationID
             } else {
                 let session = try await runtime.startThreadAndWait(
                     title: nil,
                     configuration: defaultThreadConfiguration(for: controller)
                 )
-                threadID = session.threadID
-                controller.markThreadSelected(threadID)
+                conversationID = session.conversationID
+                controller.markThreadSelected(conversationID)
                 updateSelectedRoute(
                     workspacePath: controller.workspace.canonicalPath,
-                    providerID: session.providerID,
-                    threadID: threadID
+                    conversationID: conversationID
                 )
                 persistPreferences()
             }
 
-            controller.setThreadSidebarVisibility(true, for: threadID)
+            controller.setThreadSidebarVisibility(
+                true,
+                for: conversationID.threadID,
+                providerID: conversationID.providerID
+            )
             controller.markThreadActivity(
-                id: threadID,
+                id: conversationID.threadID,
+                providerID: conversationID.providerID,
                 at: now(),
                 previewText: trimmedPrompt,
                 hasUnreadActivity: false,
                 lastErrorMessage: nil
             )
-            controller.updateThreadSummary(id: threadID) { summary in
+            controller.updateThreadSummary(for: conversationID) { summary in
                 let trimmedTitle = summary.title.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmedTitle.isEmpty || trimmedTitle == summary.id || trimmedTitle == "New Conversation" || trimmedTitle == "Thread" {
+                if trimmedTitle.isEmpty || trimmedTitle == summary.threadID || trimmedTitle == "New Conversation" || trimmedTitle == "Thread" {
                     summary.title = Self.defaultDraftThreadTitle(from: trimmedPrompt)
                 }
             }
-            controller.setAwaitingTurnStart(true, for: threadID)
+            controller.setAwaitingTurnStart(
+                true,
+                for: conversationID.threadID,
+                providerID: conversationID.providerID
+            )
             try await runtime.startTurn(
-                threadID: threadID,
+                threadID: conversationID.threadID,
                 prompt: trimmedPrompt,
                 configuration: defaultTurnConfiguration(for: controller)
             )
             return true
         } catch is CancellationError {
-            if let threadID = selectedRoute?.threadID {
-                controller.setAwaitingTurnStart(false, for: threadID)
+            if let conversationID = selectedRoute?.conversationID {
+                controller.setAwaitingTurnStart(
+                    false,
+                    for: conversationID.threadID,
+                    providerID: conversationID.providerID
+                )
             }
             return false
         } catch {
-            if let threadID = selectedRoute?.threadID {
-                controller.setAwaitingTurnStart(false, for: threadID)
-                controller.setCurrentTurnID(nil, for: threadID)
-                controller.threadSession(id: threadID)?.failTurn(error.localizedDescription)
+            if let conversationID = selectedRoute?.conversationID {
+                controller.setAwaitingTurnStart(
+                    false,
+                    for: conversationID.threadID,
+                    providerID: conversationID.providerID
+                )
+                controller.setCurrentTurnID(
+                    nil,
+                    for: conversationID.threadID,
+                    providerID: conversationID.providerID
+                )
+                controller.threadSession(for: conversationID)?.failTurn(error.localizedDescription)
             }
             controller.setConnectionStatus(.error(message: error.localizedDescription))
             return false
@@ -970,33 +1047,40 @@ final class AppModel {
     func cancelActiveTurn() async {
         guard canCancelTurn,
               let controller = selectedWorkspaceController,
-              let threadID = selectedRoute?.threadID,
+              let conversationID = selectedRoute?.conversationID,
               let runtime = runtime(for: controller.workspace.canonicalPath) else {
             return
         }
 
         do {
-            try await runtime.cancelTurn(threadID: threadID, reason: "User cancelled the current turn.")
+            try await runtime.cancelTurn(
+                threadID: conversationID.threadID,
+                reason: "User cancelled the current turn."
+            )
         } catch is CancellationError {
             return
         } catch {
             controller.setConnectionStatus(.error(message: error.localizedDescription))
-            controller.threadSession(id: threadID)?.failTurn(error.localizedDescription)
+            controller.threadSession(for: conversationID)?.failTurn(error.localizedDescription)
         }
     }
 
     @discardableResult
     func resolveApproval(id: String, resolution: ApprovalResolution) async -> Bool {
         guard let controller = selectedWorkspaceController,
-              let threadID = selectedRoute?.threadID,
-              let session = controller.threadSession(id: threadID),
+              let conversationID = selectedRoute?.conversationID,
+              let session = controller.threadSession(for: conversationID),
               session.beginApprovalResolution(id: id, resolution: resolution),
               let runtime = runtime(for: controller.workspace.canonicalPath) else {
             return false
         }
 
         do {
-            try await runtime.resolveApproval(threadID: threadID, id: id, resolution: resolution)
+            try await runtime.resolveApproval(
+                threadID: conversationID.threadID,
+                id: id,
+                resolution: resolution
+            )
             return true
         } catch is CancellationError {
             session.clearApprovalResolution(id: id)
@@ -1111,18 +1195,24 @@ final class AppModel {
         refreshGitSnapshot(for: workspace)
     }
 
-    private func updateSelectedRoute(workspacePath: String, providerID: String? = nil, threadID: String?) {
+    private func updateSelectedRoute(
+        workspacePath: String,
+        conversationID: ConversationIdentity? = nil,
+        providerID: String? = nil,
+        threadID: String? = nil
+    ) {
         resetBranchPickerState(for: workspacePath)
-        let resolvedProviderID = providerID
-            ?? threadID.flatMap { threadID in
-                workspaceController(for: workspacePath)?.threadSummary(id: threadID)?.providerID
-                    ?? workspaceController(for: workspacePath)?.threadSession(id: threadID)?.providerID
+        let resolvedConversationID = conversationID
+            ?? threadID.map { threadID in
+                let resolvedProviderID = providerID
+                    ?? workspaceController(for: workspacePath)?.threadSummaries.first(where: { $0.threadID == threadID })?.providerID
+                    ?? workspaceController(for: workspacePath)?.threadSessionsByID.keys.first(where: { $0.threadID == threadID })?.providerID
+                    ?? BridgeProviderIdentifier.codex
+                return ConversationIdentity(providerID: resolvedProviderID, threadID: threadID)
             }
-            ?? (threadID == nil ? nil : BridgeProviderIdentifier.codex)
         selectedRoute = WorkspaceThreadRoute(
             workspacePath: workspacePath,
-            providerID: resolvedProviderID,
-            threadID: threadID
+            conversationID: resolvedConversationID
         )
         lastSelectedWorkspacePath = workspacePath
 
@@ -1356,9 +1446,12 @@ final class AppModel {
             return false
         }
 
-        if let threadID = selectedRoute?.threadID,
+        if let conversationID = selectedRoute?.conversationID,
            selectedRoute?.workspacePath == controller.workspace.canonicalPath,
-           controller.isAwaitingTurnStart(threadID: threadID) {
+           controller.isAwaitingTurnStart(
+               threadID: conversationID.threadID,
+               providerID: conversationID.providerID
+           ) {
             return false
         }
 
@@ -1436,13 +1529,13 @@ final class AppModel {
     private func handleThreadOpenFailure(
         _ error: Error,
         workspacePath: String,
-        threadID: String
+        conversationID: ConversationIdentity
     ) {
         guard let controller = workspaceController(for: workspacePath) else {
             return
         }
 
-        controller.updateThreadSummary(id: threadID) { summary in
+        controller.updateThreadSummary(for: conversationID) { summary in
             summary.isRunning = false
             summary.hasUnreadActivity = false
             summary.lastErrorMessage = error.localizedDescription
@@ -1450,12 +1543,12 @@ final class AppModel {
         }
 
         if selectedRoute?.workspacePath == workspacePath,
-           selectedRoute?.threadID == threadID {
-            let nextThreadID = controller.visibleThreadSummaries
-                .first(where: { $0.id != threadID })?
-                .id
-            controller.markThreadSelected(nextThreadID)
-            updateSelectedRoute(workspacePath: workspacePath, threadID: nextThreadID)
+           selectedRoute?.conversationID == conversationID {
+            let nextConversationID = controller.visibleThreadSummaries
+                .first(where: { $0.conversationID != conversationID })?
+                .conversationID
+            controller.markThreadSelected(nextConversationID)
+            updateSelectedRoute(workspacePath: workspacePath, conversationID: nextConversationID)
             persistPreferences()
         }
 
@@ -1487,17 +1580,17 @@ final class AppModel {
         workspaceControllers.first(where: { $0.workspace.canonicalPath == path })
     }
 
-    private func preferredThreadID(for controller: WorkspaceController) -> String? {
-        Self.preferredThreadID(for: controller)
+    private func preferredConversationID(for controller: WorkspaceController) -> ConversationIdentity? {
+        Self.preferredConversationID(for: controller)
     }
 
-    private static func preferredThreadID(for controller: WorkspaceController) -> String? {
-        if let lastActiveThreadID = controller.lastActiveThreadID,
-           controller.visibleThreadSummaries.contains(where: { $0.id == lastActiveThreadID }) {
-            return lastActiveThreadID
+    private static func preferredConversationID(for controller: WorkspaceController) -> ConversationIdentity? {
+        if let lastActiveConversationID = controller.lastActiveConversationID,
+           controller.visibleThreadSummaries.contains(where: { $0.conversationID == lastActiveConversationID }) {
+            return lastActiveConversationID
         }
 
-        return controller.visibleThreadSummaries.first?.id
+        return controller.visibleThreadSummaries.first?.conversationID
     }
 
     private func updateWorkspaceRecord(_ workspace: WorkspaceRecord) {
@@ -1523,10 +1616,7 @@ final class AppModel {
 
         return WorkspaceThreadRoute(
             workspacePath: workspacePath,
-            providerID: preferExistingThreadSelection
-                ? controller.threadSummary(id: preferredThreadID(for: controller) ?? "")?.providerID
-                : nil,
-            threadID: preferExistingThreadSelection ? preferredThreadID(for: controller) : nil
+            conversationID: preferExistingThreadSelection ? preferredConversationID(for: controller) : nil
         )
     }
 
@@ -1600,23 +1690,31 @@ final class AppModel {
 
         for workspaceState in workspaceStates {
             let canonicalPath = WorkspaceRecord.canonicalizedPath(for: workspaceState.workspacePath)
-            let normalizedThreadSummaries = workspaceState.threadSummaries.reduce(into: [String: PersistedThreadSummary]()) {
+            let normalizedThreadSummaries = workspaceState.threadSummaries.reduce(into: [ConversationIdentity: PersistedThreadSummary]()) {
                 partialResult,
                 summary in
-                partialResult[summary.id] = summary
+                partialResult[summary.conversationID] = summary
             }
             let normalizedPinnedThreadIDs = Array(Set(workspaceState.pinnedThreadIDs)).sorted()
-            let normalizedLastActiveThreadID = workspaceState.lastActiveThreadID?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let resolvedLastActiveThreadID = normalizedLastActiveThreadID?.isEmpty == false
-                ? normalizedLastActiveThreadID
-                : nil
+            let normalizedLastActiveConversationID: ConversationIdentity?
+            if let conversationID = workspaceState.lastActiveConversationID {
+                let normalizedThreadID = conversationID.threadID
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                normalizedLastActiveConversationID = normalizedThreadID.isEmpty
+                    ? nil
+                    : ConversationIdentity(
+                        providerID: conversationID.providerID,
+                        threadID: normalizedThreadID
+                    )
+            } else {
+                normalizedLastActiveConversationID = nil
+            }
 
             normalizedStates[canonicalPath] = PersistedWorkspaceState(
                 workspacePath: canonicalPath,
                 isExpanded: workspaceState.isExpanded,
                 isShowingAllVisibleThreads: workspaceState.isShowingAllVisibleThreads,
-                lastActiveThreadID: resolvedLastActiveThreadID,
+                lastActiveConversationID: normalizedLastActiveConversationID,
                 pinnedThreadIDs: normalizedPinnedThreadIDs,
                 threadSummaries: normalizedThreadSummaries.values.sorted { lhs, rhs in
                     if lhs.updatedAt == rhs.updatedAt {

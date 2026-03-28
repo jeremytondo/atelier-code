@@ -219,8 +219,36 @@ enum BridgeProviderIdentifier {
     nonisolated static let codex = "codex"
 }
 
+struct ConversationIdentity: Codable, Equatable, Hashable, Sendable, Identifiable {
+    var providerID: String
+    var threadID: String
+
+    var id: String {
+        "\(providerID)::\(threadID)"
+    }
+
+    init(
+        providerID: String = BridgeProviderIdentifier.codex,
+        threadID: String
+    ) {
+        self.providerID = providerID
+        self.threadID = threadID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case providerID
+        case threadID
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        threadID = try container.decode(String.self, forKey: .threadID)
+        providerID = try container.decodeIfPresent(String.self, forKey: .providerID) ?? BridgeProviderIdentifier.codex
+    }
+}
+
 struct ThreadSummary: Equatable, Sendable, Identifiable {
-    let id: String
+    let threadID: String
     var providerID: String
     var title: String
     var previewText: String
@@ -232,6 +260,14 @@ struct ThreadSummary: Equatable, Sendable, Identifiable {
     var lastErrorMessage: String?
     var isLocalOnly: Bool
     var isStale: Bool
+
+    var id: String {
+        conversationID.id
+    }
+
+    var conversationID: ConversationIdentity {
+        ConversationIdentity(providerID: providerID, threadID: threadID)
+    }
 
     init(
         id: String,
@@ -247,7 +283,7 @@ struct ThreadSummary: Equatable, Sendable, Identifiable {
         isLocalOnly: Bool = false,
         isStale: Bool = false
     ) {
-        self.id = id
+        threadID = id
         self.providerID = providerID
         self.title = title
         self.previewText = previewText
@@ -263,7 +299,7 @@ struct ThreadSummary: Equatable, Sendable, Identifiable {
 }
 
 struct PersistedThreadSummary: Codable, Equatable, Sendable, Identifiable {
-    let id: String
+    let threadID: String
     var providerID: String
     var title: String
     var previewText: String
@@ -272,6 +308,14 @@ struct PersistedThreadSummary: Codable, Equatable, Sendable, Identifiable {
     var isArchived: Bool
     var isLocalOnly: Bool
     var isStale: Bool
+
+    var id: String {
+        conversationID.id
+    }
+
+    var conversationID: ConversationIdentity {
+        ConversationIdentity(providerID: providerID, threadID: threadID)
+    }
 
     init(
         id: String,
@@ -284,7 +328,7 @@ struct PersistedThreadSummary: Codable, Equatable, Sendable, Identifiable {
         isLocalOnly: Bool = false,
         isStale: Bool = false
     ) {
-        self.id = id
+        threadID = id
         self.providerID = providerID
         self.title = title
         self.previewText = previewText
@@ -309,7 +353,7 @@ struct PersistedThreadSummary: Codable, Equatable, Sendable, Identifiable {
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
+        threadID = try container.decode(String.self, forKey: .id)
         providerID = try container.decodeIfPresent(String.self, forKey: .providerID) ?? BridgeProviderIdentifier.codex
         title = try container.decode(String.self, forKey: .title)
         previewText = try container.decode(String.self, forKey: .previewText)
@@ -319,24 +363,83 @@ struct PersistedThreadSummary: Codable, Equatable, Sendable, Identifiable {
         isLocalOnly = try container.decodeIfPresent(Bool.self, forKey: .isLocalOnly) ?? false
         isStale = try container.decodeIfPresent(Bool.self, forKey: .isStale) ?? false
     }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(threadID, forKey: .id)
+        try container.encode(providerID, forKey: .providerID)
+        try container.encode(title, forKey: .title)
+        try container.encode(previewText, forKey: .previewText)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(isVisibleInSidebar, forKey: .isVisibleInSidebar)
+        try container.encode(isArchived, forKey: .isArchived)
+        try container.encode(isLocalOnly, forKey: .isLocalOnly)
+        try container.encode(isStale, forKey: .isStale)
+    }
 }
 
 struct PersistedWorkspaceUIState: Codable, Equatable, Sendable {
     var isExpanded: Bool
     var isShowingAllVisibleThreads: Bool
-    var lastActiveProviderID: String?
-    var lastActiveThreadID: String?
+    var lastActiveConversationID: ConversationIdentity?
+
+    var lastActiveProviderID: String? {
+        lastActiveConversationID?.providerID
+    }
+
+    var lastActiveThreadID: String? {
+        lastActiveConversationID?.threadID
+    }
 
     init(
         isExpanded: Bool = true,
         isShowingAllVisibleThreads: Bool = false,
+        lastActiveConversationID: ConversationIdentity? = nil,
         lastActiveProviderID: String? = nil,
         lastActiveThreadID: String? = nil
     ) {
         self.isExpanded = isExpanded
         self.isShowingAllVisibleThreads = isShowingAllVisibleThreads
-        self.lastActiveProviderID = lastActiveProviderID
-        self.lastActiveThreadID = lastActiveThreadID
+        self.lastActiveConversationID = lastActiveConversationID
+            ?? lastActiveThreadID.map {
+                ConversationIdentity(
+                    providerID: lastActiveProviderID ?? BridgeProviderIdentifier.codex,
+                    threadID: $0
+                )
+            }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case isExpanded
+        case isShowingAllVisibleThreads
+        case lastActiveConversationID
+        case lastActiveProviderID
+        case lastActiveThreadID
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        isExpanded = try container.decodeIfPresent(Bool.self, forKey: .isExpanded) ?? true
+        isShowingAllVisibleThreads = try container.decodeIfPresent(Bool.self, forKey: .isShowingAllVisibleThreads) ?? false
+        if let lastActiveConversationID = try container.decodeIfPresent(ConversationIdentity.self, forKey: .lastActiveConversationID) {
+            self.lastActiveConversationID = lastActiveConversationID
+        } else {
+            let lastActiveThreadID = try container.decodeIfPresent(String.self, forKey: .lastActiveThreadID)
+            let lastActiveProviderID = try container.decodeIfPresent(String.self, forKey: .lastActiveProviderID)
+            self.lastActiveConversationID = lastActiveThreadID.map {
+                ConversationIdentity(
+                    providerID: lastActiveProviderID ?? BridgeProviderIdentifier.codex,
+                    threadID: $0
+                )
+            }
+        }
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(isExpanded, forKey: .isExpanded)
+        try container.encode(isShowingAllVisibleThreads, forKey: .isShowingAllVisibleThreads)
+        try container.encodeIfPresent(lastActiveConversationID, forKey: .lastActiveConversationID)
     }
 }
 
@@ -375,13 +478,25 @@ struct PersistedWorkspaceState: Codable, Equatable, Sendable, Identifiable {
 
     var lastActiveThreadID: String? {
         get { uiState.lastActiveThreadID }
-        set { uiState.lastActiveThreadID = newValue }
+        set {
+            uiState.lastActiveConversationID = newValue.map {
+                ConversationIdentity(
+                    providerID: uiState.lastActiveProviderID ?? BridgeProviderIdentifier.codex,
+                    threadID: $0
+                )
+            }
+        }
+    }
+
+    var lastActiveConversationID: ConversationIdentity? {
+        get { uiState.lastActiveConversationID }
+        set { uiState.lastActiveConversationID = newValue }
     }
 
     var pinnedThreadIDs: [String] {
         cachedThreadList.threadSummaries
             .filter(\.isLocalOnly)
-            .map(\.id)
+            .map(\.threadID)
             .sorted()
     }
 
@@ -404,6 +519,7 @@ struct PersistedWorkspaceState: Codable, Equatable, Sendable, Identifiable {
         workspacePath: String,
         isExpanded: Bool = true,
         isShowingAllVisibleThreads: Bool = false,
+        lastActiveConversationID: ConversationIdentity? = nil,
         lastActiveThreadID: String? = nil,
         pinnedThreadIDs: [String] = [],
         threadSummaries: [PersistedThreadSummary] = [],
@@ -413,7 +529,7 @@ struct PersistedWorkspaceState: Codable, Equatable, Sendable, Identifiable {
         let pinnedThreadIDSet = Set(pinnedThreadIDs)
         let cachedThreadSummaries = threadSummaries.map { summary in
             var summary = summary
-            if pinnedThreadIDSet.contains(summary.id) {
+            if pinnedThreadIDSet.contains(summary.threadID) {
                 summary.isLocalOnly = true
             }
             return summary
@@ -424,6 +540,7 @@ struct PersistedWorkspaceState: Codable, Equatable, Sendable, Identifiable {
             uiState: PersistedWorkspaceUIState(
                 isExpanded: isExpanded,
                 isShowingAllVisibleThreads: isShowingAllVisibleThreads,
+                lastActiveConversationID: lastActiveConversationID,
                 lastActiveThreadID: lastActiveThreadID
             ),
             cachedThreadList: PersistedCachedThreadListState(
@@ -489,7 +606,7 @@ struct PersistedWorkspaceState: Codable, Equatable, Sendable, Identifiable {
 extension ThreadSummary {
     init(persistedSummary: PersistedThreadSummary) {
         self.init(
-            id: persistedSummary.id,
+            id: persistedSummary.threadID,
             providerID: persistedSummary.providerID,
             title: persistedSummary.title,
             previewText: persistedSummary.previewText,
@@ -503,7 +620,7 @@ extension ThreadSummary {
 
     var persistedSummary: PersistedThreadSummary {
         PersistedThreadSummary(
-            id: id,
+            id: threadID,
             providerID: providerID,
             title: title,
             previewText: previewText,
@@ -518,8 +635,39 @@ extension ThreadSummary {
 
 struct WorkspaceThreadRoute: Equatable, Sendable {
     var workspacePath: String
-    var providerID: String?
-    var threadID: String?
+    var conversationID: ConversationIdentity?
+
+    var providerID: String? {
+        conversationID?.providerID
+    }
+
+    var threadID: String? {
+        conversationID?.threadID
+    }
+
+    init(
+        workspacePath: String,
+        conversationID: ConversationIdentity? = nil
+    ) {
+        self.workspacePath = workspacePath
+        self.conversationID = conversationID
+    }
+
+    init(
+        workspacePath: String,
+        providerID: String? = nil,
+        threadID: String?
+    ) {
+        self.init(
+            workspacePath: workspacePath,
+            conversationID: threadID.map {
+                ConversationIdentity(
+                    providerID: providerID ?? BridgeProviderIdentifier.codex,
+                    threadID: $0
+                )
+            }
+        )
+    }
 }
 
 enum AppPrimaryView: String, Equatable, Sendable {

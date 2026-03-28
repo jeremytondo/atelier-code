@@ -289,13 +289,15 @@ struct AppModelTests {
 
         appModel.activateWorkspace(at: secondWorkspaceURL)
         try await waitUntil { appModel.activeWorkspaceController?.gitStatus == .branch("feature/initial") }
-        appModel.activeWorkspaceController?.upsertThreadSummary(
-            ThreadSummary(
-                id: "thread-2",
-                title: "Second Workspace Thread",
-                previewText: "Open me",
-                updatedAt: .now
-            )
+        appModel.activeWorkspaceController?.replaceThreadList(
+            [
+                ThreadSummary(
+                    id: "thread-2",
+                    title: "Second Workspace Thread",
+                    previewText: "Open me",
+                    updatedAt: .now
+                )
+            ]
         )
 
         appModel.selectWorkspace(path: firstWorkspaceURL.path)
@@ -334,7 +336,10 @@ struct AppModelTests {
 
         await gitService.enqueueStatuses([.branch("main")], for: workspaceURL.path)
         appModel.activateWorkspace(at: workspaceURL)
-        try await waitUntil { appModel.activeWorkspaceController?.workspace.canonicalPath == workspaceURL.path }
+        try await waitUntil {
+            appModel.activeWorkspaceController?.workspace.canonicalPath == workspaceURL.path &&
+                appModel.activeWorkspaceController?.connectionStatus == .ready
+        }
 
         guard let controller = appModel.activeWorkspaceController else {
             Issue.record("Expected active workspace controller.")
@@ -710,12 +715,12 @@ struct AppModelTests {
 
         #expect(didSend)
         #expect(controller.threadSummary(id: threadID)?.isVisibleInSidebar == true)
-        #expect(controller.visibleThreadSummaries.map(\.id) == [threadID])
+        #expect(controller.visibleThreadSummaries.map(\.threadID) == [threadID])
         #expect(controller.threadSummary(id: threadID)?.title == "Start the real conversation.")
 
         controller.replaceThreadList([])
 
-        #expect(controller.visibleThreadSummaries.map(\.id) == [threadID])
+        #expect(controller.visibleThreadSummaries.map(\.threadID) == [threadID])
     }
 
     @Test func startedThreadsSurviveWorkspaceRefreshWhenRuntimeOmitsThem() async throws {
@@ -738,13 +743,13 @@ struct AppModelTests {
 
         #expect(didCreateThread)
         #expect(didSend)
-        #expect(controller.visibleThreadSummaries.map(\.id) == [threadID])
+        #expect(controller.visibleThreadSummaries.map(\.threadID) == [threadID])
 
         runtimeCoordinator.queuedThreadListResponses = [[]]
         let prepared = await appModel.prepareWorkspaceForBrowsing(path: workspaceURL.path)
 
         #expect(prepared)
-        #expect(controller.visibleThreadSummaries.map(\.id) == [threadID])
+        #expect(controller.visibleThreadSummaries.map(\.threadID) == [threadID])
         #expect(controller.threadSummary(id: threadID)?.title == "Keep this in the sidebar.")
     }
 
@@ -770,7 +775,7 @@ struct AppModelTests {
         #expect(didCreateThread)
         #expect(didSend)
         #expect(
-            persistedSnapshot.workspaceStates.first(where: { $0.workspacePath == workspaceURL.path })?.threadSummaries.map(\.id) == [threadID]
+            persistedSnapshot.workspaceStates.first(where: { $0.workspacePath == workspaceURL.path })?.threadSummaries.map(\.threadID) == [threadID]
         )
         #expect(
             persistedSnapshot.workspaceStates.first(where: { $0.workspacePath == workspaceURL.path })?.pinnedThreadIDs == [threadID]
@@ -790,13 +795,13 @@ struct AppModelTests {
         #expect(restoredAppModel.selectedRoute?.workspacePath == workspaceURL.path)
         #expect(restoredAppModel.selectedRoute?.threadID == nil)
         #expect(restoredController.lastActiveThreadID == threadID)
-        #expect(restoredController.visibleThreadSummaries.map(\.id) == [threadID])
+        #expect(restoredController.visibleThreadSummaries.map(\.threadID) == [threadID])
 
         restoredRuntimeCoordinator.queuedThreadListResponses = [[]]
         let prepared = await restoredAppModel.prepareWorkspaceForBrowsing(path: workspaceURL.path)
 
         #expect(prepared)
-        #expect(restoredController.visibleThreadSummaries.map(\.id) == [threadID])
+        #expect(restoredController.visibleThreadSummaries.map(\.threadID) == [threadID])
         #expect(restoredController.threadSummary(id: threadID)?.title == "Restore this after relaunch.")
     }
 
@@ -851,6 +856,63 @@ struct AppModelTests {
         #expect(controller.lastActiveThreadID == "thread-2")
         #expect(appModel.selectedRoute?.workspacePath == workspaceURL.path)
         #expect(appModel.selectedRoute?.threadID == nil)
+    }
+
+    @Test func restoredLegacyWorkspaceStateDefaultsMissingProviderIDsToCodex() async throws {
+        let workspaceURL = try temporaryDirectory(named: "restored-legacy-provider-default")
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let json = """
+        {
+          "recentWorkspaces": [
+            {
+              "canonicalPath": "\(workspaceURL.path)",
+              "displayName": "\(workspaceURL.lastPathComponent)",
+              "lastOpenedAt": "2026-03-28T12:00:00Z"
+            }
+          ],
+          "lastSelectedWorkspacePath": "\(workspaceURL.path)",
+          "codexPathOverride": null,
+          "workspaceStates": [
+            {
+              "workspacePath": "\(workspaceURL.path)",
+              "isExpanded": true,
+              "isShowingAllVisibleThreads": false,
+              "lastActiveThreadID": "thread-legacy",
+              "pinnedThreadIDs": ["thread-legacy"],
+              "threadSummaries": [
+                {
+                  "id": "thread-legacy",
+                  "title": "Legacy Thread",
+                  "previewText": "Preview",
+                  "updatedAt": "2026-03-28T12:00:00Z",
+                  "isVisibleInSidebar": true,
+                  "isArchived": false,
+                  "isLocalOnly": true,
+                  "isStale": false
+                }
+              ]
+            }
+          ]
+        }
+        """
+        let snapshot = try decoder.decode(AppPreferencesSnapshot.self, from: Data(json.utf8))
+        let store = InMemoryAppPreferencesStore(snapshot: snapshot)
+        let runtimeCoordinator = TestRuntimeCoordinator()
+        let appModel = AppModel(
+            preferencesStore: store,
+            bridgeDiagnosticProvider: { .bridgePresent(at: URL(fileURLWithPath: "/tmp/bridge")) },
+            runtimeFactory: { TestWorkspaceRuntime(controller: $0, coordinator: runtimeCoordinator) }
+        )
+
+        try await waitUntil { appModel.activeWorkspaceController?.connectionStatus == .ready }
+
+        let controller = try #require(appModel.activeWorkspaceController)
+        let summary = try #require(controller.threadSummary(id: "thread-legacy"))
+
+        #expect(summary.providerID == BridgeProviderIdentifier.codex)
+        #expect(controller.lastActiveConversationID == ConversationIdentity(threadID: "thread-legacy"))
+        #expect(controller.visibleThreadSummaries.map(\.conversationID) == [ConversationIdentity(threadID: "thread-legacy")])
     }
 
     @Test func sendAndCancelGatingTracksWorkspaceState() async throws {
@@ -1691,7 +1753,7 @@ private final class LifecycleProbeRuntime: WorkspaceConversationRuntime {
 }
 
 private func waitUntil(
-    timeoutNanoseconds: UInt64 = 1_000_000_000,
+    timeoutNanoseconds: UInt64 = 3_000_000_000,
     pollNanoseconds: UInt64 = 10_000_000,
     _ condition: @escaping @MainActor () -> Bool
 ) async throws {

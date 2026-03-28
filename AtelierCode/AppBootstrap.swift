@@ -3,6 +3,15 @@ import Foundation
 enum AppBootstrap {
     @MainActor
     static func makeAppModel(processInfo: ProcessInfo = .processInfo) -> AppModel {
+        if processInfo.environment["XCTestConfigurationFilePath"] != nil,
+           UITestScenario(processInfo: processInfo) == nil {
+            return AppModel(
+                preferencesStore: InMemoryBootstrapPreferencesStore(snapshot: nil),
+                bridgeDiagnosticProvider: { .bridgePresent(at: FileManager.default.temporaryDirectory.appendingPathComponent("mock-bridge")) },
+                runtimeFactory: { NoopBootstrapRuntime(controller: $0) }
+            )
+        }
+
         guard let scenario = UITestScenario(processInfo: processInfo) else {
             return AppModel()
         }
@@ -47,6 +56,81 @@ enum AppBootstrap {
             gitService: gitService,
             runtimeFactory: { UITestWorkspaceRuntime(controller: $0, coordinator: coordinator) }
         )
+    }
+}
+
+@MainActor
+private final class NoopBootstrapRuntime: WorkspaceConversationRuntime {
+    let controller: WorkspaceController
+
+    init(controller: WorkspaceController) {
+        self.controller = controller
+    }
+
+    func start() async throws {
+        controller.setConnectionStatus(.ready)
+    }
+
+    func stop() async {
+        controller.setConnectionStatus(.disconnected)
+    }
+
+    func refreshModels() async throws {}
+    func listThreads(archived _: Bool) async throws {}
+
+    func startThreadAndWait(title: String?, configuration _: BridgeConversationConfiguration?) async throws -> ThreadSession {
+        controller.openThread(id: UUID().uuidString, title: title ?? "New Conversation", isVisibleInSidebar: false)
+    }
+
+    func resumeThreadAndWait(id: String) async throws -> ThreadSession {
+        controller.resumeThread(id: id, title: "Recovered Conversation")
+    }
+
+    func readThreadAndWait(id: String, includeTurns _: Bool) async throws -> ThreadSession {
+        controller.resumeThread(id: id, title: "Recovered Conversation")
+    }
+
+    func forkThreadAndWait(id: String) async throws -> ThreadSession {
+        controller.resumeThread(id: "\(id)-fork", title: "Recovered Conversation")
+    }
+
+    func renameThread(id: String, title: String) async throws {
+        controller.updateThreadSummary(id: id) { summary in
+            summary.title = title
+        }
+    }
+
+    func archiveThread(id: String) async throws {
+        controller.setThreadArchived(true, for: id)
+    }
+
+    func unarchiveThreadAndWait(id: String) async throws -> ThreadSession {
+        controller.setThreadArchived(false, for: id)
+        return controller.resumeThread(id: id, title: "Recovered Conversation")
+    }
+
+    func rollbackThreadAndWait(id: String, numTurns _: Int) async throws -> ThreadSession {
+        let messages = Array((controller.threadSession(id: id)?.messages ?? []).dropLast())
+        return controller.resumeThread(id: id, title: "Recovered Conversation", messages: messages)
+    }
+
+    func startTurn(threadID: String, prompt: String, configuration _: BridgeTurnStartConfiguration?) async throws {
+        let session = controller.threadSession(id: threadID)
+            ?? controller.openThread(id: threadID, title: "New Conversation", isVisibleInSidebar: false)
+        session.beginTurn(userPrompt: prompt)
+        controller.setAwaitingTurnStart(false, for: threadID)
+        controller.setCurrentTurnID("bootstrap-turn", for: threadID)
+    }
+
+    func cancelTurn(threadID: String, reason _: String?) async throws {
+        controller.setAwaitingTurnStart(false, for: threadID)
+        controller.threadSession(id: threadID)?.cancelTurn()
+        controller.setCurrentTurnID(nil, for: threadID)
+    }
+
+    func resolveApproval(threadID: String, id: String, resolution: ApprovalResolution) async throws {
+        controller.threadSession(id: threadID)?.resolveApprovalRequest(id: id, resolution: resolution)
+        controller.setCurrentTurnID(nil, for: threadID)
     }
 }
 
