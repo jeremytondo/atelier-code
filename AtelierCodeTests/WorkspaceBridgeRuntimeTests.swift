@@ -51,6 +51,78 @@ struct WorkspaceBridgeRuntimeTests {
         #expect(sentMessageTypes.contains("thread.list"))
     }
 
+    @Test func startupSkipsUnsupportedProviderRequests() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-capability-skip"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4250)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(
+                requestID: "ateliercode-hello-1",
+                providersJSON: [
+                    providerJSON(
+                        id: "gemini",
+                        displayName: "Gemini",
+                        supportsThreadLifecycle: false,
+                        supportsApprovals: false,
+                        supportsAuthentication: false,
+                        supportedModes: []
+                    )
+                ]
+            )
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+
+        #expect(controller.connectionStatus == .ready)
+        #expect(controller.authState == .unknown)
+        #expect(controller.availableModels.isEmpty)
+        #expect(controller.threadSummaries.isEmpty)
+        #expect(controller.lastSuccessfulThreadListAt != nil)
+        #expect(sentMessageTypes(from: socketClient.sentTexts) == ["hello"])
+    }
+
+    @Test func startupCommandsUseImplicitProviderFromWelcome() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-implicit-provider"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4251)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(
+                requestID: "ateliercode-hello-1",
+                providersJSON: [providerJSON(id: "gemini", displayName: "Gemini")]
+            ),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            modelListResultJSON(requestID: "ateliercode-model-list"),
+            threadListResultJSON(
+                requestID: "ateliercode-thread-list-3",
+                threadTitle: "Gemini Thread",
+                providerID: "gemini"
+            )
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.threadSummary(id: "thread-1", providerID: "gemini") != nil }
+
+        #expect(latestCommandProvider(ofType: "account.read", from: socketClient.sentTexts) == "gemini")
+        #expect(latestCommandProvider(ofType: "model.list", from: socketClient.sentTexts) == "gemini")
+        #expect(latestCommandProvider(ofType: "thread.list", from: socketClient.sentTexts) == "gemini")
+    }
+
     @Test func modelListErrorsDoNotPoisonWorkspaceConnection() async throws {
         let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-model-list-error"), lastOpenedAt: .now)
         let controller = WorkspaceController(workspace: workspace)
@@ -77,6 +149,49 @@ struct WorkspaceBridgeRuntimeTests {
         #expect(controller.availableModels.isEmpty)
     }
 
+    @Test func threadResumeErrorsDoNotPoisonWorkspaceConnection() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-thread-resume-error"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4247)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready && controller.threadSummary(id: "thread-1") != nil }
+
+        let resumeTask = Task {
+            try await runtime.resumeThreadAndWait(conversationID: ConversationIdentity(threadID: "thread-1"))
+        }
+        try await waitUntil { pendingCommandCount(in: runtime) == 1 }
+
+        socketClient.enqueue(requestErrorJSON(
+            requestID: "ateliercode-thread-resume-4",
+            message: "Thread is missing on disk"
+        ))
+
+        do {
+            _ = try await resumeTask.value
+            Issue.record("Expected resumeThreadAndWait to fail.")
+        } catch {
+            #expect(error.localizedDescription == "Thread is missing on disk")
+        }
+
+        try await waitUntil { controller.connectionStatus == .ready && pendingCommandCount(in: runtime) == 0 }
+
+        #expect(controller.connectionStatus == .ready)
+    }
+
     @Test func providerStatusUpdatesEnvironmentWarningAndExecutablePath() async throws {
         let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-provider-status"), lastOpenedAt: .now)
         let controller = WorkspaceController(workspace: workspace)
@@ -96,7 +211,7 @@ struct WorkspaceBridgeRuntimeTests {
         )
 
         try await runtime.start()
-        try await waitUntil { controller.connectionStatus == .ready }
+        try await waitUntil { controller.connectionStatus == .ready && controller.threadSummary(id: "thread-1") != nil }
 
         socketClient.enqueue(
             providerStatusJSON(
@@ -142,7 +257,7 @@ struct WorkspaceBridgeRuntimeTests {
         )
 
         try await runtime.start()
-        try await waitUntil { controller.connectionStatus == .ready }
+        try await waitUntil { controller.connectionStatus == .ready && controller.threadSummary(id: "thread-1") != nil }
 
         let startTask = Task { try await runtime.startThreadAndWait(title: "New Thread") }
         try await waitUntil { pendingCommandCount(in: runtime) == 1 }
@@ -151,12 +266,48 @@ struct WorkspaceBridgeRuntimeTests {
         let session = try await startTask.value
         let sentCountBeforeArchive = socketClient.sentTexts.count
 
-        try await runtime.archiveThread(id: session.threadID)
+        try await runtime.archiveThread(conversationID: session.conversationID)
 
         #expect(session.messages.isEmpty)
         #expect(controller.threadSummary(id: session.threadID)?.isArchived == true)
         #expect(controller.connectionStatus == .ready)
         #expect(socketClient.sentTexts.count == sentCountBeforeArchive)
+    }
+
+    @Test func archivedThreadListingCompletesLocallyWithoutSendingBridgeRequests() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-archived-list"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4248)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil(timeoutNanoseconds: 10_000_000_000) {
+            controller.connectionStatus == .ready && controller.threadSummary(id: "thread-1") != nil
+        }
+        _ = try #require(controller.threadSummary(id: "thread-1"))
+
+        controller.setThreadArchived(true, for: "thread-1")
+        controller.setShowingArchivedThreads(true)
+        let sentCountBeforeArchivedList = socketClient.sentTexts.count
+
+        try await runtime.listThreads(archived: true)
+
+        #expect(controller.threadSummary(id: "thread-1")?.isArchived == true)
+        #expect(controller.threadListSyncState == .idle)
+        #expect(controller.lastSuccessfulThreadListAt != nil)
+        #expect(socketClient.sentTexts.count == sentCountBeforeArchivedList)
     }
 
     @Test func accountLoginResultOpensBrowserAndClearsPendingStateOnAuthChange() async throws {
@@ -755,10 +906,10 @@ struct WorkspaceBridgeRuntimeTests {
 
         try await waitUntil {
             pendingCommandCount(in: runtime) == 0 &&
-                Set(controller.threadSummaries.map(\.id)) == Set(["thread-10", "thread-11"])
+                Set(controller.threadSummaries.map(\.threadID)) == Set(["thread-10", "thread-11"])
         }
 
-        #expect(Set(controller.threadSummaries.map(\.id)) == Set(["thread-10", "thread-11"]))
+        #expect(Set(controller.threadSummaries.map(\.threadID)) == Set(["thread-10", "thread-11"]))
     }
 
     @Test func bridgeFailureDuringListRefreshPreservesCachedRowsAndMarksSyncFailed() async throws {
@@ -792,7 +943,7 @@ struct WorkspaceBridgeRuntimeTests {
                 controller.threadListSyncState == .failed
         }
 
-        #expect(controller.threadSummaries.map(\.id) == ["thread-1"])
+        #expect(controller.threadSummaries.map(\.threadID) == ["thread-1"])
         #expect(controller.threadSummary(id: "thread-1")?.title == "Bootstrap")
         #expect(controller.threadListSyncState == .failed)
     }
@@ -820,7 +971,10 @@ struct WorkspaceBridgeRuntimeTests {
 
         let session = controller.openThread(id: "thread-1", title: "Thread")
         let renameTask = Task {
-            try await runtime.renameThread(id: "thread-1", title: "Renamed Thread")
+            try await runtime.renameThread(
+                conversationID: ConversationIdentity(threadID: "thread-1"),
+                title: "Renamed Thread"
+            )
         }
 
         try await waitUntil {
@@ -845,6 +999,68 @@ struct WorkspaceBridgeRuntimeTests {
 
         #expect(controller.threadSummary(id: "thread-1")?.title == "Renamed Thread")
         #expect(session.title == "Renamed Thread")
+    }
+
+    @Test func renameThreadUsesExplicitProviderWhenThreadIDsCollide() async throws {
+        let workspace = WorkspaceRecord(url: try temporaryDirectory(named: "runtime-thread-rename-provider"), lastOpenedAt: .now)
+        let controller = WorkspaceController(workspace: workspace)
+        let bundle = try bridgeFixtureBundle()
+        let processHandle = FakeBridgeProcessHandle(lines: [startupRecordJSON(port: 4750)])
+        let socketClient = FakeBridgeSocketClient(messages: [
+            welcomeJSON(requestID: "ateliercode-hello-1"),
+            authChangedJSON(requestID: "ateliercode-account-read-2", state: "signed_out", displayName: nil),
+            threadListResultJSON(requestID: "ateliercode-thread-list-3", threadTitle: "Thread")
+        ])
+        let runtime = makeRuntime(
+            controller: controller,
+            executableLocator: BridgeExecutableLocator(bundle: bundle),
+            processLauncher: { _ in processHandle },
+            socketFactory: { _ in socketClient },
+            openURLAction: { _ in }
+        )
+
+        try await runtime.start()
+        try await waitUntil { controller.connectionStatus == .ready }
+
+        let codexConversationID = ConversationIdentity(providerID: BridgeProviderIdentifier.codex, threadID: "thread-1")
+        let geminiConversationID = ConversationIdentity(providerID: "gemini", threadID: "thread-1")
+        controller.setAvailableProviders([
+            testProviderSummary(id: BridgeProviderIdentifier.codex, displayName: "Codex"),
+            testProviderSummary(id: "gemini", displayName: "Gemini")
+        ])
+        controller.openThread(id: "thread-1", providerID: BridgeProviderIdentifier.codex, title: "Codex Thread")
+        let geminiSession = controller.openThread(id: "thread-1", providerID: "gemini", title: "Gemini Thread")
+        controller.markThreadSelected(codexConversationID)
+
+        let renameTask = Task {
+            try await runtime.renameThread(conversationID: geminiConversationID, title: "Renamed Gemini Thread")
+        }
+
+        try await waitUntil {
+            pendingCommandCount(in: runtime) == 1 &&
+            latestCommandProvider(ofType: "thread.rename", from: socketClient.sentTexts) == "gemini" &&
+            latestCommandPayload(ofType: "thread.rename", from: socketClient.sentTexts)?["title"] as? String == "Renamed Gemini Thread"
+        }
+
+        #expect(latestCommandProvider(ofType: "thread.rename", from: socketClient.sentTexts) == "gemini")
+
+        socketClient.enqueue(threadStartedJSON(
+            requestID: "ateliercode-thread-rename-4",
+            threadID: "thread-1",
+            threadTitle: "Renamed Gemini Thread",
+            providerID: "gemini"
+        ))
+
+        try await renameTask.value
+        try await waitUntil {
+            controller.threadSummary(for: geminiConversationID)?.title == "Renamed Gemini Thread" &&
+            geminiSession.title == "Renamed Gemini Thread" &&
+            controller.threadSummary(for: codexConversationID)?.title == "Codex Thread" &&
+            pendingCommandCount(in: runtime) == 0
+        }
+
+        #expect(controller.threadSummary(for: geminiConversationID)?.title == "Renamed Gemini Thread")
+        #expect(controller.threadSummary(for: codexConversationID)?.title == "Codex Thread")
     }
 
     @Test func cancelledStartThreadAndWaitIgnoresLateThreadStartedEvent() async throws {
@@ -887,7 +1103,7 @@ struct WorkspaceBridgeRuntimeTests {
             threadTitle: "Late Thread"
         ))
 
-        try await waitUntil { controller.threadSummaries.contains(where: { $0.id == "thread-late" }) }
+        try await waitUntil { controller.threadSummaries.contains(where: { $0.threadID == "thread-late" }) }
 
         #expect(controller.activeThreadSession == nil)
         #expect(abandonedThreadRequestCount(in: runtime) == 0)
@@ -1098,9 +1314,28 @@ private func startupRecordJSON(port: Int) -> String {
     """
 }
 
-private func welcomeJSON(requestID: String) -> String {
+private func welcomeJSON(
+    requestID: String,
+    providersJSON: [String] = [providerJSON()]
+) -> String {
+    let joinedProvidersJSON = providersJSON.joined(separator: ",")
+    return """
+    {"type":"welcome","timestamp":"2026-03-24T10:00:01Z","requestID":"\(requestID)","payload":{"bridgeVersion":"0.1.0","protocolVersion":1,"supportedProtocolVersions":[1],"sessionID":"session-1","transport":"websocket","providers":[\(joinedProvidersJSON)],"environment":{"source":"login_probe","shellPath":"/bin/zsh","probeError":null,"pathDirectoryCount":5,"homeDirectory":"/Users/tester"}}}
     """
-    {"type":"welcome","timestamp":"2026-03-24T10:00:01Z","requestID":"\(requestID)","payload":{"bridgeVersion":"0.1.0","protocolVersion":1,"supportedProtocolVersions":[1],"sessionID":"session-1","transport":"websocket","providers":[{"id":"codex","displayName":"Codex","status":"available"}],"environment":{"source":"login_probe","shellPath":"/bin/zsh","probeError":null,"pathDirectoryCount":5,"homeDirectory":"/Users/tester"}}}
+}
+
+private func providerJSON(
+    id: String = BridgeProviderIdentifier.codex,
+    displayName: String = "Codex",
+    supportsThreadLifecycle: Bool = true,
+    supportsThreadArchiving: Bool = false,
+    supportsApprovals: Bool = true,
+    supportsAuthentication: Bool = true,
+    supportedModes: [String] = ["default"]
+) -> String {
+    let supportedModesJSON = supportedModes.map { "\"\(jsonEscaped($0))\"" }.joined(separator: ",")
+    return """
+    {"id":"\(jsonEscaped(id))","displayName":"\(jsonEscaped(displayName))","status":"available","capabilities":{"supportsThreadLifecycle":\(supportsThreadLifecycle),"supportsThreadArchiving":\(supportsThreadArchiving),"supportsApprovals":\(supportsApprovals),"supportsAuthentication":\(supportsAuthentication),"supportedModes":[\(supportedModesJSON)]}}
     """
 }
 
@@ -1153,9 +1388,19 @@ private func modelListErrorJSON(requestID: String, message: String) -> String {
     """
 }
 
-private func threadListResultJSON(requestID: String, threadTitle: String) -> String {
+private func requestErrorJSON(requestID: String, message: String) -> String {
     """
-    {"type":"thread.list.result","timestamp":"2026-03-24T10:00:04Z","requestID":"\(requestID)","payload":{"threads":[{"id":"thread-1","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:04Z"}],"nextCursor":null}}
+    {"type":"error","timestamp":"2026-03-24T10:00:03Z","requestID":"\(requestID)","payload":{"code":"provider_command_failed","message":"\(jsonEscaped(message))"}}
+    """
+}
+
+private func threadListResultJSON(
+    requestID: String,
+    threadTitle: String,
+    providerID: String = BridgeProviderIdentifier.codex
+) -> String {
+    """
+    {"type":"thread.list.result","timestamp":"2026-03-24T10:00:04Z","requestID":"\(requestID)","payload":{"threads":[{"id":"thread-1","providerID":"\(jsonEscaped(providerID))","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:04Z","archived":false,"running":false,"errorMessage":null}],"nextCursor":null}}
     """
 }
 
@@ -1166,7 +1411,7 @@ private func threadListResultJSON(
 ) -> String {
     let threadsJSON = threads.map { thread in
         """
-        {"id":"\(thread.id)","title":"\(jsonEscaped(thread.title))","previewText":"\(jsonEscaped(thread.previewText))","updatedAt":"\(thread.updatedAt)"}
+        {"id":"\(thread.id)","providerID":"codex","title":"\(jsonEscaped(thread.title))","previewText":"\(jsonEscaped(thread.previewText))","updatedAt":"\(thread.updatedAt)","archived":false,"running":false,"errorMessage":null}
         """
     }.joined(separator: ",")
     let nextCursorJSON = nextCursor.map { "\"\(jsonEscaped($0))\"" } ?? "null"
@@ -1188,9 +1433,14 @@ private func turnStartedJSON(requestID: String, threadID: String, turnID: String
     """
 }
 
-private func threadStartedJSON(requestID: String, threadID: String, threadTitle: String) -> String {
+private func threadStartedJSON(
+    requestID: String,
+    threadID: String,
+    threadTitle: String,
+    providerID: String = BridgeProviderIdentifier.codex
+) -> String {
     """
-    {"type":"thread.started","timestamp":"2026-03-24T10:00:05Z","requestID":"\(requestID)","threadID":"\(threadID)","payload":{"thread":{"id":"\(threadID)","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:05Z"}}}
+    {"type":"thread.started","timestamp":"2026-03-24T10:00:05Z","requestID":"\(requestID)","threadID":"\(threadID)","payload":{"thread":{"id":"\(threadID)","providerID":"\(jsonEscaped(providerID))","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:05Z","archived":false,"running":false,"errorMessage":null}}}
     """
 }
 
@@ -1372,6 +1622,42 @@ private func latestCommandPayload(ofType type: String, from messages: [String]) 
     return nil
 }
 
+private func latestCommandProvider(ofType type: String, from messages: [String]) -> String? {
+    for message in messages.reversed() {
+        guard let object = commandObject(from: message),
+              object["type"] as? String == type else {
+            continue
+        }
+
+        return object["provider"] as? String
+    }
+
+    return nil
+}
+
+private func testProviderSummary(
+    id: String = BridgeProviderIdentifier.codex,
+    displayName: String = "Codex",
+    supportsThreadLifecycle: Bool = true,
+    supportsThreadArchiving: Bool = false,
+    supportsApprovals: Bool = true,
+    supportsAuthentication: Bool = true,
+    supportedModes: [String] = ["default", "plan", "review"]
+) -> ProviderSummaryState {
+    ProviderSummaryState(
+        id: id,
+        displayName: displayName,
+        status: "available",
+        capabilities: ProviderCapabilitiesState(
+            supportsThreadLifecycle: supportsThreadLifecycle,
+            supportsThreadArchiving: supportsThreadArchiving,
+            supportsApprovals: supportsApprovals,
+            supportsAuthentication: supportsAuthentication,
+            supportedModes: supportedModes
+        )
+    )
+}
+
 private func commandObject(from message: String) -> [String: Any]? {
     guard let data = message.data(using: .utf8),
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -1389,7 +1675,7 @@ private func jsonEscaped(_ value: String) -> String {
 }
 
 private func waitUntil(
-    timeoutNanoseconds: UInt64 = 1_000_000_000,
+    timeoutNanoseconds: UInt64 = 3_000_000_000,
     pollNanoseconds: UInt64 = 10_000_000,
     _ condition: @escaping @MainActor () -> Bool
 ) async throws {

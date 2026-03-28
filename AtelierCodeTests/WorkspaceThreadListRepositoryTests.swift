@@ -38,7 +38,7 @@ struct WorkspaceThreadListRepositoryTests {
             )
         )
 
-        #expect(repository.threadSummaries.map(\.id) == ["thread-2", "thread-1"])
+        #expect(repository.threadSummaries.map(\.threadID) == ["thread-2", "thread-1"])
         #expect(repository.threadSummary(id: "thread-1")?.isLocalOnly == true)
         #expect(repository.threadSummary(id: "thread-2")?.isStale == true)
         #expect(repository.lastSuccessfulListAt(for: false) == activeListDate)
@@ -163,12 +163,82 @@ struct WorkspaceThreadListRepositoryTests {
             loadedThreadIDs: []
         )
 
-        #expect(repository.threadSummaries.map(\.id) == ["thread-1", "thread-2"])
+        #expect(repository.threadSummaries.map(\.threadID) == ["thread-1", "thread-2"])
 
         repository.updateThreadSummary(id: "thread-2") { summary in
             summary.title = "Zulu"
         }
 
-        #expect(repository.threadSummaries.map(\.id) == ["thread-1", "thread-2"])
+        #expect(repository.threadSummaries.map(\.threadID) == ["thread-1", "thread-2"])
+    }
+
+    @Test func sameThreadIDCanCoexistAcrossProviders() async throws {
+        let repository = WorkspaceThreadListRepository()
+        let baseline = Date(timeIntervalSince1970: 1_710_000_000)
+
+        repository.replaceThreadList(
+            [
+                ThreadSummary(
+                    id: "thread-1",
+                    providerID: BridgeProviderIdentifier.codex,
+                    title: "Codex Thread",
+                    previewText: "Codex",
+                    updatedAt: baseline
+                ),
+                ThreadSummary(
+                    id: "thread-1",
+                    providerID: "gemini",
+                    title: "Gemini Thread",
+                    previewText: "Gemini",
+                    updatedAt: baseline.addingTimeInterval(60)
+                )
+            ],
+            archived: false,
+            listedAt: baseline.addingTimeInterval(60),
+            selectedConversationID: nil,
+            loadedConversationIDs: []
+        )
+
+        #expect(repository.threadSummaries.count == 2)
+        #expect(repository.threadSummary(
+            for: ConversationIdentity(providerID: BridgeProviderIdentifier.codex, threadID: "thread-1")
+        )?.title == "Codex Thread")
+        #expect(repository.threadSummary(
+            for: ConversationIdentity(providerID: "gemini", threadID: "thread-1")
+        )?.title == "Gemini Thread")
+    }
+
+    @Test func legacyPersistedSummariesDefaultMissingProviderIDToCodex() async throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let json = """
+        {
+          "threadSummaries": [
+            {
+              "id": "thread-legacy",
+              "title": "Legacy",
+              "previewText": "Preview",
+              "updatedAt": "2026-03-28T12:00:00Z",
+              "isVisibleInSidebar": true,
+              "isArchived": false,
+              "isLocalOnly": true,
+              "isStale": false
+            }
+          ],
+          "lastSuccessfulActiveListAt": "2026-03-28T12:00:00Z",
+          "lastSuccessfulArchivedListAt": null
+        }
+        """
+
+        let persistedState = try decoder.decode(
+            PersistedCachedThreadListState.self,
+            from: Data(json.utf8)
+        )
+        let repository = WorkspaceThreadListRepository()
+        repository.restorePersistedState(persistedState)
+
+        let summary = try #require(repository.threadSummary(id: "thread-legacy"))
+        #expect(summary.providerID == BridgeProviderIdentifier.codex)
+        #expect(summary.conversationID == ConversationIdentity(threadID: "thread-legacy"))
     }
 }

@@ -20,8 +20,6 @@ export type BridgeCommandType =
   | "thread.read"
   | "thread.fork"
   | "thread.rename"
-  | "thread.archive"
-  | "thread.unarchive"
   | "thread.rollback"
   | "turn.start"
   | "turn.cancel"
@@ -32,8 +30,6 @@ export type BridgeCommandType =
 export type BridgeEventType =
   | "model.list.result"
   | "thread.started"
-  | "thread.archived"
-  | "thread.unarchived"
   | "turn.started"
   | "message.delta"
   | "thinking.delta"
@@ -67,6 +63,7 @@ export type PlanStepStatus = "pending" | "in_progress" | "completed";
 export type ProviderConnectionStatus = "starting" | "ready" | "degraded" | "disconnected" | "error";
 export type RateLimitBucketKind = "requests" | "tokens" | "other";
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ProviderModeKind = "default" | "plan" | "review";
 
 export interface BridgeEnvelopeBase<TType extends BridgeMessageType = BridgeMessageType> {
   type: TType;
@@ -104,6 +101,7 @@ export interface BridgeHandshakeEnvelope<
 
 export interface ThreadSummary {
   id: string;
+  providerID: ProviderIdentifier;
   title: string;
   previewText: string;
   updatedAt: ISO8601Timestamp;
@@ -123,6 +121,15 @@ export interface ProviderSummary {
   id: ProviderIdentifier;
   displayName: string;
   status: ProviderReadiness;
+  capabilities: ProviderCapabilities;
+}
+
+export interface ProviderCapabilities {
+  supportsThreadLifecycle: boolean;
+  supportsThreadArchiving: boolean;
+  supportsApprovals: boolean;
+  supportsAuthentication: boolean;
+  supportedModes: ProviderModeKind[];
 }
 
 export interface AccountSummary {
@@ -175,12 +182,15 @@ export interface ModelSummary {
   isDefault?: boolean;
 }
 
-export interface TurnStartConfiguration {
+export interface ConversationConfiguration {
   cwd?: string;
   model?: string;
   reasoningEffort?: string;
   sandboxPolicy?: string;
   approvalPolicy?: string;
+}
+
+export interface TurnStartConfiguration extends ConversationConfiguration {
   summaryMode?: string;
   environment?: Record<string, string>;
 }
@@ -223,6 +233,7 @@ export interface WelcomeEnvelope extends BridgeHandshakeEnvelope<"welcome", Welc
 export interface ThreadStartPayload {
   workspacePath: string;
   title?: string;
+  configuration?: ConversationConfiguration;
 }
 
 export interface ModelListPayload {
@@ -232,6 +243,7 @@ export interface ModelListPayload {
 
 export interface ThreadResumePayload {
   workspacePath: string;
+  configuration?: ConversationConfiguration;
 }
 
 export interface ThreadListPayload {
@@ -247,15 +259,12 @@ export interface ThreadReadPayload {
 
 export interface ThreadForkPayload {
   workspacePath: string;
+  configuration?: ConversationConfiguration;
 }
 
 export interface ThreadRenamePayload {
   title: string;
 }
-
-export interface ThreadArchivePayload {}
-
-export interface ThreadUnarchivePayload {}
 
 export interface ThreadRollbackPayload {
   numTurns: number;
@@ -311,14 +320,6 @@ export interface ThreadRenameCommand extends BridgeCommandEnvelope<"thread.renam
   threadID: string;
 }
 
-export interface ThreadArchiveCommand extends BridgeCommandEnvelope<"thread.archive", ThreadArchivePayload> {
-  threadID: string;
-}
-
-export interface ThreadUnarchiveCommand extends BridgeCommandEnvelope<"thread.unarchive", ThreadUnarchivePayload> {
-  threadID: string;
-}
-
 export interface ThreadRollbackCommand extends BridgeCommandEnvelope<"thread.rollback", ThreadRollbackPayload> {
   threadID: string;
 }
@@ -353,8 +354,6 @@ export type BridgeCommand =
   | ThreadReadCommand
   | ThreadForkCommand
   | ThreadRenameCommand
-  | ThreadArchiveCommand
-  | ThreadUnarchiveCommand
   | ThreadRollbackCommand
   | TurnStartCommand
   | TurnCancelCommand
@@ -370,14 +369,6 @@ export interface TurnStartedPayload {
 
 export interface ThreadStartedPayload {
   thread: ThreadSummary;
-}
-
-export interface ThreadArchivedPayload {
-  threadID: string;
-}
-
-export interface ThreadUnarchivedPayload {
-  threadID: string;
 }
 
 export interface MessageDeltaPayload {
@@ -496,15 +487,6 @@ export interface TurnStartedEvent extends BridgeEventEnvelope<"turn.started", Tu
 }
 
 export interface ThreadStartedEvent extends BridgeEventEnvelope<"thread.started", ThreadStartedPayload> {
-  threadID: string;
-}
-
-export interface ThreadArchivedEvent extends BridgeEventEnvelope<"thread.archived", ThreadArchivedPayload> {
-  threadID: string;
-}
-
-export interface ThreadUnarchivedEvent
-  extends BridgeEventEnvelope<"thread.unarchived", ThreadUnarchivedPayload> {
   threadID: string;
 }
 
@@ -645,6 +627,7 @@ export interface ProviderHealth {
   provider: "codex";
   status: ProviderReadiness;
   detail: string;
+  capabilities: ProviderCapabilities;
   executable: ExecutableDiscoveryResult;
   environment: BridgeEnvironmentDiagnostics;
 }

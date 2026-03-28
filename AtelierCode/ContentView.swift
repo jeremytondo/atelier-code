@@ -62,7 +62,7 @@ private struct WorkspaceSidebar: View {
                         .controlSize(.large)
                         .accessibilityIdentifier("open-workspace-button")
 
-                        if appModel.selectedWorkspaceController != nil {
+                        if appModel.selectedWorkspaceController != nil && appModel.selectedProviderSupportsThreadLifecycle {
                             Button {
                                 Task {
                                     _ = await appModel.createThread()
@@ -199,7 +199,12 @@ private struct WorkspaceTreeRow: View {
 
             if controller.isExpanded {
                 VStack(alignment: .leading, spacing: 3) {
-                    if controller.visibleThreadSummaries.isEmpty {
+                    if appModel.supportsThreadLifecycle(workspacePath: controller.workspace.canonicalPath) == false {
+                        Text("\(controller.implicitProviderDisplayName) does not support thread browsing yet.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 34)
+                    } else if controller.visibleThreadSummaries.isEmpty {
                         Text("No active threads yet.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -286,6 +291,10 @@ private struct WorkspaceHeaderRow: View {
         }
     }
 
+    private var canCreateThread: Bool {
+        appModel.supportsThreadLifecycle(workspacePath: controller.workspace.canonicalPath)
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             Button {
@@ -341,18 +350,20 @@ private struct WorkspaceHeaderRow: View {
                 }
 
                 HStack(spacing: 8) {
-                    Button {
-                        appModel.selectWorkspace(path: controller.workspace.canonicalPath)
-                        Task {
-                            _ = await appModel.createThread()
+                    if canCreateThread {
+                        Button {
+                            appModel.selectWorkspace(path: controller.workspace.canonicalPath)
+                            Task {
+                                _ = await appModel.createThread()
+                            }
+                        } label: {
+                            Image(systemName: "square.and.pencil")
+                                .frame(width: 28, height: 28)
                         }
-                    } label: {
-                        Image(systemName: "square.and.pencil")
-                            .frame(width: 28, height: 28)
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("workspace-new-thread-\(controller.workspace.displayName)")
+                        .help("Create a new thread")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("workspace-new-thread-\(controller.workspace.displayName)")
-                    .help("Create a new thread")
 
                     Menu {
                         Button("Open in Finder") {
@@ -390,10 +401,12 @@ private struct WorkspaceHeaderRow: View {
         .onHover { isHovering = $0 }
         .accessibilityElement(children: .contain)
         .contextMenu {
-            Button("New Thread") {
-                appModel.selectWorkspace(path: controller.workspace.canonicalPath)
-                Task {
-                    _ = await appModel.createThread()
+            if canCreateThread {
+                Button("New Thread") {
+                    appModel.selectWorkspace(path: controller.workspace.canonicalPath)
+                    Task {
+                        _ = await appModel.createThread()
+                    }
                 }
             }
 
@@ -447,7 +460,9 @@ private struct WorkspaceThreadRow: View {
     @FocusState private var isRenameFieldFocused: Bool
 
     private var isSelected: Bool {
-        appModel.selectedRoute?.workspacePath == workspacePath && appModel.selectedRoute?.threadID == threadSummary.id
+        appModel.selectedRoute?.workspacePath == workspacePath
+            && appModel.selectedRoute?.providerID == threadSummary.providerID
+            && appModel.selectedRoute?.threadID == threadSummary.threadID
     }
 
     private var showsHoverActions: Bool {
@@ -494,15 +509,24 @@ private struct WorkspaceThreadRow: View {
             threadSummary.isStale
     }
 
+    private var supportsThreadLifecycle: Bool {
+        appModel.supportsThreadLifecycle(
+            workspacePath: workspacePath,
+            providerID: threadSummary.providerID
+        )
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             if isRenaming {
                 rowContent
-            } else {
+            } else if supportsThreadLifecycle {
                 Button(action: openThread) {
                     rowContent
                 }
                 .buttonStyle(.plain)
+            } else {
+                rowContent
             }
 
             Menu {
@@ -629,25 +653,47 @@ private struct WorkspaceThreadRow: View {
 
     @ViewBuilder
     private var threadActionMenuItems: some View {
+        if threadSummary.isLocalOnly {
+            Button("Remove from Sidebar") {
+                _ = appModel.removeCachedThread(
+                    workspacePath: workspacePath,
+                    conversationID: threadSummary.conversationID
+                )
+            }
+        }
+
         Button(threadSummary.isArchived ? "Unarchive" : "Archive") {
             if threadSummary.isArchived {
                 Task {
-                    _ = await appModel.unarchiveThread(workspacePath: workspacePath, threadID: threadSummary.id)
+                    _ = await appModel.unarchiveThread(
+                        workspacePath: workspacePath,
+                        conversationID: threadSummary.conversationID
+                    )
                 }
             } else {
                 Task {
-                    _ = await appModel.archiveThread(workspacePath: workspacePath, threadID: threadSummary.id)
+                    _ = await appModel.archiveThread(
+                        workspacePath: workspacePath,
+                        conversationID: threadSummary.conversationID
+                    )
                 }
             }
         }
 
-        Button("Rename") {
-            beginRename()
+        if supportsThreadLifecycle {
+            Button("Rename") {
+                beginRename()
+            }
         }
 
-        Button("Fork") {
-            Task {
-                _ = await appModel.forkThread(workspacePath: workspacePath, threadID: threadSummary.id)
+        if supportsThreadLifecycle {
+            Button("Fork") {
+                Task {
+                    _ = await appModel.forkThread(
+                        workspacePath: workspacePath,
+                        conversationID: threadSummary.conversationID
+                    )
+                }
             }
         }
     }
@@ -677,7 +723,7 @@ private struct WorkspaceThreadRow: View {
         Task {
             let succeeded = await appModel.renameThread(
                 workspacePath: workspacePath,
-                threadID: threadSummary.id,
+                conversationID: threadSummary.conversationID,
                 title: nextTitle
             )
 
@@ -697,7 +743,7 @@ private struct WorkspaceThreadRow: View {
         Task {
             _ = await appModel.openThread(
                 workspacePath: workspacePath,
-                threadID: threadSummary.id
+                conversationID: threadSummary.conversationID
             )
         }
     }
@@ -903,9 +949,21 @@ private struct ActiveWorkspaceConversationView: View {
             appModel.selectedRoute?.threadID == nil
     }
 
+    private var supportsThreadLifecycle: Bool {
+        appModel.supportsThreadLifecycle(workspacePath: controller.workspace.canonicalPath)
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
-            if (isDraftingNewThread || controller.visibleThreadSummaries.isEmpty),
+            if supportsThreadLifecycle == false {
+                StateCard(
+                    title: "Threads Unavailable",
+                    message: "\(controller.implicitProviderDisplayName) does not support threaded conversations in AtelierCode yet."
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.bottom, composerClearance)
+                .accessibilityIdentifier("conversation-unsupported-provider-state")
+            } else if (isDraftingNewThread || controller.visibleThreadSummaries.isEmpty),
                appModel.selectedThreadSession == nil {
                 VStack(spacing: 4) {
                     Image(systemName: "square.and.pencil")
@@ -957,14 +1015,14 @@ private struct ActiveWorkspaceConversationView: View {
         .task(id: selectedThreadLoadKey) {
             guard let selectedRoute = appModel.selectedRoute,
                   selectedRoute.workspacePath == controller.workspace.canonicalPath,
-                  let threadID = selectedRoute.threadID,
+                  let conversationID = selectedRoute.conversationID,
                   appModel.selectedThreadSession == nil else {
                 return
             }
 
             _ = await appModel.openThread(
                 workspacePath: selectedRoute.workspacePath,
-                threadID: threadID
+                conversationID: conversationID
             )
         }
     }
@@ -976,7 +1034,8 @@ private struct ActiveWorkspaceConversationView: View {
             return nil
         }
 
-        return "\(selectedRoute.workspacePath)#\(threadID)"
+        let providerID = selectedRoute.providerID ?? BridgeProviderIdentifier.codex
+        return "\(selectedRoute.workspacePath)#\(providerID)#\(threadID)"
     }
 }
 
@@ -1877,6 +1936,10 @@ private struct ApprovalCard: View {
         approval.pendingResolution != nil
     }
 
+    private var supportsApprovals: Bool {
+        appModel.selectedProviderSupportsApprovals
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
@@ -1914,7 +1977,7 @@ private struct ApprovalCard: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isResolving)
+                .disabled(isResolving || supportsApprovals == false)
                 .accessibilityIdentifier("approval-\(approval.id)-approve-button")
 
                 Button("Decline") {
@@ -1923,12 +1986,16 @@ private struct ApprovalCard: View {
                     }
                 }
                 .buttonStyle(.bordered)
-                .disabled(isResolving)
+                .disabled(isResolving || supportsApprovals == false)
                 .accessibilityIdentifier("approval-\(approval.id)-decline-button")
             }
 
             if let pendingResolution = approval.pendingResolution {
                 Text(pendingResolution == .approved ? "Sending approval..." : "Sending decline...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if supportsApprovals == false {
+                Text("\(appModel.selectedProviderDisplayName) does not support approval actions.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -2368,7 +2435,9 @@ private struct ComposerBar: View {
     @State private var isFocused = false
 
     private var isComposerEnabled: Bool {
-        appModel.selectedWorkspaceController != nil && appModel.selectedThreadSummary?.isArchived != true
+        appModel.selectedWorkspaceController != nil &&
+            appModel.selectedProviderSupportsThreadLifecycle &&
+            appModel.selectedThreadSummary?.isArchived != true
     }
 
     var body: some View {
@@ -2512,6 +2581,10 @@ private struct ComposerBar: View {
             return "Pick a workspace to start a conversation."
         }
 
+        if appModel.selectedProviderSupportsThreadLifecycle == false {
+            return "\(appModel.selectedProviderDisplayName) does not support threaded conversations yet."
+        }
+
         if appModel.selectedThreadSummary?.isArchived == true {
             return "Archived threads are read-only."
         }
@@ -2527,6 +2600,7 @@ private struct ComposerBar: View {
             return ""
         }
     }
+
     private func sendPrompt() {
         let prompt = composerText
 
@@ -2776,7 +2850,9 @@ private final class PreviewWorkspaceRuntime: WorkspaceConversationRuntime {
         self.controller = controller
     }
 
-    func start() async throws {}
+    func start() async throws {
+        controller.setAvailableProviders([previewProviderSummary()])
+    }
 
     func stop() async {
         controller.setAwaitingTurnStart(false)
@@ -2790,41 +2866,61 @@ private final class PreviewWorkspaceRuntime: WorkspaceConversationRuntime {
         controller.setShowingArchivedThreads(archived)
     }
 
-    func startThreadAndWait(title: String?) async throws -> ThreadSession {
+    func startThreadAndWait(
+        title: String?,
+        configuration _: BridgeConversationConfiguration? = nil
+    ) async throws -> ThreadSession {
         controller.openThread(id: UUID().uuidString, title: title ?? "Preview Thread", isVisibleInSidebar: false)
     }
 
-    func resumeThreadAndWait(id: String) async throws -> ThreadSession {
-        controller.resumeThread(id: id, title: "Preview Thread")
+    func resumeThreadAndWait(conversationID: ConversationIdentity) async throws -> ThreadSession {
+        controller.resumeThread(id: conversationID.threadID, providerID: conversationID.providerID, title: "Preview Thread")
     }
 
-    func readThreadAndWait(id: String, includeTurns: Bool) async throws -> ThreadSession {
-        controller.resumeThread(id: id, title: "Preview Thread")
+    func readThreadAndWait(conversationID: ConversationIdentity, includeTurns: Bool) async throws -> ThreadSession {
+        controller.resumeThread(id: conversationID.threadID, providerID: conversationID.providerID, title: "Preview Thread")
     }
 
-    func forkThreadAndWait(id: String) async throws -> ThreadSession {
-        controller.resumeThread(id: "\(id)-fork", title: "Preview Thread")
+    func forkThreadAndWait(conversationID: ConversationIdentity) async throws -> ThreadSession {
+        controller.resumeThread(
+            id: "\(conversationID.threadID)-fork",
+            providerID: conversationID.providerID,
+            title: "Preview Thread"
+        )
     }
 
-    func renameThread(id: String, title: String) async throws {
-        controller.updateThreadSummary(id: id) { summary in
+    func renameThread(conversationID: ConversationIdentity, title: String) async throws {
+        controller.updateThreadSummary(for: conversationID) { summary in
             summary.title = title
         }
-        controller.threadSession(id: id)?.updateThreadIdentity(id: id, title: title)
+        controller.threadSession(for: conversationID)?.updateThreadIdentity(
+            providerID: conversationID.providerID,
+            id: conversationID.threadID,
+            title: title
+        )
     }
 
-    func archiveThread(id: String) async throws {
-        controller.setThreadArchived(true, for: id)
+    func archiveThread(conversationID: ConversationIdentity) async throws {
+        controller.setThreadArchived(true, for: conversationID.threadID, providerID: conversationID.providerID)
     }
 
-    func unarchiveThreadAndWait(id: String) async throws -> ThreadSession {
-        controller.setThreadArchived(false, for: id)
-        return controller.resumeThread(id: id, title: "Preview Thread")
+    func unarchiveThreadAndWait(conversationID: ConversationIdentity) async throws -> ThreadSession {
+        controller.setThreadArchived(false, for: conversationID.threadID, providerID: conversationID.providerID)
+        return controller.resumeThread(
+            id: conversationID.threadID,
+            providerID: conversationID.providerID,
+            title: "Preview Thread"
+        )
     }
 
-    func rollbackThreadAndWait(id: String, numTurns: Int) async throws -> ThreadSession {
-        let messages = Array((controller.threadSession(id: id)?.messages ?? []).dropLast(max(0, numTurns)))
-        return controller.resumeThread(id: id, title: "Preview Thread", messages: messages)
+    func rollbackThreadAndWait(conversationID: ConversationIdentity, numTurns: Int) async throws -> ThreadSession {
+        let messages = Array((controller.threadSession(for: conversationID)?.messages ?? []).dropLast(max(0, numTurns)))
+        return controller.resumeThread(
+            id: conversationID.threadID,
+            providerID: conversationID.providerID,
+            title: "Preview Thread",
+            messages: messages
+        )
     }
 
     func startTurn(threadID: String, prompt: String, configuration: BridgeTurnStartConfiguration?) async throws {
@@ -2849,6 +2945,15 @@ private final class PreviewWorkspaceRuntime: WorkspaceConversationRuntime {
     func resolveApproval(threadID: String, id: String, resolution: ApprovalResolution) async throws {
         controller.threadSession(id: threadID)?.resolveApprovalRequest(id: id, resolution: resolution)
     }
+}
+
+private func previewProviderSummary() -> ProviderSummaryState {
+    ProviderSummaryState(
+        id: BridgeProviderIdentifier.codex,
+        displayName: "Codex",
+        status: "available",
+        capabilities: .codexDefault
+    )
 }
 
 private struct TranscriptScrollAnchor: Equatable {

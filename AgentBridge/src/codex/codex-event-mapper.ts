@@ -7,12 +7,11 @@ import type {
   ErrorEvent,
   PlanStep,
   RateLimitBucket,
-  ThreadArchivedEvent,
   ThreadStartedEvent,
   ThreadSummary,
-  ThreadUnarchivedEvent,
 } from "../protocol/types";
 import type { CodexTransportNotification, CodexTransportServerRequest } from "./codex-transport";
+import { CODEX_PROVIDER_ID } from "./codex-client";
 
 export interface CodexEventMapper {
   mapNotification(notification: CodexTransportNotification): BridgeEvent[];
@@ -197,14 +196,6 @@ export class DefaultCodexEventMapper implements CodexEventMapper {
         return params && isPlainObject(params.thread)
           ? [buildThreadStartedEvent(undefined, toCodexThreadForEvent(params.thread))]
           : [malformedNotificationError(notification.method)];
-      case "thread/archived":
-        return params && typeof params.threadId === "string"
-          ? [buildThreadArchivedEvent(params.threadId)]
-          : [malformedNotificationError(notification.method)];
-      case "thread/unarchived":
-        return params && typeof params.threadId === "string"
-          ? [buildThreadUnarchivedEvent(params.threadId)]
-          : [malformedNotificationError(notification.method)];
       default:
         return [];
     }
@@ -251,9 +242,10 @@ export function buildThreadSummary(thread: {
   status?: unknown;
   turns?: unknown[];
   archived?: boolean;
-}): ThreadSummary {
+}, providerID = CODEX_PROVIDER_ID): ThreadSummary {
   return {
     id: thread.id,
+    providerID,
     title: thread.name ?? fallbackThreadTitle(thread.preview, thread.id),
     previewText: thread.preview,
     updatedAt: new Date(Math.max(0, thread.updatedAt) * 1_000).toISOString(),
@@ -275,41 +267,16 @@ export function buildThreadStartedEvent(
     turns?: unknown[];
     archived?: boolean;
   },
+  providerID = CODEX_PROVIDER_ID,
 ): ThreadStartedEvent {
   return {
     type: "thread.started",
     timestamp: new Date().toISOString(),
-    provider: "codex",
+    provider: providerID,
     requestID,
     threadID: thread.id,
     payload: {
-      thread: buildThreadSummary(thread),
-    },
-  };
-}
-
-export function buildThreadArchivedEvent(threadID: string, requestID?: string): ThreadArchivedEvent {
-  return {
-    type: "thread.archived",
-    timestamp: new Date().toISOString(),
-    provider: "codex",
-    requestID,
-    threadID,
-    payload: {
-      threadID,
-    },
-  };
-}
-
-export function buildThreadUnarchivedEvent(threadID: string, requestID?: string): ThreadUnarchivedEvent {
-  return {
-    type: "thread.unarchived",
-    timestamp: new Date().toISOString(),
-    provider: "codex",
-    requestID,
-    threadID,
-    payload: {
-      threadID,
+      thread: buildThreadSummary(thread, providerID),
     },
   };
 }

@@ -96,6 +96,7 @@ export interface CodexTransport {
   connect(): Promise<void>;
   disconnect(reason?: CodexTransportDisconnectReason): Promise<void>;
   send<TResult = unknown>(request: CodexTransportRequest): Promise<TResult>;
+  notify(notification: CodexTransportNotification): Promise<void>;
   respond(response: CodexTransportResponse): Promise<void>;
   subscribe(listener: (event: CodexTransportEvent) => void): () => void;
 }
@@ -303,6 +304,34 @@ export class CodexAppServerTransport implements CodexTransport {
         "Failed to write a server-request response to codex app-server.",
         {
           requestID: response.id,
+        },
+        error,
+      );
+    }
+  }
+
+  async notify(notification: CodexTransportNotification): Promise<void> {
+    if (this.process === null) {
+      throw new CodexTransportError(
+        "process_exited",
+        "Codex transport is not connected.",
+      );
+    }
+
+    try {
+      await this.process.stdin.write(encodeJSONLine(notification));
+    } catch (error) {
+      this.finalizeDisconnect(
+        buildDisconnectInfo("process_exited", null, this.stderrTail, {
+          method: notification.method,
+          writeFailed: true,
+        }),
+      );
+      throw new CodexTransportError(
+        "process_exited",
+        "Failed to write a notification to codex app-server.",
+        {
+          method: notification.method,
         },
         error,
       );

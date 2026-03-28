@@ -5,10 +5,14 @@ import {
   CodexTransportError,
   type CodexTransportDisconnectReason,
 } from "./codex/codex-transport";
-import { CodexClient, type CodexClientAdapter } from "./codex/codex-client";
+import {
+  CODEX_PROVIDER_CAPABILITIES,
+  CODEX_PROVIDER_ID,
+  CodexClient,
+  type CodexClientAdapter,
+} from "./codex/codex-client";
 import {
   DefaultCodexEventMapper,
-  buildThreadArchivedEvent,
   buildThreadStartedEvent,
   buildThreadSummary,
 } from "./codex/codex-event-mapper";
@@ -51,15 +55,32 @@ const baseEnvironmentResolver = new BaseEnvironmentResolver();
 interface BridgeSocketData {
   sessionID: string;
   handshakeComplete: boolean;
-  transport: CodexAppServerTransport | null;
-  client: CodexClientAdapter | null;
-  eventMapper: DefaultCodexEventMapper | null;
-  unsubscribeTransport: (() => void) | null;
+  providerRegistrationsByID: Record<string, BridgeProviderRegistration>;
+  providerConnectionsByID: Record<string, ConnectedBridgeProvider>;
 }
 
 interface CodexProviderRuntimeContext {
   baseEnvironment: ResolvedBaseEnvironment;
   executable: Awaited<ReturnType<typeof discoverCodexExecutable>>;
+}
+
+interface ProviderRuntimeDiagnostics {
+  executablePath?: string;
+  environment?: BridgeEnvironmentDiagnostics;
+}
+
+interface BridgeProviderRegistration {
+  summary: ProviderSummary;
+  diagnostics: ProviderRuntimeDiagnostics;
+  connect(): Promise<ConnectedBridgeProvider>;
+}
+
+interface ConnectedBridgeProvider {
+  providerID: string;
+  transport: CodexAppServerTransport;
+  client: CodexClientAdapter;
+  eventMapper: DefaultCodexEventMapper;
+  unsubscribeTransport: (() => void) | null;
 }
 
 if (import.meta.main) {
@@ -91,10 +112,8 @@ async function startRuntimeServer(port: number): Promise<void> {
         data: {
           sessionID: crypto.randomUUID(),
           handshakeComplete: false,
-          transport: null,
-          client: null,
-          eventMapper: null,
-          unsubscribeTransport: null,
+          providerRegistrationsByID: {},
+          providerConnectionsByID: {},
         },
       });
 
@@ -148,8 +167,10 @@ function registerShutdownHandlers(
     process.off("SIGTERM", handleSignal);
 
     for (const session of sessions) {
-      session.unsubscribeTransport?.();
-      await session.transport?.disconnect("requested_disconnect");
+      for (const provider of Object.values(session.providerConnectionsByID)) {
+        provider.unsubscribeTransport?.();
+        await provider.transport.disconnect("requested_disconnect");
+      }
     }
 
     server.stop(true);
@@ -233,7 +254,10 @@ async function handleSocketMessage(
     return;
   }
 
-  const events = await executeBridgeCommand(socket.data.client, parsedMessage as BridgeCommand);
+  const events = await executeBridgeCommand(
+    socket.data.providerConnectionsByID,
+    parsedMessage as BridgeCommand,
+  );
   sendBridgeEvents(socket, events);
 }
 
@@ -271,166 +295,202 @@ async function completeHandshake(
     return;
   }
 
-  const codexRuntimeContext = await resolveCodexProviderRuntimeContext();
-  const providers: ProviderSummary[] = [
-    {
-      id: "codex",
-      displayName: "Codex",
-      status: codexRuntimeContext.executable.status === "found" ? "available" : "degraded",
-    },
-  ];
+  const providerRegistrations = await resolveProviderRegistrations();
+  socket.data.providerRegistrationsByID = Object.fromEntries(
+    providerRegistrations.map((registration) => [registration.summary.id, registration]),
+  );
 
   const welcome = buildWelcomeEnvelope(
     candidateMessage.id,
     socket.data.sessionID,
     compatibility.negotiatedVersion,
-    providers,
-    codexRuntimeContext.baseEnvironment.diagnostics,
+    providerRegistrations.map((registration) => registration.summary),
+    providerRegistrations[0]?.diagnostics.environment ?? {
+      source: "fallback",
+      shellPath: process.env.SHELL ?? "",
+      probeError: null,
+      pathDirectoryCount: 0,
+      homeDirectory: process.env.HOME ?? null,
+    },
   );
 
   socket.data.handshakeComplete = true;
   sendBridgeMessage(socket, welcome);
 
-  void connectTransportForSocket(socket, codexRuntimeContext);
+  void connectProvidersForSocket(socket);
 }
 
-async function connectTransportForSocket(
+async function connectProvidersForSocket(
   socket: Bun.ServerWebSocket<BridgeSocketData>,
-  codexRuntimeContext: CodexProviderRuntimeContext,
 ): Promise<void> {
   if (!socket.data.handshakeComplete) {
     return;
   }
 
-  if (
-    codexRuntimeContext.executable.status !== "found" ||
-    codexRuntimeContext.executable.resolvedPath === null
-  ) {
-    sendBridgeMessage(
-      socket,
-      buildProviderStatusEvent(
-        "error",
-        "Codex executable is unavailable; provider transport cannot start.",
-        codexRuntimeContext,
-      ),
-    );
-    sendBridgeMessage(
-      socket,
-      buildErrorEvent(
-        "provider_executable_missing",
-        "Codex executable is unavailable; provider transport cannot start.",
-        undefined,
-        "codex",
-        {
-          checkedPaths: codexRuntimeContext.executable.checkedPaths,
-          source: codexRuntimeContext.executable.source,
-          baseEnvironmentSource: codexRuntimeContext.executable.baseEnvironmentSource,
-          environment: codexRuntimeContext.baseEnvironment.diagnostics,
-        },
-      ),
-    );
-    return;
+  for (const providerRegistration of Object.values(socket.data.providerRegistrationsByID)) {
+    await connectProviderForSocket(socket, providerRegistration);
   }
+}
 
-  const transport = new CodexAppServerTransport({
-    executable: codexRuntimeContext.executable,
-    environment: codexRuntimeContext.baseEnvironment.environment,
-  });
-  const client = new CodexClient(transport);
-  const eventMapper = new DefaultCodexEventMapper();
-  socket.data.transport = transport;
-  socket.data.client = client;
-  socket.data.eventMapper = eventMapper;
-  socket.data.unsubscribeTransport = transport.subscribe((event) => {
-    if (event.type === "notification") {
-      sendBridgeEvents(socket, eventMapper.mapNotification(event.notification));
-      return;
-    }
-
-    if (event.type === "serverRequest") {
-      sendBridgeEvents(socket, eventMapper.mapServerRequest(event.request));
-      return;
-    }
-
-    socket.data.transport = null;
-    socket.data.client = null;
-    socket.data.eventMapper = null;
-    socket.data.unsubscribeTransport = null;
-
-    if (!socket.data.handshakeComplete) {
-      return;
-    }
-
-    const status = mapDisconnectReasonToProviderStatus(event.disconnect.reason);
-    sendBridgeMessage(
-      socket,
-      buildProviderStatusEvent(status, event.disconnect.message, codexRuntimeContext),
-    );
-
-    if (status === "error" || status === "degraded") {
-      sendBridgeMessage(
-        socket,
-        buildErrorEvent(
-          event.disconnect.reason,
-          event.disconnect.message,
-          undefined,
-          "codex",
-          {
-            ...(event.disconnect.detail ?? {}),
-            executablePath: codexRuntimeContext.executable.resolvedPath ?? undefined,
-            environment: codexRuntimeContext.baseEnvironment.diagnostics,
-          },
-        ),
-      );
-    }
-  });
-
+async function connectProviderForSocket(
+  socket: Bun.ServerWebSocket<BridgeSocketData>,
+  providerRegistration: BridgeProviderRegistration,
+): Promise<void> {
+  const providerID = providerRegistration.summary.id;
   sendBridgeMessage(
     socket,
-    buildProviderStatusEvent("starting", "Starting codex app-server transport.", codexRuntimeContext),
+    buildProviderStatusEvent(
+      providerID,
+      "starting",
+      `Starting ${providerRegistration.summary.displayName} provider transport.`,
+      providerRegistration.diagnostics,
+    ),
   );
 
   try {
-    await client.connect();
+    const provider = await providerRegistration.connect();
+    socket.data.providerConnectionsByID[providerID] = provider;
+    provider.unsubscribeTransport = provider.transport.subscribe((event) => {
+      if (event.type === "notification") {
+        sendBridgeEvents(socket, provider.eventMapper.mapNotification(event.notification));
+        return;
+      }
+
+      if (event.type === "serverRequest") {
+        sendBridgeEvents(socket, provider.eventMapper.mapServerRequest(event.request));
+        return;
+      }
+
+      delete socket.data.providerConnectionsByID[providerID];
+      provider.unsubscribeTransport?.();
+      provider.unsubscribeTransport = null;
+
+      if (!socket.data.handshakeComplete) {
+        return;
+      }
+
+      const status = mapDisconnectReasonToProviderStatus(event.disconnect.reason);
+      sendBridgeMessage(
+        socket,
+        buildProviderStatusEvent(
+          providerID,
+          status,
+          event.disconnect.message,
+          providerRegistration.diagnostics,
+        ),
+      );
+
+      if (status === "error" || status === "degraded") {
+        sendBridgeMessage(
+          socket,
+          buildErrorEvent(
+            event.disconnect.reason,
+            event.disconnect.message,
+            undefined,
+            providerID,
+            {
+              ...(event.disconnect.detail ?? {}),
+              executablePath: providerRegistration.diagnostics.executablePath,
+              environment: providerRegistration.diagnostics.environment,
+            },
+          ),
+        );
+      }
+    });
+
+    await provider.client.connect();
     sendBridgeMessage(
       socket,
       buildProviderStatusEvent(
+        providerID,
         "ready",
-        "Codex transport is connected and ready for phase 3 command mapping.",
-        codexRuntimeContext,
+        `${providerRegistration.summary.displayName} transport is connected and ready.`,
+        providerRegistration.diagnostics,
       ),
     );
   } catch (error) {
-    socket.data.transport = null;
-    socket.data.unsubscribeTransport?.();
-    socket.data.unsubscribeTransport = null;
+    delete socket.data.providerConnectionsByID[providerID];
 
     const message =
-      error instanceof Error ? error.message : "Bridge failed to start the codex provider transport.";
+      error instanceof Error
+        ? error.message
+        : `Bridge failed to start the ${providerRegistration.summary.displayName} provider transport.`;
     const detail =
       error instanceof CodexTransportError
         ? error.detail
         : {
             error: String(error),
           };
-    const enrichedDetail = {
-      ...(detail ?? {}),
-      executablePath: codexRuntimeContext.executable.resolvedPath ?? undefined,
-      environment: codexRuntimeContext.baseEnvironment.diagnostics,
-    };
-
-    sendBridgeMessage(socket, buildProviderStatusEvent("error", message, codexRuntimeContext));
+    sendBridgeMessage(
+      socket,
+      buildProviderStatusEvent(providerID, "error", message, providerRegistration.diagnostics),
+    );
     sendBridgeMessage(
       socket,
       buildErrorEvent(
         error instanceof CodexTransportError ? error.code : "startup_failed",
         message,
         undefined,
-        "codex",
-        enrichedDetail,
+        providerID,
+        {
+          ...(detail ?? {}),
+          executablePath: providerRegistration.diagnostics.executablePath,
+          environment: providerRegistration.diagnostics.environment,
+        },
       ),
     );
   }
+}
+
+async function resolveProviderRegistrations(): Promise<BridgeProviderRegistration[]> {
+  const codexRuntimeContext = await resolveCodexProviderRuntimeContext();
+  const summary: ProviderSummary = {
+    id: CODEX_PROVIDER_ID,
+    displayName: "Codex",
+    status: codexRuntimeContext.executable.status === "found" ? "available" : "degraded",
+    capabilities: CODEX_PROVIDER_CAPABILITIES,
+  };
+  const diagnostics: ProviderRuntimeDiagnostics = {
+    executablePath: codexRuntimeContext.executable.resolvedPath ?? undefined,
+    environment: codexRuntimeContext.baseEnvironment.diagnostics,
+  };
+
+  return [
+    {
+      summary,
+      diagnostics,
+      connect: async () => {
+        if (
+          codexRuntimeContext.executable.status !== "found" ||
+          codexRuntimeContext.executable.resolvedPath === null
+        ) {
+          throw new CodexTransportError(
+            "provider_executable_missing",
+            "Codex executable is unavailable; provider transport cannot start.",
+            {
+              checkedPaths: codexRuntimeContext.executable.checkedPaths,
+              source: codexRuntimeContext.executable.source,
+              baseEnvironmentSource: codexRuntimeContext.executable.baseEnvironmentSource,
+              environment: codexRuntimeContext.baseEnvironment.diagnostics,
+            },
+          );
+        }
+
+        const transport = new CodexAppServerTransport({
+          executable: codexRuntimeContext.executable,
+          environment: codexRuntimeContext.baseEnvironment.environment,
+        });
+
+        return {
+          providerID: CODEX_PROVIDER_ID,
+          transport,
+          client: new CodexClient(transport),
+          eventMapper: new DefaultCodexEventMapper(),
+          unsubscribeTransport: null,
+        };
+      },
+    },
+  ];
 }
 
 async function resolveCodexProviderRuntimeContext(): Promise<CodexProviderRuntimeContext> {
@@ -450,26 +510,27 @@ async function disconnectSocketTransport(
   socket: Bun.ServerWebSocket<BridgeSocketData>,
   reason: CodexTransportDisconnectReason,
 ): Promise<void> {
-  const { transport, unsubscribeTransport } = socket.data;
-  socket.data.transport = null;
-  socket.data.client = null;
-  socket.data.eventMapper = null;
-  socket.data.unsubscribeTransport = null;
+  const providers = Object.values(socket.data.providerConnectionsByID);
+  socket.data.providerConnectionsByID = {};
 
-  unsubscribeTransport?.();
-  await transport?.disconnect(reason);
+  for (const provider of providers) {
+    provider.unsubscribeTransport?.();
+    provider.unsubscribeTransport = null;
+    await provider.transport.disconnect(reason);
+  }
 }
 
 async function buildHealthReport(): Promise<BridgeHealthReport> {
   const codexRuntimeContext = await resolveCodexProviderRuntimeContext();
   const codexExecutable = codexRuntimeContext.executable;
   const codexProvider: ProviderHealth = {
-    provider: "codex",
+    provider: CODEX_PROVIDER_ID,
     status: codexExecutable.status === "found" ? "available" : "degraded",
     detail:
       codexExecutable.status === "found"
         ? `Codex executable discovered at ${codexExecutable.resolvedPath}.`
         : "Codex executable was not found. Bridge transport stays unavailable until Codex is installed or configured.",
+    capabilities: CODEX_PROVIDER_CAPABILITIES,
     executable: codexExecutable,
     environment: codexRuntimeContext.baseEnvironment.diagnostics,
   };
@@ -520,21 +581,20 @@ export function buildWelcomeEnvelope(
 }
 
 export function buildProviderStatusEvent(
+  providerID: string,
   status: ProviderStatusEvent["payload"]["status"],
   detail: string,
-  runtimeContext?: CodexProviderRuntimeContext,
+  diagnostics?: ProviderRuntimeDiagnostics,
 ): ProviderStatusEvent {
   return {
     type: "provider.status",
     timestamp: new Date().toISOString(),
-    provider: "codex",
+    provider: providerID,
     payload: {
       status,
       detail,
-      ...(runtimeContext?.executable.resolvedPath
-        ? { executablePath: runtimeContext.executable.resolvedPath }
-        : {}),
-      ...(runtimeContext ? { environment: runtimeContext.baseEnvironment.diagnostics } : {}),
+      ...(diagnostics?.executablePath ? { executablePath: diagnostics.executablePath } : {}),
+      ...(diagnostics?.environment ? { environment: diagnostics.environment } : {}),
     },
   };
 }
@@ -693,19 +753,22 @@ function extractRequestID(candidateMessage: Record<string, unknown>): string | u
 }
 
 export async function executeBridgeCommand(
-  client: CodexClientAdapter | null,
+  providerConnectionsByID: Readonly<Record<string, ConnectedBridgeProvider | undefined>>,
   command: BridgeCommand,
 ): Promise<BridgeEvent[]> {
-  if (client === null) {
+  const providerConnection = providerConnectionsByID[command.provider];
+  if (providerConnection === undefined) {
     return [
       buildErrorEvent(
         "provider_not_ready",
-        "Codex transport is not connected yet.",
+        `${command.provider} transport is not connected yet.`,
         command.id,
-        "codex",
+        command.provider,
       ),
     ];
   }
+
+  const client = providerConnection.client;
 
   try {
     switch (command.type) {
@@ -714,7 +777,7 @@ export async function executeBridgeCommand(
         const event: ModelListResultEvent = {
           type: "model.list.result",
           timestamp: new Date().toISOString(),
-          provider: "codex",
+          provider: client.providerID,
           requestID: command.id,
           payload: {
             models: result.models,
@@ -724,21 +787,21 @@ export async function executeBridgeCommand(
       }
       case "thread.start": {
         const result = await client.startThread(command.id, command.payload);
-        return [buildThreadStartedEvent(command.id, result.thread)];
+        return [buildThreadStartedEvent(command.id, result.thread, client.providerID)];
       }
       case "thread.resume": {
         const result = await client.resumeThread(command.id, command.threadID, command.payload);
-        return [buildThreadStartedEvent(command.id, result.thread)];
+        return [buildThreadStartedEvent(command.id, result.thread, client.providerID)];
       }
       case "thread.list": {
         const result = await client.listThreads(command.id, command.payload);
         const event: ThreadListResultEvent = {
           type: "thread.list.result",
           timestamp: new Date().toISOString(),
-          provider: "codex",
+          provider: client.providerID,
           requestID: command.id,
           payload: {
-            threads: result.threads.map((thread) => buildThreadSummary(thread)),
+            threads: result.threads.map((thread) => buildThreadSummary(thread, client.providerID)),
             nextCursor: result.nextCursor,
           },
         };
@@ -746,26 +809,19 @@ export async function executeBridgeCommand(
       }
       case "thread.read": {
         const result = await client.readThread(command.id, command.threadID, command.payload);
-        return [buildThreadStartedEvent(command.id, result.thread)];
+        return [buildThreadStartedEvent(command.id, result.thread, client.providerID)];
       }
       case "thread.fork": {
         const result = await client.forkThread(command.id, command.threadID, command.payload);
-        return [buildThreadStartedEvent(command.id, result.thread)];
+        return [buildThreadStartedEvent(command.id, result.thread, client.providerID)];
       }
       case "thread.rename": {
         const result = await client.renameThread(command.id, command.threadID, command.payload);
-        return [buildThreadStartedEvent(command.id, result.thread)];
-      }
-      case "thread.archive":
-        await client.archiveThread(command.id, command.threadID, command.payload);
-        return [buildThreadArchivedEvent(command.threadID, command.id)];
-      case "thread.unarchive": {
-        const result = await client.unarchiveThread(command.id, command.threadID, command.payload);
-        return [buildThreadStartedEvent(command.id, result.thread)];
+        return [buildThreadStartedEvent(command.id, result.thread, client.providerID)];
       }
       case "thread.rollback": {
         const result = await client.rollbackThread(command.id, command.threadID, command.payload);
-        return [buildThreadStartedEvent(command.id, result.thread)];
+        return [buildThreadStartedEvent(command.id, result.thread, client.providerID)];
       }
       case "turn.start": {
         const result = await client.startTurn(command.id, command.threadID, command.payload);
@@ -773,7 +829,7 @@ export async function executeBridgeCommand(
           {
             type: "turn.started",
             timestamp: new Date().toISOString(),
-            provider: "codex",
+            provider: client.providerID,
             requestID: command.id,
             threadID: command.threadID,
             turnID: result.turnID,
@@ -792,7 +848,7 @@ export async function executeBridgeCommand(
           {
             type: "approval.resolved",
             timestamp: new Date().toISOString(),
-            provider: "codex",
+            provider: client.providerID,
             requestID: command.id,
             threadID: command.threadID,
             turnID: command.turnID,
@@ -804,14 +860,14 @@ export async function executeBridgeCommand(
         ];
       case "account.read": {
         const result = await client.readAccount(command.id, command.payload);
-        return buildAccountEvents(command.id, result);
+        return buildAccountEvents(command.id, client.providerID, result);
       }
       case "account.login": {
         const result = await client.login(command.id, command.payload);
         const loginEvent: AccountLoginResultEvent = {
           type: "account.login.result",
           timestamp: new Date().toISOString(),
-          provider: "codex",
+          provider: client.providerID,
           requestID: command.id,
           payload: {
             method: result.type,
@@ -825,7 +881,7 @@ export async function executeBridgeCommand(
         }
 
         const account = await client.readAccount(`${command.id}:account`, {});
-        return [loginEvent, ...buildAccountEvents(command.id, account)];
+        return [loginEvent, ...buildAccountEvents(command.id, client.providerID, account)];
       }
       case "account.logout":
         await client.logout(command.id);
@@ -833,7 +889,7 @@ export async function executeBridgeCommand(
           {
             type: "auth.changed",
             timestamp: new Date().toISOString(),
-            provider: "codex",
+            provider: client.providerID,
             requestID: command.id,
             payload: {
               state: "signed_out",
@@ -855,7 +911,7 @@ export async function executeBridgeCommand(
         error instanceof CodexTransportError ? error.code : "provider_command_failed",
         error instanceof Error ? error.message : "Bridge command failed against Codex.",
         command.id,
-        "codex",
+        client.providerID,
         detail,
       ),
     ];
@@ -864,6 +920,7 @@ export async function executeBridgeCommand(
 
 function buildAccountEvents(
   requestID: string,
+  providerID: string,
   result: {
     account: {
       type: "apiKey" | "chatgpt";
@@ -883,7 +940,7 @@ function buildAccountEvents(
   const authEvent: AuthChangedEvent = {
     type: "auth.changed",
     timestamp: new Date().toISOString(),
-    provider: "codex",
+    provider: providerID,
     requestID,
     payload: result.account
       ? {
@@ -935,7 +992,7 @@ function buildAccountEvents(
   const rateLimitEvent: RateLimitUpdatedEvent = {
     type: "rateLimit.updated",
     timestamp: new Date().toISOString(),
-    provider: "codex",
+    provider: providerID,
     requestID,
     payload: {
       buckets,

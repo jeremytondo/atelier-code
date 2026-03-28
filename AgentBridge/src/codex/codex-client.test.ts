@@ -77,6 +77,7 @@ describe("CodexClient", () => {
         includeHidden: undefined,
       },
     });
+    expect(transport.notified).toEqual([{ method: "initialized" }]);
   });
 
   test("initializes once and maps thread start plus naming", async () => {
@@ -88,7 +89,25 @@ describe("CodexClient", () => {
           preview: "Preview text",
           updatedAt: 1_700_000_000,
           name: null,
+          status: { type: "idle" },
+          turns: [],
         },
+        model: "gpt-5.4",
+        modelProvider: "openai",
+        serviceTier: null,
+        cwd: "/tmp/project",
+        approvalPolicy: "on-request",
+        sandbox: {
+          type: "workspaceWrite",
+          writableRoots: ["/tmp/project"],
+          readOnlyAccess: {
+            type: "fullAccess",
+          },
+          networkAccess: false,
+          excludeTmpdirEnvVar: false,
+          excludeSlashTmp: false,
+        },
+        reasoningEffort: "medium",
       },
       {},
     ]);
@@ -107,7 +126,7 @@ describe("CodexClient", () => {
       preview: "Preview text",
       updatedAt: 1_700_000_000,
       name: "New Thread",
-      status: undefined,
+      status: { type: "idle" },
       turns: [],
       archived: false,
     });
@@ -118,6 +137,7 @@ describe("CodexClient", () => {
         params: {
           clientInfo: {
             name: "AtelierCode AgentBridge",
+            title: null,
             version: "0.1.0",
           },
           capabilities: {
@@ -130,6 +150,9 @@ describe("CodexClient", () => {
         method: "thread/start",
         params: {
           cwd: "/tmp/project",
+          model: undefined,
+          approvalPolicy: undefined,
+          sandbox: undefined,
           experimentalRawEvents: false,
           persistExtendedHistory: true,
         },
@@ -143,6 +166,7 @@ describe("CodexClient", () => {
         },
       },
     ]);
+    expect(transport.notified).toEqual([{ method: "initialized" }]);
   });
 
   test("renames a thread and rereads it for the updated summary", async () => {
@@ -155,6 +179,8 @@ describe("CodexClient", () => {
           preview: "Renamed preview",
           updatedAt: 1_700_000_010,
           name: "Renamed Thread",
+          status: { type: "idle" },
+          turns: [],
         },
       },
     ]);
@@ -170,7 +196,7 @@ describe("CodexClient", () => {
       preview: "Renamed preview",
       updatedAt: 1_700_000_010,
       name: "Renamed Thread",
-      status: undefined,
+      status: { type: "idle" },
       turns: [],
       archived: false,
     });
@@ -188,6 +214,7 @@ describe("CodexClient", () => {
         method: "thread/read",
         params: {
           threadId: "thread-1",
+          includeTurns: false,
         },
       },
     ]);
@@ -279,9 +306,6 @@ describe("CodexClient", () => {
           },
           effort: "high",
           summary: "concise",
-          env: {
-            FOO: "bar",
-          },
         },
       },
       {
@@ -295,7 +319,9 @@ describe("CodexClient", () => {
       {
         id: "req-account",
         method: "account/read",
-        params: {},
+        params: {
+          refreshToken: false,
+        },
       },
       {
         id: "req-account:rate-limits",
@@ -310,6 +336,7 @@ describe("CodexClient", () => {
         },
       },
     ]);
+    expect(transport.notified).toEqual([{ method: "initialized" }]);
   });
 
   test("maps archive include filter to an omitted Codex archived param", async () => {
@@ -336,6 +363,7 @@ describe("CodexClient", () => {
         limit: undefined,
         archived: undefined,
         cwd: "/tmp/project",
+        sourceKinds: ["cli", "vscode", "appServer"],
       },
     });
   });
@@ -343,6 +371,7 @@ describe("CodexClient", () => {
 
 class FakeTransport implements CodexTransport {
   readonly sent: CodexTransportRequest[] = [];
+  readonly notified: Array<{ method: string; params?: unknown }> = [];
   readonly responded: CodexTransportResponse[] = [];
 
   private responseIndex = 0;
@@ -358,6 +387,10 @@ class FakeTransport implements CodexTransport {
     const response = this.responses[this.responseIndex];
     this.responseIndex += 1;
     return response as TResult;
+  }
+
+  async notify(notification: { method: string; params?: unknown }): Promise<void> {
+    this.notified.push(notification);
   }
 
   async respond(response: CodexTransportResponse): Promise<void> {

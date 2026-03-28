@@ -8,7 +8,7 @@ enum ThreadListSyncState: String, Equatable, Sendable {
 
 @MainActor
 final class WorkspaceThreadListRepository {
-    private var threadSummariesByID: [String: ThreadSummary]
+    private var threadSummariesByID: [ConversationIdentity: ThreadSummary]
     private var syncStatesByArchived: [Bool: ThreadListSyncState]
     private var lastSuccessfulListAtByArchived: [Bool: Date]
 
@@ -22,8 +22,12 @@ final class WorkspaceThreadListRepository {
         Self.sortedThreadSummaries(Array(threadSummariesByID.values))
     }
 
-    func threadSummary(id: String) -> ThreadSummary? {
-        threadSummariesByID[id]
+    func threadSummary(id: String, providerID: String = BridgeProviderIdentifier.codex) -> ThreadSummary? {
+        threadSummary(for: ConversationIdentity(providerID: providerID, threadID: id))
+    }
+
+    func threadSummary(for identity: ConversationIdentity) -> ThreadSummary? {
+        threadSummariesByID[identity]
     }
 
     func persistedState() -> PersistedCachedThreadListState {
@@ -38,7 +42,7 @@ final class WorkspaceThreadListRepository {
         threadSummariesByID = Dictionary(
             uniqueKeysWithValues: Self.sortedThreadSummaries(
                 persistedState.threadSummaries.map(ThreadSummary.init(persistedSummary:))
-            ).map { ($0.id, $0) }
+            ).map { ($0.conversationID, $0) }
         )
         lastSuccessfulListAtByArchived = [:]
         if let lastSuccessfulActiveListAt = persistedState.lastSuccessfulActiveListAt {
@@ -54,6 +58,14 @@ final class WorkspaceThreadListRepository {
         threadSummariesByID.removeAll()
         syncStatesByArchived = [false: .idle, true: .idle]
         lastSuccessfulListAtByArchived.removeAll()
+    }
+
+    func removeThreadSummary(id: String, providerID: String = BridgeProviderIdentifier.codex) {
+        removeThreadSummary(for: ConversationIdentity(providerID: providerID, threadID: id))
+    }
+
+    func removeThreadSummary(for identity: ConversationIdentity) {
+        threadSummariesByID.removeValue(forKey: identity)
     }
 
     func syncState(for archived: Bool) -> ThreadListSyncState {
@@ -72,6 +84,11 @@ final class WorkspaceThreadListRepository {
         syncStatesByArchived[archived] = .failed
     }
 
+    func markListSuccessful(archived: Bool, listedAt: Date) {
+        syncStatesByArchived[archived] = .idle
+        lastSuccessfulListAtByArchived[archived] = listedAt
+    }
+
     func replaceThreadList(
         _ incoming: [ThreadSummary],
         archived: Bool,
@@ -79,53 +96,84 @@ final class WorkspaceThreadListRepository {
         selectedThreadID: String?,
         loadedThreadIDs: Set<String>
     ) {
+        replaceThreadList(
+            incoming,
+            archived: archived,
+            listedAt: listedAt,
+            selectedConversationID: selectedThreadID.map { ConversationIdentity(threadID: $0) },
+            loadedConversationIDs: Set(loadedThreadIDs.map { ConversationIdentity(threadID: $0) })
+        )
+    }
+
+    func replaceThreadList(
+        _ incoming: [ThreadSummary],
+        archived: Bool,
+        listedAt: Date,
+        selectedConversationID: ConversationIdentity?,
+        loadedConversationIDs: Set<ConversationIdentity>
+    ) {
         let previousSuccessfulListAt = lastSuccessfulListAtByArchived[archived]
         let existingInArchivedScope = threadSummaries.filter { $0.isArchived == archived }
-        let incomingIDs = Set(incoming.map(\.id))
+        let incomingIDs = Set(incoming.map(\.conversationID))
 
         syncStatesByArchived[archived] = .idle
         lastSuccessfulListAtByArchived[archived] = listedAt
 
         for summary in incoming {
-            threadSummariesByID[summary.id] = Self.mergeRefreshedThreadSummary(
+            threadSummariesByID[summary.conversationID] = Self.mergeRefreshedThreadSummary(
                 summary,
-                existing: threadSummariesByID[summary.id],
+                existing: threadSummariesByID[summary.conversationID],
                 archived: archived
             )
         }
 
-        for summary in existingInArchivedScope where incomingIDs.contains(summary.id) == false {
+        for summary in existingInArchivedScope where incomingIDs.contains(summary.conversationID) == false {
             if shouldRetainOmittedSummary(
                 summary,
                 previousSuccessfulListAt: previousSuccessfulListAt,
-                selectedThreadID: selectedThreadID,
-                loadedThreadIDs: loadedThreadIDs
+                selectedConversationID: selectedConversationID,
+                loadedConversationIDs: loadedConversationIDs
             ) {
                 var retained = summary
                 retained.isStale = retained.isLocalOnly == false
-                threadSummariesByID[summary.id] = retained
+                threadSummariesByID[summary.conversationID] = retained
             } else {
-                threadSummariesByID.removeValue(forKey: summary.id)
+                threadSummariesByID.removeValue(forKey: summary.conversationID)
             }
         }
     }
 
     func upsertThreadSummary(_ incoming: ThreadSummary, clearsStale: Bool = true) {
-        var merged = Self.mergeThreadSummary(incoming, existing: threadSummariesByID[incoming.id])
+        var merged = Self.mergeThreadSummary(incoming, existing: threadSummariesByID[incoming.conversationID])
         if clearsStale {
             merged.isStale = false
         }
-        threadSummariesByID[incoming.id] = merged
+        threadSummariesByID[incoming.conversationID] = merged
     }
 
     func updateThreadSummary(
         id: String,
+        providerID: String = BridgeProviderIdentifier.codex,
         defaultSummary: ThreadSummary? = nil,
         clearsStale: Bool = false,
         mutate: (inout ThreadSummary) -> Void
     ) {
-        let isNew = threadSummariesByID[id] == nil
-        guard var summary = threadSummariesByID[id] ?? defaultSummary else {
+        updateThreadSummary(
+            for: ConversationIdentity(providerID: providerID, threadID: id),
+            defaultSummary: defaultSummary,
+            clearsStale: clearsStale,
+            mutate: mutate
+        )
+    }
+
+    func updateThreadSummary(
+        for identity: ConversationIdentity,
+        defaultSummary: ThreadSummary? = nil,
+        clearsStale: Bool = false,
+        mutate: (inout ThreadSummary) -> Void
+    ) {
+        let isNew = threadSummariesByID[identity] == nil
+        guard var summary = threadSummariesByID[identity] ?? defaultSummary else {
             return
         }
 
@@ -138,24 +186,24 @@ final class WorkspaceThreadListRepository {
             summary.isStale = false
         }
 
-        threadSummariesByID[id] = summary
+        threadSummariesByID[identity] = summary
     }
 
     private func shouldRetainOmittedSummary(
         _ summary: ThreadSummary,
         previousSuccessfulListAt: Date?,
-        selectedThreadID: String?,
-        loadedThreadIDs: Set<String>
+        selectedConversationID: ConversationIdentity?,
+        loadedConversationIDs: Set<ConversationIdentity>
     ) -> Bool {
         if summary.isLocalOnly {
             return true
         }
 
-        if summary.id == selectedThreadID {
+        if summary.conversationID == selectedConversationID {
             return true
         }
 
-        if loadedThreadIDs.contains(summary.id) {
+        if loadedConversationIDs.contains(summary.conversationID) {
             return true
         }
 
@@ -189,8 +237,9 @@ final class WorkspaceThreadListRepository {
         }
 
         return ThreadSummary(
-            id: incoming.id,
-            title: preferredThreadTitle(incoming: incoming.title, existing: existing.title, threadID: incoming.id),
+            id: incoming.threadID,
+            providerID: incoming.providerID,
+            title: preferredThreadTitle(incoming: incoming.title, existing: existing.title, threadID: incoming.threadID),
             previewText: preferredThreadPreview(
                 incoming: incoming.previewText,
                 existing: existing.previewText,
@@ -215,8 +264,9 @@ final class WorkspaceThreadListRepository {
         let shouldPreferExistingActivity = existing.map { $0.updatedAt > incoming.updatedAt } ?? false
 
         return ThreadSummary(
-            id: incoming.id,
-            title: preferredThreadTitle(incoming: incoming.title, existing: existing?.title, threadID: incoming.id),
+            id: incoming.threadID,
+            providerID: incoming.providerID,
+            title: preferredThreadTitle(incoming: incoming.title, existing: existing?.title, threadID: incoming.threadID),
             previewText: preferredThreadPreview(
                 incoming: incoming.previewText,
                 existing: existing?.previewText,

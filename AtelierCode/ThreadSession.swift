@@ -4,6 +4,7 @@ import Observation
 @MainActor
 @Observable
 final class ThreadSession {
+    private(set) var providerID: String
     private(set) var threadID: String
     private(set) var title: String
     private(set) var messages: [ConversationMessage]
@@ -14,6 +15,7 @@ final class ThreadSession {
     private(set) var aggregatedDiff: AggregatedDiff?
 
     init(
+        providerID: String = BridgeProviderIdentifier.codex,
         threadID: String,
         title: String,
         messages: [ConversationMessage] = [],
@@ -23,6 +25,7 @@ final class ThreadSession {
         planState: PlanState? = nil,
         aggregatedDiff: AggregatedDiff? = nil
     ) {
+        self.providerID = providerID
         self.threadID = threadID
         self.title = title
         self.messages = messages
@@ -31,6 +34,10 @@ final class ThreadSession {
         self.pendingApprovals = pendingApprovals
         self.planState = planState
         self.aggregatedDiff = aggregatedDiff
+    }
+
+    var conversationID: ConversationIdentity {
+        ConversationIdentity(providerID: providerID, threadID: threadID)
     }
 
     var activityItems: [ActivityItem] {
@@ -44,19 +51,26 @@ final class ThreadSession {
             .joined()
     }
 
-    func updateThreadIdentity(id: String, title: String) {
+    func updateThreadIdentity(providerID: String, id: String, title: String) {
+        self.providerID = providerID
         threadID = id
         self.title = title
     }
 
-    func startThread(id: String, title: String) {
+    func updateThreadIdentity(id: String, title: String) {
+        updateThreadIdentity(providerID: providerID, id: id, title: title)
+    }
+
+    func startThread(providerID: String, id: String, title: String) {
+        self.providerID = providerID
         threadID = id
         self.title = title
         messages.removeAll()
         clearVolatilePerTurnState()
     }
 
-    func resumeThread(id: String, title: String, messages: [ConversationMessage]) {
+    func resumeThread(providerID: String, id: String, title: String, messages: [ConversationMessage]) {
+        self.providerID = providerID
         threadID = id
         self.title = title
         self.messages = messages
