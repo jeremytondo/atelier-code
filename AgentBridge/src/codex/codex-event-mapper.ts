@@ -13,6 +13,7 @@ import type {
   ThreadUnarchivedEvent,
 } from "../protocol/types";
 import type { CodexTransportNotification, CodexTransportServerRequest } from "./codex-transport";
+import { CODEX_PROVIDER_ID } from "./codex-client";
 
 export interface CodexEventMapper {
   mapNotification(notification: CodexTransportNotification): BridgeEvent[];
@@ -254,6 +255,7 @@ export function buildThreadSummary(thread: {
 }): ThreadSummary {
   return {
     id: thread.id,
+    providerID: CODEX_PROVIDER_ID,
     title: thread.name ?? fallbackThreadTitle(thread.preview, thread.id),
     previewText: thread.preview,
     updatedAt: new Date(Math.max(0, thread.updatedAt) * 1_000).toISOString(),

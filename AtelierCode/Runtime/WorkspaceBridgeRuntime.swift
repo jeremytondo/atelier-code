@@ -170,6 +170,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             controller.setBridgeEnvironmentDiagnostics(
                 welcomeEnvelope.payload.environment?.toWorkspaceBridgeEnvironmentDiagnostics()
             )
+            controller.setAvailableProviders(welcomeEnvelope.payload.providers.map { $0.toProviderSummaryState() })
 
             controller.setBridgeLifecycleState(.idle)
             controller.setConnectionStatus(.ready)
@@ -283,7 +284,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         )
     }
 
-    func startThread(title: String? = nil) async throws {
+    func startThread(title: String? = nil, configuration: BridgeConversationConfiguration? = nil) async throws {
         let requestID = nextRequestID(prefix: "thread-start")
         pendingCommands[requestID] = .threadStart
         try await sendCommand(
@@ -291,12 +292,16 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             type: .threadStart,
             payload: BridgeThreadStartPayload(
                 workspacePath: controller.workspace.canonicalPath,
-                title: title
+                title: title,
+                configuration: configuration
             )
         )
     }
 
-    func startThreadAndWait(title: String? = nil) async throws -> ThreadSession {
+    func startThreadAndWait(
+        title: String? = nil,
+        configuration: BridgeConversationConfiguration? = nil
+    ) async throws -> ThreadSession {
         let requestID = nextRequestID(prefix: "thread-start")
         pendingCommands[requestID] = .threadStart
 
@@ -310,7 +315,8 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 type: .threadStart,
                 payload: BridgeThreadStartPayload(
                     workspacePath: self.controller.workspace.canonicalPath,
-                    title: title
+                    title: title,
+                    configuration: configuration
                 )
             )
         }
@@ -329,7 +335,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 id: requestID,
                 type: .threadResume,
                 threadID: id,
-                payload: BridgeThreadResumePayload(workspacePath: self.controller.workspace.canonicalPath)
+                payload: BridgeThreadResumePayload(
+                    workspacePath: self.controller.workspace.canonicalPath,
+                    configuration: nil
+                )
             )
         }
     }
@@ -341,7 +350,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             id: requestID,
             type: .threadResume,
             threadID: id,
-            payload: BridgeThreadResumePayload(workspacePath: controller.workspace.canonicalPath)
+            payload: BridgeThreadResumePayload(
+                workspacePath: controller.workspace.canonicalPath,
+                configuration: nil
+            )
         )
     }
 
@@ -376,7 +388,10 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 id: requestID,
                 type: .threadFork,
                 threadID: id,
-                payload: BridgeThreadForkPayload(workspacePath: self.controller.workspace.canonicalPath)
+                payload: BridgeThreadForkPayload(
+                    workspacePath: self.controller.workspace.canonicalPath,
+                    configuration: nil
+                )
             )
         }
     }
@@ -427,6 +442,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             applyLocalThreadUnarchive(threadID: id)
             return controller.ensureThreadSession(
                 id: id,
+                providerID: controller.threadSummary(id: id)?.providerID ?? BridgeProviderIdentifier.codex,
                 title: controller.threadSummary(id: id)?.title ?? "Recovered Conversation",
                 markSelected: false
             )
@@ -477,7 +493,15 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
 
     func startTurn(threadID: String, prompt: String, configuration: BridgeTurnStartConfiguration? = nil) async throws {
         let title = controller.threadSummary(id: threadID)?.title ?? controller.threadSession(id: threadID)?.title ?? "Thread"
-        let session = controller.ensureThreadSession(id: threadID, title: title, markSelected: false)
+        let providerID = controller.threadSummary(id: threadID)?.providerID
+            ?? controller.threadSession(id: threadID)?.providerID
+            ?? BridgeProviderIdentifier.codex
+        let session = controller.ensureThreadSession(
+            id: threadID,
+            providerID: providerID,
+            title: title,
+            markSelected: false
+        )
 
         if session.turnState.phase != .inProgress {
             session.beginTurn(userPrompt: prompt)
@@ -910,6 +934,7 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             case .threadResume, .threadRead, .threadFork, .threadRollback, .threadUnarchive:
                 session = controller.resumeThread(
                     id: summary.id,
+                    providerID: summary.providerID,
                     title: summary.title,
                     messages: payload.thread.messages?.map { $0.toConversationMessage() } ?? []
                 )
@@ -917,24 +942,31 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
                 if let messages = payload.thread.messages, messages.isEmpty == false {
                     session = controller.resumeThread(
                         id: summary.id,
+                        providerID: summary.providerID,
                         title: summary.title,
                         messages: messages.map { $0.toConversationMessage() }
                     )
                 } else {
                     session = controller.openThread(
                         id: summary.id,
+                        providerID: summary.providerID,
                         title: summary.title,
                         isVisibleInSidebar: summary.isVisibleInSidebar
                     )
                 }
             case .threadRename(let threadID):
                 if let session = controller.threadSession(id: threadID) {
-                    session.updateThreadIdentity(id: summary.id, title: summary.title)
+                    session.updateThreadIdentity(providerID: summary.providerID, id: summary.id, title: summary.title)
                 }
                 pendingVoidResponses.removeValue(forKey: requestID)?.resume()
                 return
             default:
-                session = controller.ensureThreadSession(id: summary.id, title: summary.title, markSelected: false)
+                session = controller.ensureThreadSession(
+                    id: summary.id,
+                    providerID: summary.providerID,
+                    title: summary.title,
+                    markSelected: false
+                )
             }
 
             if let continuation = pendingThreadSessions.removeValue(forKey: requestID) {
@@ -943,7 +975,12 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             return
         }
 
-        _ = controller.ensureThreadSession(id: summary.id, title: summary.title, markSelected: false)
+        _ = controller.ensureThreadSession(
+            id: summary.id,
+            providerID: summary.providerID,
+            title: summary.title,
+            markSelected: false
+        )
     }
 
     private func handleModelListResult(_ payload: BridgeModelListResultPayload, requestID: String?) {
@@ -1030,7 +1067,16 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         let title = controller.threadSummaries.first(where: { $0.id == threadID })?.title
             ?? controller.threadSession(id: threadID)?.title
             ?? "Thread"
-        let session = controller.ensureThreadSession(id: threadID, title: title, markSelected: false)
+        let providerID = event.provider
+            ?? controller.threadSummary(id: threadID)?.providerID
+            ?? controller.threadSession(id: threadID)?.providerID
+            ?? BridgeProviderIdentifier.codex
+        let session = controller.ensureThreadSession(
+            id: threadID,
+            providerID: providerID,
+            title: title,
+            markSelected: false
+        )
 
         if let requestID = event.requestID,
            let pendingCommand = pendingCommands.removeValue(forKey: requestID),
@@ -1258,13 +1304,21 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
             controller.upsertThreadSummary(
                 ThreadSummary(
                     id: threadID,
+                    providerID: controller.threadSession(id: threadID)?.providerID ?? BridgeProviderIdentifier.codex,
                     title: title,
                     previewText: "",
                     updatedAt: now()
                 )
             )
         }
-        return controller.ensureThreadSession(id: threadID, title: title, markSelected: false)
+        return controller.ensureThreadSession(
+            id: threadID,
+            providerID: controller.threadSummary(id: threadID)?.providerID
+                ?? controller.threadSession(id: threadID)?.providerID
+                ?? BridgeProviderIdentifier.codex,
+            title: title,
+            markSelected: false
+        )
     }
 
     private func markActivityStarted(id: String) {
@@ -1374,17 +1428,24 @@ final class WorkspaceBridgeRuntime: WorkspaceConversationRuntime {
         type: BridgeCommandType,
         threadID: String? = nil,
         turnID: String? = nil,
-        payload: Payload
+        payload: Payload,
+        providerID: String? = nil
     ) async throws {
         guard let socketClient else {
             throw WorkspaceBridgeRuntimeError.bridgeNotConnected
         }
 
+        let resolvedProviderID = providerID
+            ?? threadID.flatMap {
+                controller.threadSummary(id: $0)?.providerID ?? controller.threadSession(id: $0)?.providerID
+            }
+            ?? Self.provider
+
         let command = BridgeCommandEnvelope(
             id: id,
             type: type,
             timestamp: Self.timestamp(),
-            provider: Self.provider,
+            provider: resolvedProviderID,
             threadID: threadID,
             turnID: turnID,
             payload: payload

@@ -886,10 +886,17 @@ final class AppModel {
 
                 threadID = existingThreadID
             } else {
-                let session = try await runtime.startThreadAndWait(title: nil)
+                let session = try await runtime.startThreadAndWait(
+                    title: nil,
+                    configuration: defaultThreadConfiguration(for: controller)
+                )
                 threadID = session.threadID
                 controller.markThreadSelected(threadID)
-                updateSelectedRoute(workspacePath: controller.workspace.canonicalPath, threadID: threadID)
+                updateSelectedRoute(
+                    workspacePath: controller.workspace.canonicalPath,
+                    providerID: session.providerID,
+                    threadID: threadID
+                )
                 persistPreferences()
             }
 
@@ -1074,9 +1081,19 @@ final class AppModel {
         refreshGitSnapshot(for: workspace)
     }
 
-    private func updateSelectedRoute(workspacePath: String, threadID: String?) {
+    private func updateSelectedRoute(workspacePath: String, providerID: String? = nil, threadID: String?) {
         resetBranchPickerState(for: workspacePath)
-        selectedRoute = WorkspaceThreadRoute(workspacePath: workspacePath, threadID: threadID)
+        let resolvedProviderID = providerID
+            ?? threadID.flatMap { threadID in
+                workspaceController(for: workspacePath)?.threadSummary(id: threadID)?.providerID
+                    ?? workspaceController(for: workspacePath)?.threadSession(id: threadID)?.providerID
+            }
+            ?? (threadID == nil ? nil : BridgeProviderIdentifier.codex)
+        selectedRoute = WorkspaceThreadRoute(
+            workspacePath: workspacePath,
+            providerID: resolvedProviderID,
+            threadID: threadID
+        )
         lastSelectedWorkspacePath = workspacePath
 
         guard let controller = workspaceController(for: workspacePath) else {
@@ -1271,6 +1288,16 @@ final class AppModel {
         }
     }
 
+    private func defaultThreadConfiguration(for controller: WorkspaceController) -> BridgeConversationConfiguration {
+        BridgeConversationConfiguration(
+            cwd: controller.workspace.canonicalPath,
+            model: effectiveComposerModelID,
+            reasoningEffort: effectiveComposerReasoningEffort.bridgeValue,
+            sandboxPolicy: SandboxPolicy.workspaceWrite.rawValue,
+            approvalPolicy: ApprovalPolicy.onRequest.rawValue
+        )
+    }
+
     private func defaultTurnConfiguration(for controller: WorkspaceController) -> BridgeTurnStartConfiguration {
         BridgeTurnStartConfiguration(
             cwd: controller.workspace.canonicalPath,
@@ -1428,6 +1455,9 @@ final class AppModel {
 
         return WorkspaceThreadRoute(
             workspacePath: workspacePath,
+            providerID: preferExistingThreadSelection
+                ? controller.threadSummary(id: preferredThreadID(for: controller) ?? "")?.providerID
+                : nil,
             threadID: preferExistingThreadSelection ? preferredThreadID(for: controller) : nil
         )
     }

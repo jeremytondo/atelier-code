@@ -447,7 +447,9 @@ private struct WorkspaceThreadRow: View {
     @FocusState private var isRenameFieldFocused: Bool
 
     private var isSelected: Bool {
-        appModel.selectedRoute?.workspacePath == workspacePath && appModel.selectedRoute?.threadID == threadSummary.id
+        appModel.selectedRoute?.workspacePath == workspacePath
+            && appModel.selectedRoute?.providerID == threadSummary.providerID
+            && appModel.selectedRoute?.threadID == threadSummary.id
     }
 
     private var showsHoverActions: Bool {
@@ -976,7 +978,8 @@ private struct ActiveWorkspaceConversationView: View {
             return nil
         }
 
-        return "\(selectedRoute.workspacePath)#\(threadID)"
+        let providerID = selectedRoute.providerID ?? BridgeProviderIdentifier.codex
+        return "\(selectedRoute.workspacePath)#\(providerID)#\(threadID)"
     }
 }
 
@@ -2790,7 +2793,10 @@ private final class PreviewWorkspaceRuntime: WorkspaceConversationRuntime {
         controller.setShowingArchivedThreads(archived)
     }
 
-    func startThreadAndWait(title: String?) async throws -> ThreadSession {
+    func startThreadAndWait(
+        title: String?,
+        configuration _: BridgeConversationConfiguration? = nil
+    ) async throws -> ThreadSession {
         controller.openThread(id: UUID().uuidString, title: title ?? "Preview Thread", isVisibleInSidebar: false)
     }
 

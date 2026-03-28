@@ -22,6 +22,7 @@ import {
   buildWelcomeEnvelope,
   executeBridgeCommand,
 } from "./index";
+import { CODEX_PROVIDER_CAPABILITIES, CODEX_PROVIDER_ID } from "./codex/codex-client";
 import type {
   CodexAccountReadResult,
   CodexClientAdapter,
@@ -339,6 +340,7 @@ describe("bridge startup diagnostics", () => {
           id: "codex",
           displayName: "Codex",
           status: "available",
+          capabilities: CODEX_PROVIDER_CAPABILITIES,
         },
       ],
       environment,
@@ -401,6 +403,9 @@ describe("bridge startup diagnostics", () => {
 });
 
 class FakeCodexClient implements CodexClientAdapter {
+  readonly providerID = CODEX_PROVIDER_ID;
+  readonly capabilities = CODEX_PROVIDER_CAPABILITIES;
+
   async connect(): Promise<void> {}
 
   async disconnect(): Promise<void> {}
@@ -436,7 +441,9 @@ class FakeCodexClient implements CodexClientAdapter {
         name: payload.title ?? null,
         status: { type: "idle" },
         turns: [],
+        archived: false,
       },
+      defaults: null,
     };
   }
 
@@ -453,7 +460,9 @@ class FakeCodexClient implements CodexClientAdapter {
         name: "Resumed",
         status: { type: "idle" },
         turns: [],
+        archived: false,
       },
+      defaults: null,
     };
   }
 
@@ -470,7 +479,9 @@ class FakeCodexClient implements CodexClientAdapter {
         name: "Read Thread",
         status: { type: "idle" },
         turns: [],
+        archived: false,
       },
+      defaults: null,
     };
   }
 
@@ -487,7 +498,9 @@ class FakeCodexClient implements CodexClientAdapter {
         name: "Forked Thread",
         status: { type: "idle" },
         turns: [],
+        archived: false,
       },
+      defaults: null,
     };
   }
 
@@ -510,7 +523,9 @@ class FakeCodexClient implements CodexClientAdapter {
         name: payload.title,
         status: { type: "idle" },
         turns: [],
+        archived: false,
       },
+      defaults: null,
     };
   }
 
@@ -527,7 +542,9 @@ class FakeCodexClient implements CodexClientAdapter {
         name: "Unarchived Thread",
         status: { type: "idle" },
         turns: [],
+        archived: false,
       },
+      defaults: null,
     };
   }
 
@@ -544,7 +561,9 @@ class FakeCodexClient implements CodexClientAdapter {
         name: "Rolled Back Thread",
         status: { type: "idle" },
         turns: [],
+        archived: false,
       },
+      defaults: null,
     };
   }
 
@@ -558,6 +577,7 @@ class FakeCodexClient implements CodexClientAdapter {
           name: "Phase 3",
           status: { type: "idle" },
           turns: [],
+          archived: false,
         },
       ],
       nextCursor: "cursor-2",

@@ -231,7 +231,10 @@ private final class UITestWorkspaceRuntime: WorkspaceConversationRuntime {
         }
     }
 
-    func startThreadAndWait(title: String?) async throws -> ThreadSession {
+    func startThreadAndWait(
+        title: String?,
+        configuration _: BridgeConversationConfiguration? = nil
+    ) async throws -> ThreadSession {
         controller.openThread(id: "ui-test-thread", title: title ?? "New Conversation", isVisibleInSidebar: false)
     }
 

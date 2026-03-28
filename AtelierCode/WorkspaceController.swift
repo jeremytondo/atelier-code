@@ -16,6 +16,7 @@ final class WorkspaceController {
     }
     private(set) var bridgeEnvironmentDiagnostics: WorkspaceBridgeEnvironmentDiagnostics?
     private(set) var providerExecutablePath: String?
+    private(set) var availableProviders: [ProviderSummaryState]
     private(set) var threadListSyncState: ThreadListSyncState
     private(set) var lastSuccessfulThreadListAt: Date? {
         didSet {
@@ -29,6 +30,11 @@ final class WorkspaceController {
     private(set) var gitStatus: WorkspaceGitStatus
     private(set) var localGitBranches: [String]
     private(set) var threadSessionsByID: [String: ThreadSession]
+    private(set) var lastActiveProviderID: String? {
+        didSet {
+            persistableStateDidChange?()
+        }
+    }
     private(set) var lastActiveThreadID: String? {
         didSet {
             persistableStateDidChange?()
@@ -58,6 +64,7 @@ final class WorkspaceController {
         self.threadSummaries = []
         self.bridgeEnvironmentDiagnostics = nil
         self.providerExecutablePath = nil
+        self.availableProviders = []
         self.threadListSyncState = .idle
         self.lastSuccessfulThreadListAt = nil
         self.authState = .unknown
@@ -67,6 +74,7 @@ final class WorkspaceController {
         self.gitStatus = .unavailable(.lookupFailed)
         self.localGitBranches = []
         self.threadSessionsByID = [:]
+        self.lastActiveProviderID = nil
         self.lastActiveThreadID = nil
         self.isShowingArchivedThreads = false
         self.isExpanded = true
@@ -128,6 +136,7 @@ final class WorkspaceController {
             uiState: PersistedWorkspaceUIState(
                 isExpanded: isExpanded,
                 isShowingAllVisibleThreads: isShowingAllVisibleThreads,
+                lastActiveProviderID: lastActiveProviderID,
                 lastActiveThreadID: lastActiveThreadID
             ),
             cachedThreadList: threadListRepository.persistedState()
@@ -145,6 +154,7 @@ final class WorkspaceController {
         connectionStatus = .disconnected
         bridgeEnvironmentDiagnostics = nil
         providerExecutablePath = nil
+        availableProviders = []
         threadListRepository.reset()
         authState = .unknown
         pendingLogin = nil
@@ -153,6 +163,7 @@ final class WorkspaceController {
         gitStatus = .unavailable(.lookupFailed)
         localGitBranches = []
         threadSessionsByID.removeAll()
+        lastActiveProviderID = nil
         lastActiveThreadID = nil
         isShowingArchivedThreads = false
         isExpanded = true
@@ -176,6 +187,10 @@ final class WorkspaceController {
 
     func setProviderExecutablePath(_ executablePath: String?) {
         providerExecutablePath = executablePath
+    }
+
+    func setAvailableProviders(_ availableProviders: [ProviderSummaryState]) {
+        self.availableProviders = availableProviders
     }
 
     func setAuthState(_ authState: AuthState) {
@@ -230,8 +245,13 @@ final class WorkspaceController {
 
         isExpanded = persistedState.uiState.isExpanded
         isShowingAllVisibleThreads = persistedState.uiState.isShowingAllVisibleThreads
+        lastActiveProviderID = persistedState.uiState.lastActiveProviderID
+            ?? (persistedState.uiState.lastActiveThreadID == nil ? nil : BridgeProviderIdentifier.codex)
         lastActiveThreadID = persistedState.uiState.lastActiveThreadID.flatMap { threadID in
             threadListRepository.threadSummary(id: threadID) != nil ? threadID : nil
+        }
+        if lastActiveThreadID == nil {
+            lastActiveProviderID = nil
         }
     }
 
@@ -275,6 +295,11 @@ final class WorkspaceController {
     }
 
     func markThreadSelected(_ id: String?) {
+        if let id, let providerID = threadSummary(id: id)?.providerID ?? threadSessionsByID[id]?.providerID {
+            lastActiveProviderID = providerID
+        } else if id == nil {
+            lastActiveProviderID = nil
+        }
         lastActiveThreadID = id
 
         guard let id else {
@@ -292,14 +317,20 @@ final class WorkspaceController {
     }
 
     @discardableResult
-    func openThread(id: String, title: String, isVisibleInSidebar: Bool = true) -> ThreadSession {
+    func openThread(
+        id: String,
+        providerID: String = BridgeProviderIdentifier.codex,
+        title: String,
+        isVisibleInSidebar: Bool = true
+    ) -> ThreadSession {
         let existingSummary = threadSummary(id: id)
-        let session = threadSessionsByID[id] ?? ThreadSession(threadID: id, title: title)
-        session.startThread(id: id, title: title)
+        let session = threadSessionsByID[id] ?? ThreadSession(providerID: providerID, threadID: id, title: title)
+        session.startThread(providerID: providerID, id: id, title: title)
         threadSessionsByID[id] = session
         upsertThreadSummary(
             ThreadSummary(
                 id: id,
+                providerID: providerID,
                 title: title,
                 previewText: existingSummary?.previewText ?? "",
                 updatedAt: existingSummary?.updatedAt ?? .now,
@@ -317,16 +348,18 @@ final class WorkspaceController {
     @discardableResult
     func resumeThread(
         id: String,
+        providerID: String = BridgeProviderIdentifier.codex,
         title: String,
         messages: [ConversationMessage] = []
     ) -> ThreadSession {
         let existingSummary = threadSummary(id: id)
-        let session = threadSessionsByID[id] ?? ThreadSession(threadID: id, title: title)
-        session.resumeThread(id: id, title: title, messages: messages)
+        let session = threadSessionsByID[id] ?? ThreadSession(providerID: providerID, threadID: id, title: title)
+        session.resumeThread(providerID: providerID, id: id, title: title, messages: messages)
         threadSessionsByID[id] = session
         upsertThreadSummary(
             ThreadSummary(
                 id: id,
+                providerID: providerID,
                 title: title,
                 previewText: messages.last?.text ?? existingSummary?.previewText ?? "",
                 updatedAt: existingSummary?.updatedAt ?? .now,
@@ -342,16 +375,21 @@ final class WorkspaceController {
     }
 
     @discardableResult
-    func ensureThreadSession(id: String, title: String, markSelected: Bool = false) -> ThreadSession {
+    func ensureThreadSession(
+        id: String,
+        providerID: String = BridgeProviderIdentifier.codex,
+        title: String,
+        markSelected: Bool = false
+    ) -> ThreadSession {
         if let session = threadSessionsByID[id] {
-            session.updateThreadIdentity(id: id, title: title)
+            session.updateThreadIdentity(providerID: providerID, id: id, title: title)
             if markSelected {
                 markThreadSelected(id)
             }
             return session
         }
 
-        let session = ThreadSession(threadID: id, title: title)
+        let session = ThreadSession(providerID: providerID, threadID: id, title: title)
         threadSessionsByID[id] = session
         if markSelected {
             markThreadSelected(id)

@@ -1262,7 +1262,10 @@ private final class TestWorkspaceRuntime: WorkspaceConversationRuntime {
         }
     }
 
-    func startThreadAndWait(title: String?) async throws -> ThreadSession {
+    func startThreadAndWait(
+        title: String?,
+        configuration _: BridgeConversationConfiguration? = nil
+    ) async throws -> ThreadSession {
         coordinator.startThreadCount += 1
         return controller.openThread(
             id: "thread-\(coordinator.startThreadCount)",
@@ -1510,7 +1513,10 @@ private final class LifecycleProbeRuntime: WorkspaceConversationRuntime {
         controller.setShowingArchivedThreads(archived)
     }
 
-    func startThreadAndWait(title: String?) async throws -> ThreadSession {
+    func startThreadAndWait(
+        title: String?,
+        configuration _: BridgeConversationConfiguration? = nil
+    ) async throws -> ThreadSession {
         controller.openThread(id: UUID().uuidString, title: title ?? "New Conversation", isVisibleInSidebar: false)
     }
 

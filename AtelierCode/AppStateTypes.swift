@@ -200,8 +200,28 @@ struct RateLimitState: Equatable, Sendable {
     var buckets: [RateLimitBucketState]
 }
 
+struct ProviderCapabilitiesState: Equatable, Sendable {
+    var supportsThreadLifecycle: Bool
+    var supportsThreadArchiving: Bool
+    var supportsApprovals: Bool
+    var supportsAuthentication: Bool
+    var supportedModes: [String]
+}
+
+struct ProviderSummaryState: Equatable, Sendable, Identifiable {
+    let id: String
+    var displayName: String
+    var status: String
+    var capabilities: ProviderCapabilitiesState
+}
+
+enum BridgeProviderIdentifier {
+    nonisolated static let codex = "codex"
+}
+
 struct ThreadSummary: Equatable, Sendable, Identifiable {
     let id: String
+    var providerID: String
     var title: String
     var previewText: String
     var updatedAt: Date
@@ -215,6 +235,7 @@ struct ThreadSummary: Equatable, Sendable, Identifiable {
 
     init(
         id: String,
+        providerID: String = BridgeProviderIdentifier.codex,
         title: String,
         previewText: String,
         updatedAt: Date,
@@ -227,6 +248,7 @@ struct ThreadSummary: Equatable, Sendable, Identifiable {
         isStale: Bool = false
     ) {
         self.id = id
+        self.providerID = providerID
         self.title = title
         self.previewText = previewText
         self.updatedAt = updatedAt
@@ -242,6 +264,7 @@ struct ThreadSummary: Equatable, Sendable, Identifiable {
 
 struct PersistedThreadSummary: Codable, Equatable, Sendable, Identifiable {
     let id: String
+    var providerID: String
     var title: String
     var previewText: String
     var updatedAt: Date
@@ -252,6 +275,7 @@ struct PersistedThreadSummary: Codable, Equatable, Sendable, Identifiable {
 
     init(
         id: String,
+        providerID: String = BridgeProviderIdentifier.codex,
         title: String,
         previewText: String,
         updatedAt: Date,
@@ -261,6 +285,7 @@ struct PersistedThreadSummary: Codable, Equatable, Sendable, Identifiable {
         isStale: Bool = false
     ) {
         self.id = id
+        self.providerID = providerID
         self.title = title
         self.previewText = previewText
         self.updatedAt = updatedAt
@@ -272,6 +297,7 @@ struct PersistedThreadSummary: Codable, Equatable, Sendable, Identifiable {
 
     private enum CodingKeys: String, CodingKey {
         case id
+        case providerID
         case title
         case previewText
         case updatedAt
@@ -284,6 +310,7 @@ struct PersistedThreadSummary: Codable, Equatable, Sendable, Identifiable {
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
+        providerID = try container.decodeIfPresent(String.self, forKey: .providerID) ?? BridgeProviderIdentifier.codex
         title = try container.decode(String.self, forKey: .title)
         previewText = try container.decode(String.self, forKey: .previewText)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
@@ -297,15 +324,18 @@ struct PersistedThreadSummary: Codable, Equatable, Sendable, Identifiable {
 struct PersistedWorkspaceUIState: Codable, Equatable, Sendable {
     var isExpanded: Bool
     var isShowingAllVisibleThreads: Bool
+    var lastActiveProviderID: String?
     var lastActiveThreadID: String?
 
     init(
         isExpanded: Bool = true,
         isShowingAllVisibleThreads: Bool = false,
+        lastActiveProviderID: String? = nil,
         lastActiveThreadID: String? = nil
     ) {
         self.isExpanded = isExpanded
         self.isShowingAllVisibleThreads = isShowingAllVisibleThreads
+        self.lastActiveProviderID = lastActiveProviderID
         self.lastActiveThreadID = lastActiveThreadID
     }
 }
@@ -460,6 +490,7 @@ extension ThreadSummary {
     init(persistedSummary: PersistedThreadSummary) {
         self.init(
             id: persistedSummary.id,
+            providerID: persistedSummary.providerID,
             title: persistedSummary.title,
             previewText: persistedSummary.previewText,
             updatedAt: persistedSummary.updatedAt,
@@ -473,6 +504,7 @@ extension ThreadSummary {
     var persistedSummary: PersistedThreadSummary {
         PersistedThreadSummary(
             id: id,
+            providerID: providerID,
             title: title,
             previewText: previewText,
             updatedAt: updatedAt,
@@ -486,6 +518,7 @@ extension ThreadSummary {
 
 struct WorkspaceThreadRoute: Equatable, Sendable {
     var workspacePath: String
+    var providerID: String?
     var threadID: String?
 }
 

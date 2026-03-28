@@ -1100,7 +1100,7 @@ private func startupRecordJSON(port: Int) -> String {
 
 private func welcomeJSON(requestID: String) -> String {
     """
-    {"type":"welcome","timestamp":"2026-03-24T10:00:01Z","requestID":"\(requestID)","payload":{"bridgeVersion":"0.1.0","protocolVersion":1,"supportedProtocolVersions":[1],"sessionID":"session-1","transport":"websocket","providers":[{"id":"codex","displayName":"Codex","status":"available"}],"environment":{"source":"login_probe","shellPath":"/bin/zsh","probeError":null,"pathDirectoryCount":5,"homeDirectory":"/Users/tester"}}}
+    {"type":"welcome","timestamp":"2026-03-24T10:00:01Z","requestID":"\(requestID)","payload":{"bridgeVersion":"0.1.0","protocolVersion":1,"supportedProtocolVersions":[1],"sessionID":"session-1","transport":"websocket","providers":[{"id":"codex","displayName":"Codex","status":"available","capabilities":{"supportsThreadLifecycle":true,"supportsThreadArchiving":true,"supportsApprovals":true,"supportsAuthentication":true,"supportedModes":["default"]}}],"environment":{"source":"login_probe","shellPath":"/bin/zsh","probeError":null,"pathDirectoryCount":5,"homeDirectory":"/Users/tester"}}}
     """
 }
 
@@ -1155,7 +1155,7 @@ private func modelListErrorJSON(requestID: String, message: String) -> String {
 
 private func threadListResultJSON(requestID: String, threadTitle: String) -> String {
     """
-    {"type":"thread.list.result","timestamp":"2026-03-24T10:00:04Z","requestID":"\(requestID)","payload":{"threads":[{"id":"thread-1","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:04Z"}],"nextCursor":null}}
+    {"type":"thread.list.result","timestamp":"2026-03-24T10:00:04Z","requestID":"\(requestID)","payload":{"threads":[{"id":"thread-1","providerID":"codex","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:04Z","archived":false,"running":false,"errorMessage":null}],"nextCursor":null}}
     """
 }
 
@@ -1166,7 +1166,7 @@ private func threadListResultJSON(
 ) -> String {
     let threadsJSON = threads.map { thread in
         """
-        {"id":"\(thread.id)","title":"\(jsonEscaped(thread.title))","previewText":"\(jsonEscaped(thread.previewText))","updatedAt":"\(thread.updatedAt)"}
+        {"id":"\(thread.id)","providerID":"codex","title":"\(jsonEscaped(thread.title))","previewText":"\(jsonEscaped(thread.previewText))","updatedAt":"\(thread.updatedAt)","archived":false,"running":false,"errorMessage":null}
         """
     }.joined(separator: ",")
     let nextCursorJSON = nextCursor.map { "\"\(jsonEscaped($0))\"" } ?? "null"
@@ -1190,7 +1190,7 @@ private func turnStartedJSON(requestID: String, threadID: String, turnID: String
 
 private func threadStartedJSON(requestID: String, threadID: String, threadTitle: String) -> String {
     """
-    {"type":"thread.started","timestamp":"2026-03-24T10:00:05Z","requestID":"\(requestID)","threadID":"\(threadID)","payload":{"thread":{"id":"\(threadID)","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:05Z"}}}
+    {"type":"thread.started","timestamp":"2026-03-24T10:00:05Z","requestID":"\(requestID)","threadID":"\(threadID)","payload":{"thread":{"id":"\(threadID)","providerID":"codex","title":"\(threadTitle)","previewText":"Preview","updatedAt":"2026-03-24T10:00:05Z","archived":false,"running":false,"errorMessage":null}}}
     """
 }
 

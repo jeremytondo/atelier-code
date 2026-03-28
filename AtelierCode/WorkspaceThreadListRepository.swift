@@ -190,6 +190,7 @@ final class WorkspaceThreadListRepository {
 
         return ThreadSummary(
             id: incoming.id,
+            providerID: incoming.providerID,
             title: preferredThreadTitle(incoming: incoming.title, existing: existing.title, threadID: incoming.id),
             previewText: preferredThreadPreview(
                 incoming: incoming.previewText,
@@ -216,6 +217,7 @@ final class WorkspaceThreadListRepository {
 
         return ThreadSummary(
             id: incoming.id,
+            providerID: incoming.providerID,
             title: preferredThreadTitle(incoming: incoming.title, existing: existing?.title, threadID: incoming.id),
             previewText: preferredThreadPreview(
                 incoming: incoming.previewText,

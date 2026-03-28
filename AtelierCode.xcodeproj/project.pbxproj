@@ -274,14 +274,7 @@
 			inputPaths = (
 				"$(SRCROOT)/AgentBridge/package.json",
 				"$(SRCROOT)/AgentBridge/tsconfig.json",
-				"$(SRCROOT)/AgentBridge/src/index.ts",
-				"$(SRCROOT)/AgentBridge/src/protocol/types.ts",
-				"$(SRCROOT)/AgentBridge/src/protocol/version.ts",
-				"$(SRCROOT)/AgentBridge/src/environment/base-environment.ts",
-				"$(SRCROOT)/AgentBridge/src/discovery/executable.ts",
-				"$(SRCROOT)/AgentBridge/src/codex/codex-client.ts",
-				"$(SRCROOT)/AgentBridge/src/codex/codex-event-mapper.ts",
-				"$(SRCROOT)/AgentBridge/src/codex/codex-transport.ts",
+				"$(SRCROOT)/AgentBridge/src",
 			);
 			name = "Build AgentBridge";
 			outputFileListPaths = (
@@ -395,7 +388,7 @@
 				DEVELOPMENT_TEAM = 337D6CNU4E;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -459,7 +452,7 @@
 				DEVELOPMENT_TEAM = 337D6CNU4E;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;

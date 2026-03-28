@@ -164,6 +164,15 @@ struct BridgeProviderSummary: Decodable, Equatable, Sendable {
     let id: String
     let displayName: String
     let status: String
+    let capabilities: BridgeProviderCapabilitiesDTO
+}
+
+struct BridgeProviderCapabilitiesDTO: Decodable, Equatable, Sendable {
+    let supportsThreadLifecycle: Bool
+    let supportsThreadArchiving: Bool
+    let supportsApprovals: Bool
+    let supportsAuthentication: Bool
+    let supportedModes: [String]
 }
 
 struct BridgeEnvironmentDiagnosticsDTO: Decodable, Equatable, Sendable {
@@ -187,6 +196,7 @@ struct BridgeCommandEnvelope<Payload: Encodable>: Encodable {
 struct BridgeThreadStartPayload: Encodable, Sendable {
     let workspacePath: String
     let title: String?
+    let configuration: BridgeConversationConfiguration?
 }
 
 struct BridgeModelListPayload: Encodable, Sendable {
@@ -196,6 +206,7 @@ struct BridgeModelListPayload: Encodable, Sendable {
 
 struct BridgeThreadResumePayload: Encodable, Sendable {
     let workspacePath: String
+    let configuration: BridgeConversationConfiguration?
 }
 
 struct BridgeThreadListPayload: Encodable, Sendable {
@@ -211,6 +222,7 @@ struct BridgeThreadReadPayload: Encodable, Sendable {
 
 struct BridgeThreadForkPayload: Encodable, Sendable {
     let workspacePath: String
+    let configuration: BridgeConversationConfiguration?
 }
 
 struct BridgeThreadRenamePayload: Encodable, Sendable {
@@ -223,6 +235,14 @@ struct BridgeThreadUnarchivePayload: Encodable, Sendable {}
 
 struct BridgeThreadRollbackPayload: Encodable, Sendable {
     let numTurns: Int
+}
+
+struct BridgeConversationConfiguration: Encodable, Sendable {
+    let cwd: String?
+    let model: String?
+    let reasoningEffort: String?
+    let sandboxPolicy: String?
+    let approvalPolicy: String?
 }
 
 struct BridgeTurnStartConfiguration: Encodable, Sendable {
@@ -265,6 +285,7 @@ struct BridgeAccountLogoutPayload: Encodable, Sendable {
 
 struct BridgeThreadSummaryDTO: Decodable, Equatable, Sendable {
     let id: String
+    let providerID: String
     let title: String
     let previewText: String
     let updatedAt: String
@@ -644,6 +665,7 @@ extension BridgeThreadSummaryDTO {
     func toThreadSummary() -> ThreadSummary {
         ThreadSummary(
             id: id,
+            providerID: providerID,
             title: title,
             previewText: previewText,
             updatedAt: bridgeDate(from: updatedAt) ?? .distantPast,
@@ -655,9 +677,27 @@ extension BridgeThreadSummaryDTO {
 
     func toThreadSession() -> ThreadSession {
         ThreadSession(
+            providerID: providerID,
             threadID: id,
             title: title,
             messages: (messages ?? []).map { $0.toConversationMessage() }
+        )
+    }
+}
+
+extension BridgeProviderSummary {
+    func toProviderSummaryState() -> ProviderSummaryState {
+        ProviderSummaryState(
+            id: id,
+            displayName: displayName,
+            status: status,
+            capabilities: ProviderCapabilitiesState(
+                supportsThreadLifecycle: capabilities.supportsThreadLifecycle,
+                supportsThreadArchiving: capabilities.supportsThreadArchiving,
+                supportsApprovals: capabilities.supportsApprovals,
+                supportsAuthentication: capabilities.supportsAuthentication,
+                supportedModes: capabilities.supportedModes
+            )
         )
     }
 }

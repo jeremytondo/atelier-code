@@ -67,6 +67,7 @@ export type PlanStepStatus = "pending" | "in_progress" | "completed";
 export type ProviderConnectionStatus = "starting" | "ready" | "degraded" | "disconnected" | "error";
 export type RateLimitBucketKind = "requests" | "tokens" | "other";
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ProviderModeKind = "default" | "plan" | "review";
 
 export interface BridgeEnvelopeBase<TType extends BridgeMessageType = BridgeMessageType> {
   type: TType;
@@ -104,6 +105,7 @@ export interface BridgeHandshakeEnvelope<
 
 export interface ThreadSummary {
   id: string;
+  providerID: ProviderIdentifier;
   title: string;
   previewText: string;
   updatedAt: ISO8601Timestamp;
@@ -123,6 +125,15 @@ export interface ProviderSummary {
   id: ProviderIdentifier;
   displayName: string;
   status: ProviderReadiness;
+  capabilities: ProviderCapabilities;
+}
+
+export interface ProviderCapabilities {
+  supportsThreadLifecycle: boolean;
+  supportsThreadArchiving: boolean;
+  supportsApprovals: boolean;
+  supportsAuthentication: boolean;
+  supportedModes: ProviderModeKind[];
 }
 
 export interface AccountSummary {
@@ -175,12 +186,15 @@ export interface ModelSummary {
   isDefault?: boolean;
 }
 
-export interface TurnStartConfiguration {
+export interface ConversationConfiguration {
   cwd?: string;
   model?: string;
   reasoningEffort?: string;
   sandboxPolicy?: string;
   approvalPolicy?: string;
+}
+
+export interface TurnStartConfiguration extends ConversationConfiguration {
   summaryMode?: string;
   environment?: Record<string, string>;
 }
@@ -223,6 +237,7 @@ export interface WelcomeEnvelope extends BridgeHandshakeEnvelope<"welcome", Welc
 export interface ThreadStartPayload {
   workspacePath: string;
   title?: string;
+  configuration?: ConversationConfiguration;
 }
 
 export interface ModelListPayload {
@@ -232,6 +247,7 @@ export interface ModelListPayload {
 
 export interface ThreadResumePayload {
   workspacePath: string;
+  configuration?: ConversationConfiguration;
 }
 
 export interface ThreadListPayload {
@@ -247,6 +263,7 @@ export interface ThreadReadPayload {
 
 export interface ThreadForkPayload {
   workspacePath: string;
+  configuration?: ConversationConfiguration;
 }
 
 export interface ThreadRenamePayload {
@@ -645,6 +662,7 @@ export interface ProviderHealth {
   provider: "codex";
   status: ProviderReadiness;
   detail: string;
+  capabilities: ProviderCapabilities;
   executable: ExecutableDiscoveryResult;
   environment: BridgeEnvironmentDiagnostics;
 }

@@ -2,38 +2,73 @@ import type {
   AccountReadPayload,
   AccountLoginPayload,
   ApprovalResolvePayload,
+  ConversationConfiguration,
   ModelListPayload,
+  ProviderCapabilities,
   ReasoningEffort,
   ThreadArchiveFilter,
   ThreadArchivePayload,
   ThreadForkPayload,
   ThreadListPayload,
-  ThreadRenamePayload,
   ThreadReadPayload,
-  ThreadRollbackPayload,
+  ThreadRenamePayload,
   ThreadResumePayload,
+  ThreadRollbackPayload,
   ThreadStartPayload,
   ThreadUnarchivePayload,
   TurnStartPayload,
 } from "../protocol/types";
 import type {
+  BridgeProviderAdapter,
+  RuntimeThreadDefaults,
+} from "../protocol/provider-adapter";
+import { mergeConversationConfigurationIntoDefaults } from "../protocol/provider-adapter";
+import { CodexRawClient } from "./codex-raw-client";
+import type {
   CodexTransport,
   CodexTransportRequestID,
   CodexTransportResponse,
 } from "./codex-transport";
+import type { ReasoningEffort as RawReasoningEffort } from "./upstream/codex-cli-0.114.0/ts/ReasoningEffort";
+import type { ReasoningSummary as RawReasoningSummary } from "./upstream/codex-cli-0.114.0/ts/ReasoningSummary";
+import type { Account as RawAccount } from "./upstream/codex-cli-0.114.0/ts/v2/Account";
+import type { AskForApproval } from "./upstream/codex-cli-0.114.0/ts/v2/AskForApproval";
+import type { GetAccountResponse } from "./upstream/codex-cli-0.114.0/ts/v2/GetAccountResponse";
+import type { LoginAccountParams } from "./upstream/codex-cli-0.114.0/ts/v2/LoginAccountParams";
+import type { LoginAccountResponse } from "./upstream/codex-cli-0.114.0/ts/v2/LoginAccountResponse";
+import type { Model as RawModel } from "./upstream/codex-cli-0.114.0/ts/v2/Model";
+import type { ModelListParams as RawModelListParams } from "./upstream/codex-cli-0.114.0/ts/v2/ModelListParams";
+import type { SandboxMode } from "./upstream/codex-cli-0.114.0/ts/v2/SandboxMode";
+import type { SandboxPolicy } from "./upstream/codex-cli-0.114.0/ts/v2/SandboxPolicy";
+import type { Thread as RawThread } from "./upstream/codex-cli-0.114.0/ts/v2/Thread";
+import type { ThreadForkParams } from "./upstream/codex-cli-0.114.0/ts/v2/ThreadForkParams";
+import type { ThreadForkResponse } from "./upstream/codex-cli-0.114.0/ts/v2/ThreadForkResponse";
+import type { ThreadResumeParams } from "./upstream/codex-cli-0.114.0/ts/v2/ThreadResumeParams";
+import type { ThreadResumeResponse } from "./upstream/codex-cli-0.114.0/ts/v2/ThreadResumeResponse";
+import type { ThreadStartParams } from "./upstream/codex-cli-0.114.0/ts/v2/ThreadStartParams";
+import type { ThreadStartResponse } from "./upstream/codex-cli-0.114.0/ts/v2/ThreadStartResponse";
+import type { RateLimitSnapshot as RawRateLimitSnapshot } from "./upstream/codex-cli-0.114.0/ts/v2/RateLimitSnapshot";
+import type { ThreadListParams as RawThreadListParams } from "./upstream/codex-cli-0.114.0/ts/v2/ThreadListParams";
+import type { TurnStartParams as RawTurnStartParams } from "./upstream/codex-cli-0.114.0/ts/v2/TurnStartParams";
 
-const CODEX_INITIALIZE_REQUEST_ID = "ateliercode-initialize";
-const CODEX_CLIENT_NAME = "AtelierCode AgentBridge";
-const CODEX_CLIENT_VERSION = "0.1.0";
+export const CODEX_PROVIDER_ID = "codex";
+
+export const CODEX_PROVIDER_CAPABILITIES: ProviderCapabilities = {
+  supportsThreadLifecycle: true,
+  supportsThreadArchiving: true,
+  supportsApprovals: true,
+  supportsAuthentication: true,
+  supportedModes: ["default", "plan", "review"],
+};
 
 export interface CodexThread {
   id: string;
   preview: string;
   updatedAt: number;
   name: string | null;
-  status?: unknown;
-  turns?: unknown[];
-  archived?: boolean;
+  status: RawThread["status"];
+  turns: RawThread["turns"];
+  archived: boolean;
 }
 
 export interface CodexModelReasoningEffort {
@@ -62,33 +97,18 @@ export interface CodexThreadListResult {
   nextCursor: string | null;
 }
 
-export interface CodexThreadStartResult {
+export interface CodexThreadLifecycleResult {
   thread: CodexThread;
+  defaults: RuntimeThreadDefaults | null;
 }
 
-export interface CodexThreadResumeResult {
-  thread: CodexThread;
-}
-
-export interface CodexThreadReadResult {
-  thread: CodexThread;
-}
-
-export interface CodexThreadForkResult {
-  thread: CodexThread;
-}
-
-export interface CodexThreadRenameResult {
-  thread: CodexThread;
-}
-
-export interface CodexThreadUnarchiveResult {
-  thread: CodexThread;
-}
-
-export interface CodexThreadRollbackResult {
-  thread: CodexThread;
-}
+export type CodexThreadStartResult = CodexThreadLifecycleResult;
+export type CodexThreadResumeResult = CodexThreadLifecycleResult;
+export type CodexThreadReadResult = CodexThreadLifecycleResult;
+export type CodexThreadForkResult = CodexThreadLifecycleResult;
+export type CodexThreadRenameResult = CodexThreadLifecycleResult;
+export type CodexThreadUnarchiveResult = CodexThreadLifecycleResult;
+export type CodexThreadRollbackResult = CodexThreadLifecycleResult;
 
 export interface CodexTurnStartResult {
   turnID: string;
@@ -130,150 +150,67 @@ export interface CodexLoginResult {
   loginID?: string;
 }
 
-export interface CodexClientAdapter {
-  connect(): Promise<void>;
-  disconnect(): Promise<void>;
-  listModels(
-    requestID: CodexTransportRequestID,
-    payload: ModelListPayload,
-  ): Promise<CodexModelListResult>;
-  startThread(requestID: CodexTransportRequestID, payload: ThreadStartPayload): Promise<CodexThreadStartResult>;
-  resumeThread(
-    requestID: CodexTransportRequestID,
-    threadID: string,
-    payload: ThreadResumePayload,
-  ): Promise<CodexThreadResumeResult>;
-  readThread(
-    requestID: CodexTransportRequestID,
-    threadID: string,
-    payload: ThreadReadPayload,
-  ): Promise<CodexThreadReadResult>;
-  forkThread(
-    requestID: CodexTransportRequestID,
-    threadID: string,
-    payload: ThreadForkPayload,
-  ): Promise<CodexThreadForkResult>;
-  renameThread(
-    requestID: CodexTransportRequestID,
-    threadID: string,
-    payload: ThreadRenamePayload,
-  ): Promise<CodexThreadRenameResult>;
-  archiveThread(
-    requestID: CodexTransportRequestID,
-    threadID: string,
-    _payload: ThreadArchivePayload,
-  ): Promise<void>;
-  unarchiveThread(
-    requestID: CodexTransportRequestID,
-    threadID: string,
-    _payload: ThreadUnarchivePayload,
-  ): Promise<CodexThreadUnarchiveResult>;
-  rollbackThread(
-    requestID: CodexTransportRequestID,
-    threadID: string,
-    payload: ThreadRollbackPayload,
-  ): Promise<CodexThreadRollbackResult>;
-  listThreads(
-    requestID: CodexTransportRequestID,
-    payload: ThreadListPayload,
-  ): Promise<CodexThreadListResult>;
-  startTurn(
-    requestID: CodexTransportRequestID,
-    threadID: string,
-    payload: TurnStartPayload,
-  ): Promise<CodexTurnStartResult>;
-  cancelTurn(
-    requestID: CodexTransportRequestID,
-    threadID: string,
-    turnID: string,
-  ): Promise<void>;
-  resolveApproval(approvalID: string, payload: ApprovalResolvePayload): Promise<void>;
-  readAccount(
-    requestID: CodexTransportRequestID,
-    payload: AccountReadPayload,
-  ): Promise<CodexAccountReadResult>;
-  login(requestID: CodexTransportRequestID, payload: AccountLoginPayload): Promise<CodexLoginResult>;
-  logout(requestID: CodexTransportRequestID): Promise<void>;
-}
+export type CodexClientAdapter = BridgeProviderAdapter<
+  CodexThread,
+  CodexModelSummary,
+  CodexAccount,
+  CodexRateLimitSnapshot
+>;
 
 export class CodexClient implements CodexClientAdapter {
-  private initialized = false;
+  readonly providerID = CODEX_PROVIDER_ID;
+  readonly capabilities = CODEX_PROVIDER_CAPABILITIES;
 
-  constructor(private readonly transport: CodexTransport) {}
+  private readonly rawClient: CodexRawClient;
+  private readonly threadDefaultsByID = new Map<string, RuntimeThreadDefaults>();
 
-  async connect(): Promise<void> {
-    await this.transport.connect();
-    if (this.initialized) {
-      return;
-    }
+  constructor(transport: CodexTransport) {
+    this.rawClient = new CodexRawClient(transport);
+  }
 
-    await this.transport.send({
-      id: CODEX_INITIALIZE_REQUEST_ID,
-      method: "initialize",
-      params: {
-        clientInfo: {
-          name: CODEX_CLIENT_NAME,
-          version: CODEX_CLIENT_VERSION,
-        },
-        capabilities: {
-          experimentalApi: true,
-        },
-      },
-    });
-    this.initialized = true;
+  connect(): Promise<void> {
+    return this.rawClient.connect();
   }
 
   async disconnect(): Promise<void> {
-    this.initialized = false;
-    await this.transport.disconnect();
-  }
-
-  async startThread(
-    requestID: CodexTransportRequestID,
-    payload: ThreadStartPayload,
-  ): Promise<CodexThreadStartResult> {
-    const response = await this.transport.send<{ thread: unknown }>({
-      id: requestID,
-      method: "thread/start",
-      params: {
-        cwd: payload.workspacePath,
-        experimentalRawEvents: false,
-        persistExtendedHistory: true,
-      },
-    });
-
-    const thread = toCodexThread(response.thread);
-
-    if (payload.title && payload.title.trim().length > 0) {
-      await this.transport.send({
-        id: `${String(requestID)}:set-name`,
-        method: "thread/name/set",
-        params: {
-          threadId: thread.id,
-          name: payload.title.trim(),
-        },
-      });
-      thread.name = payload.title.trim();
-    }
-
-    return { thread };
+    this.threadDefaultsByID.clear();
+    await this.rawClient.disconnect();
   }
 
   async listModels(
     requestID: CodexTransportRequestID,
     payload: ModelListPayload,
   ): Promise<CodexModelListResult> {
-    const response = await this.transport.send<{ data: unknown[] }>({
-      id: requestID,
-      method: "model/list",
-      params: {
-        limit: payload.limit,
-        includeHidden: payload.includeHidden === true ? true : undefined,
-      },
-    });
+    const params: RawModelListParams = {
+      limit: payload.limit,
+      includeHidden: payload.includeHidden === true ? true : undefined,
+    };
+    const response = await this.rawClient.modelList(requestID, params);
 
     return {
-      models: Array.isArray(response.data) ? response.data.map((model) => toCodexModelSummary(model)) : [],
+      models: response.data.map((model) => toCodexModelSummary(model)),
+    };
+  }
+
+  async startThread(
+    requestID: CodexTransportRequestID,
+    payload: ThreadStartPayload,
+  ): Promise<CodexThreadStartResult> {
+    const response = await this.rawClient.threadStart(requestID, buildThreadStartParams(payload));
+    const thread = toCodexThread(response.thread);
+    this.rememberThreadDefaults(thread.id, toRuntimeThreadDefaults(response));
+
+    if (payload.title && payload.title.trim().length > 0) {
+      await this.rawClient.threadSetName(`${String(requestID)}:set-name`, {
+        threadId: thread.id,
+        name: payload.title.trim(),
+      });
+      thread.name = payload.title.trim();
+    }
+
+    return {
+      thread,
+      defaults: this.threadDefaultsByID.get(thread.id) ?? null,
     };
   }
 
@@ -282,18 +219,16 @@ export class CodexClient implements CodexClientAdapter {
     threadID: string,
     payload: ThreadResumePayload,
   ): Promise<CodexThreadResumeResult> {
-    const response = await this.transport.send<{ thread: unknown }>({
-      id: requestID,
-      method: "thread/resume",
-      params: {
-        threadId: threadID,
-        cwd: payload.workspacePath,
-        persistExtendedHistory: true,
-      },
-    });
+    const response = await this.rawClient.threadResume(
+      requestID,
+      buildThreadResumeParams(threadID, payload),
+    );
+    const thread = toCodexThread(response.thread);
+    this.rememberThreadDefaults(thread.id, toRuntimeThreadDefaults(response));
 
     return {
-      thread: toCodexThread(response.thread),
+      thread,
+      defaults: this.threadDefaultsByID.get(thread.id) ?? null,
     };
   }
 
@@ -302,17 +237,15 @@ export class CodexClient implements CodexClientAdapter {
     threadID: string,
     payload: ThreadReadPayload,
   ): Promise<CodexThreadReadResult> {
-    const response = await this.transport.send<{ thread: unknown }>({
-      id: requestID,
-      method: "thread/read",
-      params: {
-        threadId: threadID,
-        includeTurns: payload.includeTurns === true ? true : undefined,
-      },
+    const response = await this.rawClient.threadRead(requestID, {
+      threadId: threadID,
+      includeTurns: payload.includeTurns === true,
     });
+    const thread = toCodexThread(response.thread);
 
     return {
-      thread: toCodexThread(response.thread),
+      thread,
+      defaults: this.threadDefaultsByID.get(thread.id) ?? null,
     };
   }
 
@@ -321,17 +254,13 @@ export class CodexClient implements CodexClientAdapter {
     threadID: string,
     payload: ThreadForkPayload,
   ): Promise<CodexThreadForkResult> {
-    const response = await this.transport.send<{ thread: unknown }>({
-      id: requestID,
-      method: "thread/fork",
-      params: {
-        threadId: threadID,
-        cwd: payload.workspacePath,
-      },
-    });
+    const response = await this.rawClient.threadFork(requestID, buildThreadForkParams(threadID, payload));
+    const thread = toCodexThread(response.thread);
+    this.rememberThreadDefaults(thread.id, toRuntimeThreadDefaults(response));
 
     return {
-      thread: toCodexThread(response.thread),
+      thread,
+      defaults: this.threadDefaultsByID.get(thread.id) ?? null,
     };
   }
 
@@ -340,12 +269,8 @@ export class CodexClient implements CodexClientAdapter {
     threadID: string,
     _payload: ThreadArchivePayload,
   ): Promise<void> {
-    await this.transport.send({
-      id: requestID,
-      method: "thread/archive",
-      params: {
-        threadId: threadID,
-      },
+    await this.rawClient.threadArchive(requestID, {
+      threadId: threadID,
     });
   }
 
@@ -356,25 +281,21 @@ export class CodexClient implements CodexClientAdapter {
   ): Promise<CodexThreadRenameResult> {
     const title = payload.title.trim();
 
-    await this.transport.send({
-      id: `${String(requestID)}:set-name`,
-      method: "thread/name/set",
-      params: {
-        threadId: threadID,
-        name: title,
-      },
+    await this.rawClient.threadSetName(`${String(requestID)}:set-name`, {
+      threadId: threadID,
+      name: title,
     });
 
-    const response = await this.transport.send<{ thread: unknown }>({
-      id: requestID,
-      method: "thread/read",
-      params: {
-        threadId: threadID,
-      },
+    const response = await this.rawClient.threadRead(requestID, {
+      threadId: threadID,
+      includeTurns: false,
     });
+    const thread = toCodexThread(response.thread);
+    thread.name = title;
 
     return {
-      thread: toCodexThread(response.thread),
+      thread,
+      defaults: this.threadDefaultsByID.get(thread.id) ?? null,
     };
   }
 
@@ -383,16 +304,14 @@ export class CodexClient implements CodexClientAdapter {
     threadID: string,
     _payload: ThreadUnarchivePayload,
   ): Promise<CodexThreadUnarchiveResult> {
-    const response = await this.transport.send<{ thread: unknown }>({
-      id: requestID,
-      method: "thread/unarchive",
-      params: {
-        threadId: threadID,
-      },
+    const response = await this.rawClient.threadUnarchive(requestID, {
+      threadId: threadID,
     });
+    const thread = toCodexThread(response.thread);
 
     return {
-      thread: toCodexThread(response.thread),
+      thread,
+      defaults: this.threadDefaultsByID.get(thread.id) ?? null,
     };
   }
 
@@ -401,17 +320,15 @@ export class CodexClient implements CodexClientAdapter {
     threadID: string,
     payload: ThreadRollbackPayload,
   ): Promise<CodexThreadRollbackResult> {
-    const response = await this.transport.send<{ thread: unknown }>({
-      id: requestID,
-      method: "thread/rollback",
-      params: {
-        threadId: threadID,
-        numTurns: payload.numTurns,
-      },
+    const response = await this.rawClient.threadRollback(requestID, {
+      threadId: threadID,
+      numTurns: payload.numTurns,
     });
+    const thread = toCodexThread(response.thread);
 
     return {
-      thread: toCodexThread(response.thread),
+      thread,
+      defaults: this.threadDefaultsByID.get(thread.id) ?? null,
     };
   }
 
@@ -419,19 +336,17 @@ export class CodexClient implements CodexClientAdapter {
     requestID: CodexTransportRequestID,
     payload: ThreadListPayload,
   ): Promise<CodexThreadListResult> {
-    const response = await this.transport.send<{ data: unknown[]; nextCursor: string | null }>({
-      id: requestID,
-      method: "thread/list",
-      params: {
-        cursor: payload.cursor,
-        limit: payload.limit,
-        archived: mapArchiveFilter(payload.archived),
-        cwd: payload.workspacePath,
-      },
-    });
+    const params: RawThreadListParams = {
+      cursor: payload.cursor,
+      limit: payload.limit,
+      archived: mapArchiveFilter(payload.archived),
+      cwd: payload.workspacePath,
+    };
+    const response = await this.rawClient.threadList(requestID, params);
+    const archived = payload.archived === "only";
 
     return {
-      threads: response.data.map((thread) => toCodexThread(thread)),
+      threads: response.data.map((thread) => toCodexThread(thread, archived)),
       nextCursor: typeof response.nextCursor === "string" ? response.nextCursor : null,
     };
   }
@@ -441,31 +356,13 @@ export class CodexClient implements CodexClientAdapter {
     threadID: string,
     payload: TurnStartPayload,
   ): Promise<CodexTurnStartResult> {
-    const configuration = payload.configuration ?? {};
-    const response = await this.transport.send<{ turn: { id: string } }>({
-      id: requestID,
-      method: "turn/start",
-      params: {
-        threadId: threadID,
-        input: [
-          {
-            type: "text",
-            text: payload.prompt,
-            text_elements: [],
-          },
-        ],
-        cwd: configuration.cwd,
-        model: configuration.model,
-        approvalPolicy: mapApprovalPolicy(configuration.approvalPolicy),
-        sandboxPolicy: mapSandboxPolicy(configuration.sandboxPolicy, configuration.cwd),
-        effort: mapReasoningEffort(configuration.reasoningEffort),
-        summary: mapReasoningSummary(configuration.summaryMode),
-        env: configuration.environment,
-      },
-    });
+    const existingDefaults = this.threadDefaultsByID.get(threadID) ?? null;
+    const turnParams = buildTurnStartParams(threadID, payload, existingDefaults);
+    const response = await this.rawClient.turnStart(requestID, turnParams);
 
-    if (!isPlainObject(response.turn) || typeof response.turn.id !== "string") {
-      throw new Error("Codex turn/start response did not include a turn id.");
+    if (existingDefaults !== null) {
+      const mergedDefaults = applyPersistentTurnOverrides(existingDefaults, payload.configuration ?? {});
+      this.threadDefaultsByID.set(threadID, mergedDefaults);
     }
 
     return {
@@ -478,18 +375,14 @@ export class CodexClient implements CodexClientAdapter {
     threadID: string,
     turnID: string,
   ): Promise<void> {
-    await this.transport.send({
-      id: requestID,
-      method: "turn/interrupt",
-      params: {
-        threadId: threadID,
-        turnId: turnID,
-      },
+    await this.rawClient.turnInterrupt(requestID, {
+      threadId: threadID,
+      turnId: turnID,
     });
   }
 
   async resolveApproval(approvalID: string, payload: ApprovalResolvePayload): Promise<void> {
-    await this.transport.respond({
+    await this.rawClient.respond({
       id: approvalID,
       result: {
         decision: mapApprovalResolution(payload.resolution),
@@ -499,26 +392,16 @@ export class CodexClient implements CodexClientAdapter {
 
   async readAccount(
     requestID: CodexTransportRequestID,
-    _payload: AccountReadPayload,
+    payload: AccountReadPayload,
   ): Promise<CodexAccountReadResult> {
-    const accountResponse = await this.transport.send<{
-      account: unknown;
-      requiresOpenaiAuth?: boolean;
-    }>({
-      id: requestID,
-      method: "account/read",
-      params: {},
+    const accountResponse = await this.rawClient.readAccount(requestID, {
+      refreshToken: payload.forceRefresh === true,
     });
 
     let rateLimits: CodexRateLimitSnapshot | null = null;
 
     try {
-      const rateLimitResponse = await this.transport.send<{
-        rateLimits?: unknown;
-      }>({
-        id: `${String(requestID)}:rate-limits`,
-        method: "account/rateLimits/read",
-      });
+      const rateLimitResponse = await this.rawClient.readAccountRateLimits(`${String(requestID)}:rate-limits`);
       rateLimits = toCodexRateLimitSnapshot(rateLimitResponse.rateLimits);
     } catch {
       rateLimits = null;
@@ -535,33 +418,129 @@ export class CodexClient implements CodexClientAdapter {
     requestID: CodexTransportRequestID,
     payload: AccountLoginPayload,
   ): Promise<CodexLoginResult> {
-    const response = await this.transport.send<{
-      type: string;
-      authUrl?: string;
-      loginId?: string;
-    }>({
-      id: requestID,
-      method: "account/login/start",
-      params: mapLoginPayload(payload),
-    });
-
-    if (response.type !== "apiKey" && response.type !== "chatgpt" && response.type !== "chatgptAuthTokens") {
-      throw new Error("Codex account/login/start returned an unsupported response type.");
-    }
-
-    return {
-      type: response.type,
-      authURL: typeof response.authUrl === "string" ? response.authUrl : undefined,
-      loginID: typeof response.loginId === "string" ? response.loginId : undefined,
-    };
+    const response = await this.rawClient.login(requestID, mapLoginPayload(payload));
+    return toCodexLoginResult(response);
   }
 
-  async logout(requestID: CodexTransportRequestID): Promise<void> {
-    await this.transport.send({
-      id: requestID,
-      method: "account/logout",
-    });
+  logout(requestID: CodexTransportRequestID): Promise<void> {
+    return this.rawClient.logout(requestID);
   }
+
+  private rememberThreadDefaults(threadID: string, defaults: RuntimeThreadDefaults): void {
+    this.threadDefaultsByID.set(threadID, defaults);
+  }
+}
+
+function buildThreadStartParams(payload: ThreadStartPayload): ThreadStartParams {
+  return {
+    ...mapConversationConfiguration(payload.configuration, payload.workspacePath),
+    experimentalRawEvents: false,
+    persistExtendedHistory: true,
+  };
+}
+
+function buildThreadResumeParams(threadID: string, payload: ThreadResumePayload): ThreadResumeParams {
+  return {
+    threadId: threadID,
+    ...mapConversationConfiguration(payload.configuration, payload.workspacePath),
+    persistExtendedHistory: true,
+  };
+}
+
+function buildThreadForkParams(threadID: string, payload: ThreadForkPayload): ThreadForkParams {
+  return {
+    threadId: threadID,
+    ...mapConversationConfiguration(payload.configuration, payload.workspacePath),
+    persistExtendedHistory: true,
+  };
+}
+
+function buildTurnStartParams(
+  threadID: string,
+  payload: TurnStartPayload,
+  defaults: RuntimeThreadDefaults | null,
+): RawTurnStartParams {
+  const configuration = payload.configuration ?? {};
+  const mappedSandboxPolicy = mapSandboxPolicy(configuration.sandboxPolicy, configuration.cwd ?? defaults?.cwd);
+
+  return {
+    threadId: threadID,
+    input: [
+      {
+        type: "text",
+        text: payload.prompt,
+        text_elements: [],
+      },
+    ],
+    cwd:
+      configuration.cwd !== undefined && configuration.cwd !== defaults?.cwd
+        ? configuration.cwd
+        : undefined,
+    approvalPolicy:
+      configuration.approvalPolicy !== undefined && configuration.approvalPolicy !== defaults?.approvalPolicy
+        ? mapApprovalPolicy(configuration.approvalPolicy)
+        : undefined,
+    sandboxPolicy:
+      mappedSandboxPolicy !== undefined && !sandboxPoliciesEqual(mappedSandboxPolicy, defaults?.sandboxPolicy)
+        ? mappedSandboxPolicy
+        : undefined,
+    model:
+      configuration.model !== undefined && configuration.model !== defaults?.model
+        ? configuration.model
+        : undefined,
+    effort:
+      configuration.reasoningEffort !== undefined && configuration.reasoningEffort !== defaults?.reasoningEffort
+        ? mapReasoningEffort(configuration.reasoningEffort)
+        : undefined,
+    summary:
+      configuration.summaryMode !== undefined && configuration.summaryMode !== defaults?.summaryMode
+        ? mapReasoningSummary(configuration.summaryMode)
+        : undefined,
+  };
+}
+
+function mapConversationConfiguration(
+  configuration: ConversationConfiguration | undefined,
+  fallbackCwd: string,
+): Pick<ThreadStartParams, "cwd" | "model" | "approvalPolicy" | "sandbox"> {
+  return {
+    cwd: configuration?.cwd ?? fallbackCwd,
+    model: configuration?.model,
+    approvalPolicy: mapApprovalPolicy(configuration?.approvalPolicy),
+    sandbox: mapSandboxMode(configuration?.sandboxPolicy),
+  };
+}
+
+function toRuntimeThreadDefaults(
+  response: ThreadStartResponse | ThreadResumeResponse | ThreadForkResponse,
+): RuntimeThreadDefaults {
+  return {
+    cwd: response.cwd,
+    model: response.model,
+    modelProvider: response.modelProvider,
+    serviceTier: response.serviceTier,
+    approvalPolicy: approvalPolicyKey(response.approvalPolicy),
+    sandboxPolicy: response.sandbox,
+    reasoningEffort: response.reasoningEffort,
+    summaryMode: null,
+  };
+}
+
+function applyPersistentTurnOverrides(
+  defaults: RuntimeThreadDefaults,
+  configuration: TurnStartPayload["configuration"],
+): RuntimeThreadDefaults {
+  const mappedSandboxPolicy = mapSandboxPolicy(configuration?.sandboxPolicy, configuration?.cwd ?? defaults.cwd);
+  const mergedDefaults = mergeConversationConfigurationIntoDefaults(
+    defaults,
+    configuration ?? {},
+    mappedSandboxPolicy,
+  );
+
+  return {
+    ...mergedDefaults,
+    summaryMode: configuration?.summaryMode ?? defaults.summaryMode,
+  };
 }
 
 function mapArchiveFilter(filter: ThreadArchiveFilter | undefined): boolean | undefined {
@@ -576,22 +555,7 @@ function mapArchiveFilter(filter: ThreadArchiveFilter | undefined): boolean | un
   }
 }
 
-function mapSupportedReasoningEffort(value: unknown): ReasoningEffort | undefined {
-  if (
-    value === "none" ||
-    value === "minimal" ||
-    value === "low" ||
-    value === "medium" ||
-    value === "high" ||
-    value === "xhigh"
-  ) {
-    return value;
-  }
-
-  return undefined;
-}
-
-function mapApprovalPolicy(value: string | undefined): string | undefined {
+function mapApprovalPolicy(value: string | undefined): AskForApproval | undefined {
   if (
     value === "untrusted" ||
     value === "on-failure" ||
@@ -604,7 +568,11 @@ function mapApprovalPolicy(value: string | undefined): string | undefined {
   return undefined;
 }
 
-function mapReasoningEffort(value: string | undefined): string | undefined {
+function approvalPolicyKey(value: AskForApproval): string {
+  return typeof value === "string" ? value : "reject";
+}
+
+function mapReasoningEffort(value: string | undefined): RawReasoningEffort | undefined {
   if (
     value === "none" ||
     value === "minimal" ||
@@ -619,7 +587,7 @@ function mapReasoningEffort(value: string | undefined): string | undefined {
   return undefined;
 }
 
-function mapReasoningSummary(value: string | undefined): string | undefined {
+function mapReasoningSummary(value: string | undefined): RawReasoningSummary | undefined {
   if (value === "auto" || value === "concise" || value === "detailed" || value === "none") {
     return value;
   }
@@ -627,7 +595,19 @@ function mapReasoningSummary(value: string | undefined): string | undefined {
   return undefined;
 }
 
-function mapSandboxPolicy(value: string | undefined, cwd: string | undefined): Record<string, unknown> | undefined {
+function mapSandboxMode(value: string | undefined): SandboxMode | undefined {
+  if (
+    value === "read-only" ||
+    value === "workspace-write" ||
+    value === "danger-full-access"
+  ) {
+    return value;
+  }
+
+  return undefined;
+}
+
+function mapSandboxPolicy(value: string | undefined, cwd: string | undefined): SandboxPolicy | undefined {
   if (value === undefined) {
     return undefined;
   }
@@ -649,6 +629,7 @@ function mapSandboxPolicy(value: string | undefined, cwd: string | undefined): R
       if (!cwd) {
         return undefined;
       }
+
       return {
         type: "workspaceWrite",
         writableRoots: [cwd],
@@ -664,6 +645,13 @@ function mapSandboxPolicy(value: string | undefined, cwd: string | undefined): R
   }
 }
 
+function sandboxPoliciesEqual(
+  left: Record<string, unknown> | undefined,
+  right: Record<string, unknown> | undefined,
+): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
 function mapApprovalResolution(resolution: ApprovalResolvePayload["resolution"]): string {
   switch (resolution) {
     case "approved":
@@ -676,7 +664,7 @@ function mapApprovalResolution(resolution: ApprovalResolvePayload["resolution"])
   }
 }
 
-function mapLoginPayload(payload: AccountLoginPayload): Record<string, unknown> {
+function mapLoginPayload(payload: AccountLoginPayload): LoginAccountParams {
   switch (payload.method) {
     case "apiKey": {
       const apiKey = payload.credentials?.apiKey;
@@ -703,42 +691,54 @@ function mapLoginPayload(payload: AccountLoginPayload): Record<string, unknown> 
         );
       }
 
-      const result: Record<string, unknown> = {
+      return {
         type: "chatgptAuthTokens",
         accessToken,
         chatgptAccountId,
+        chatgptPlanType:
+          typeof payload.credentials?.chatgptPlanType === "string"
+            ? payload.credentials.chatgptPlanType
+            : undefined,
       };
-
-      const chatgptPlanType = payload.credentials?.chatgptPlanType;
-      if (typeof chatgptPlanType === "string" && chatgptPlanType.length > 0) {
-        result.chatgptPlanType = chatgptPlanType;
-      }
-
-      return result;
     }
     default:
       throw new Error(`Bridge account.login method ${String(payload.method)} is not supported.`);
   }
 }
 
-function toCodexThread(value: unknown): CodexThread {
-  if (!isPlainObject(value) || typeof value.id !== "string") {
-    throw new Error("Codex thread payload is malformed.");
+function toCodexLoginResult(response: LoginAccountResponse): CodexLoginResult {
+  switch (response.type) {
+    case "apiKey":
+      return {
+        type: "apiKey",
+      };
+    case "chatgpt":
+      return {
+        type: "chatgpt",
+        authURL: response.authUrl,
+        loginID: response.loginId,
+      };
+    case "chatgptAuthTokens":
+      return {
+        type: "chatgptAuthTokens",
+      };
   }
+}
 
+function toCodexThread(value: RawThread, archived = false): CodexThread {
   return {
     id: value.id,
-    preview: typeof value.preview === "string" ? value.preview : "",
-    updatedAt: typeof value.updatedAt === "number" ? value.updatedAt : 0,
-    name: typeof value.name === "string" ? value.name : null,
+    preview: value.preview,
+    updatedAt: value.updatedAt,
+    name: value.name,
     status: value.status,
-    turns: Array.isArray(value.turns) ? value.turns : [],
-    archived: value.archived === true,
+    turns: value.turns,
+    archived,
   };
 }
 
-function toCodexAccount(value: unknown): CodexAccount | null {
-  if (!isPlainObject(value) || typeof value.type !== "string") {
+function toCodexAccount(value: RawAccount | null): CodexAccount | null {
+  if (value === null) {
     return null;
   }
 
@@ -746,101 +746,62 @@ function toCodexAccount(value: unknown): CodexAccount | null {
     return { type: "apiKey" };
   }
 
-  if (value.type === "chatgpt") {
-    return {
-      type: "chatgpt",
-      email: typeof value.email === "string" ? value.email : undefined,
-      planType: typeof value.planType === "string" ? value.planType : undefined,
-    };
-  }
-
-  return null;
+  return {
+    type: "chatgpt",
+    email: value.email,
+    planType: value.planType,
+  };
 }
 
-function toCodexModelSummary(value: unknown): CodexModelSummary {
-  if (
-    !isPlainObject(value) ||
-    typeof value.id !== "string" ||
-    typeof value.model !== "string" ||
-    typeof value.displayName !== "string"
-  ) {
-    throw new Error("Codex model/list payload is malformed.");
-  }
-
-  const supportedReasoningEfforts = Array.isArray(value.supportedReasoningEfforts)
-    ? value.supportedReasoningEfforts.flatMap((effort) => {
-        if (!isPlainObject(effort)) {
-          return [];
-        }
-
-        const reasoningEffort = mapSupportedReasoningEffort(effort.reasoningEffort);
-        if (!reasoningEffort) {
-          return [];
-        }
-
-        return [{
-          reasoningEffort,
-          description: typeof effort.description === "string" ? effort.description : undefined,
-        }];
-      })
-    : [];
-
+function toCodexModelSummary(value: RawModel): CodexModelSummary {
   return {
     id: value.id,
     model: value.model,
     displayName: value.displayName,
-    hidden: value.hidden === true,
-    defaultReasoningEffort: mapSupportedReasoningEffort(value.defaultReasoningEffort),
-    supportedReasoningEfforts,
-    inputModalities: Array.isArray(value.inputModalities)
-      ? value.inputModalities.filter((modality): modality is string => typeof modality === "string")
-      : undefined,
-    supportsPersonality: value.supportsPersonality === true,
-    isDefault: value.isDefault === true,
+    hidden: value.hidden,
+    defaultReasoningEffort: value.defaultReasoningEffort,
+    supportedReasoningEfforts: value.supportedReasoningEfforts.map((effort) => ({
+      reasoningEffort: effort.reasoningEffort,
+      description: effort.description,
+    })),
+    inputModalities: value.inputModalities,
+    supportsPersonality: value.supportsPersonality,
+    isDefault: value.isDefault,
   };
 }
 
-function toCodexRateLimitSnapshot(value: unknown): CodexRateLimitSnapshot | null {
-  if (!isPlainObject(value)) {
-    return null;
-  }
-
+function toCodexRateLimitSnapshot(value: RawRateLimitSnapshot): CodexRateLimitSnapshot {
   return {
-    limitId: typeof value.limitId === "string" ? value.limitId : null,
-    limitName: typeof value.limitName === "string" ? value.limitName : null,
-    primary: toCodexRateLimitWindow(value.primary),
-    secondary: toCodexRateLimitWindow(value.secondary),
-    credits: isPlainObject(value.credits)
+    limitId: value.limitId,
+    limitName: value.limitName,
+    primary: value.primary
       ? {
-          usedPercent:
-            typeof value.credits.usedPercent === "number" ? value.credits.usedPercent : null,
-          remainingAmountUsd:
-            typeof value.credits.remainingAmountUsd === "number"
-              ? value.credits.remainingAmountUsd
-              : null,
+          usedPercent: value.primary.usedPercent,
+          windowDurationMins: value.primary.windowDurationMins,
+          resetsAt: value.primary.resetsAt,
         }
       : null,
-    planType: typeof value.planType === "string" ? value.planType : null,
+    secondary: value.secondary
+      ? {
+          usedPercent: value.secondary.usedPercent,
+          windowDurationMins: value.secondary.windowDurationMins,
+          resetsAt: value.secondary.resetsAt,
+        }
+      : null,
+    credits: value.credits
+      ? {
+          usedPercent: null,
+          remainingAmountUsd: null,
+        }
+      : null,
+    planType: value.planType,
   };
-}
-
-function toCodexRateLimitWindow(value: unknown): CodexRateLimitWindow | null {
-  if (!isPlainObject(value) || typeof value.usedPercent !== "number") {
-    return null;
-  }
-
-  return {
-    usedPercent: value.usedPercent,
-    windowDurationMins:
-      typeof value.windowDurationMins === "number" ? value.windowDurationMins : null,
-    resetsAt: typeof value.resetsAt === "number" ? value.resetsAt : null,
-  };
-}
-
-function isPlainObject(value: unknown): value is Record<string, any> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function isCodexTransportResponse(value: unknown): value is CodexTransportResponse {
   return isPlainObject(value) && "id" in value && ("result" in value || "error" in value);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
