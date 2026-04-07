@@ -204,4 +204,61 @@ Example approval flow:
 
 The App Server should preserve enough approval state to support active UI rendering, recovery, and auditability, but it should not invent a separate approval system when the runtime already provides the authoritative flow.
 
+## Implementation Foundations
+This section captures the baseline implementation decisions for the App Server. The goal is to keep the server contract explicit and Codex-shaped while introducing only the minimum structure required for reliability and growth.
+
+### App Server Foundation
+The App Server should provide:
+* A runnable process with healthcheck and initialize flow.
+* A long-lived WebSocket entrypoint for request, response, and notification traffic.
+* A method dispatcher that maps each incoming `method` to a handler, correlates responses using request `id`, and returns consistent protocol errors for unsupported methods or invalid params.
+* Session-scoped execution state needed to coordinate active work (for example, which thread is loaded, whether a turn is currently active, and whether an approval is pending), without redefining the canonical thread/turn/item records produced by the connected agent runtime.
+* A `Store` interface for Atelier-owned data (such as workspace metadata and thread index data), where domain services call interface methods and concrete implementations (for example, in-memory or SQLite) are swapped underneath without changing WebSocket handlers or protocol message shapes.
+
+### Server Framework
+Use **raw `Bun.serve`** for the App Server shell.
+
+Rationale:
+* Keeps protocol ownership explicit at the transport boundary.
+* Minimizes framework-level indirection for long-lived WebSocket lifecycle handling.
+* Aligns with existing Bun + TypeScript tooling already used by the bridge runtime.
+* Reduces risk of framework-imposed patterns drifting from the Codex-shaped contract.
+
+### Validation Model
+Use a three-layer validation model:
+1. **Envelope validation**: Parse and validate JSON-RPC-shaped message envelopes at ingress.
+2. **Method payload validation**: Validate `params` and event payloads with method-specific schemas.
+3. **Execution rule validation**: Enforce lifecycle and state rules in domain services.
+
+Guidelines:
+* Inbound requests and outbound notifications should both be validated against canonical schemas.
+* Validation failures should map to stable, machine-readable error codes and message shapes.
+* Execution rule violations (for example, steering a non-active turn) should be distinct from schema parse failures.
+
+### Persistence Strategy
+Use a storage interface boundary from the start, with:
+* **In-memory implementation** as the default for iteration and testing.
+* **SQLite-backed implementation** as the initial durable target.
+
+Rationale:
+* Keeps protocol and lifecycle work decoupled from migration and database concerns.
+* Preserves a clean upgrade path to durable thread, turn, and approval state.
+
+### Module Boundaries
+Recommended module boundaries:
+* `transport/` for WebSocket server, connection/session lifecycle, and framing.
+* `protocol/` for envelope parsing, dispatcher, method registry, and response/error mapping.
+* `schema/` for request/response/notification payload schemas.
+* `domain/` for workspace/thread/turn/approval orchestration and invariants.
+* `store/` for persistence interfaces and in-memory implementations.
+* `runtime-adapters/` for Codex adapter and future runtime adapters.
+
+### Baseline Readiness Criteria
+The implementation is ready for broader integration when:
+* The App Server can accept a WebSocket connection, initialize, and route a minimal method set.
+* Thread and turn lifecycle state transitions can be exercised end-to-end in tests.
+* Approval request and resolution flow can be simulated through notifications and decisions.
+* Domain orchestration depends on `Store` interfaces rather than concrete database code.
+* Protocol harness tests can assert contract shape and lifecycle sequencing.
+
 #projects/atelier-code
