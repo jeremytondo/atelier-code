@@ -34,7 +34,9 @@ The Agentic Coding domain is composed of four primary system components:
 ### Note on the Client Application
 The client application is out of scope for this document, however this is some context in case it affects decisions made for the App Server and Agent Adapters.
 
-The client is responsible for connecting to the App Server and ensuring that the App Server is installed and running on the local machine or remote development host. On macOS, this likely means local installation when needed, background process launch, and local WebSocket connection. In future remote scenarios, such as iOS clients connecting to a remote development machine, the client may connect to a remote App Server over a secure network such as Tailscale. The exact installation, startup, and reconnection mechanism is still to be determined.
+The client is responsible for connecting to the App Server and ensuring that the App Server is installed and running on the local machine or remote development host. On macOS, this likely means local installation when needed, background process launch, and local WebSocket connection. In future remote scenarios, such as iOS clients connecting to a remote development machine, the client may connect to a remote App Server over a secure network such as Tailscale.
+
+The exact installation, startup, restart, and reconnection mechanism is intentionally out of scope for this document. The App Server contract should not depend on those client lifecycle mechanics beyond requiring a long-lived connection model and explicit initialization on each connection.
 
 ## Design Stance
 The **[Codex App Server](https://developers.openai.com/codex/app-server)** is the reference runtime model for the Atelier Code App Server.
@@ -240,9 +242,22 @@ Use a storage interface boundary from the start, with:
 * **In-memory implementation** as the default for iteration and testing.
 * **SQLite-backed implementation** as the initial durable target.
 
+Implementation choice:
+* Use **raw Bun SQLite** for the first implementation.
+* Do **not** introduce Drizzle or another typed query layer in the initial rollout.
+* Keep SQL localized behind `store/` repository-style interfaces so a future query layer can be introduced without changing protocol, domain, or adapter code.
+
+Migration approach:
+* Store schema migrations as ordered SQL files under the App Server module, for example `AppServer/migrations/0001_initial.sql`.
+* Apply migrations at process startup before accepting WebSocket traffic.
+* Track applied migrations in a small metadata table such as `schema_migrations`.
+* Treat failed or partial migrations as startup failures rather than attempting best-effort runtime recovery.
+* Limit the persisted schema in early phases to Atelier-owned metadata and reattachment state, not mirrored thread/turn/item history.
+
 Rationale:
-* Keeps protocol and lifecycle work decoupled from migration and database concerns.
-* Preserves a clean upgrade path to durable thread, turn, and approval state.
+* Keeps the first persisted version operationally simple and easy to inspect.
+* Avoids committing early to an additional abstraction layer before the metadata schema has stabilized.
+* Preserves a clean upgrade path to a richer persistence layer without forcing Phase 1 and Phase 2 work to wait on ORM decisions.
 
 ### Module Boundaries
 Recommended module boundaries:
@@ -253,6 +268,36 @@ Recommended module boundaries:
 * `store/` for persistence interfaces and in-memory implementations.
 * `runtime-adapters/` for Codex adapter and future runtime adapters.
 
+Dependency direction:
+* `transport/` may depend on `protocol/` but not on `domain/`, `store/`, or runtime-specific code directly.
+* `protocol/` may depend on `schema/` and `domain/` service interfaces, but should not depend on concrete `store/` or runtime adapter implementations.
+* `schema/` is a leaf for contract definitions and should not depend on transport, domain orchestration, persistence, or adapters.
+* `domain/` owns lifecycle rules and orchestration. It may depend on abstract interfaces implemented by `store/` and `runtime-adapters/`, but must not depend on transport concerns.
+* `store/` implements persistence interfaces owned by the domain boundary and must not depend on `transport/` or WebSocket protocol handling.
+* `runtime-adapters/` implement runtime-facing interfaces owned by the domain boundary and must not depend on `transport/`.
+
+In practical terms, dependency flow should point inward toward `domain/` contracts and outward only through injected interfaces. No lower layer should import from a higher layer simply for convenience.
+
+### Testing Strategy
+The early App Server phases should be covered by three complementary test layers:
+* **Protocol harness tests**: End-to-end WebSocket contract tests that connect to the running server process, send JSON-RPC-shaped requests, and assert response shapes, protocol errors, and notification ordering for happy-path and invalid-sequencing cases.
+* **Domain service tests**: Focused unit tests for thread/turn/approval lifecycle rules using fake stores and fake runtime adapters. These tests should verify invariants such as initialize-before-use, one active turn per thread, approval scoping, and state transition correctness without requiring a live socket.
+* **Persistence tests**: Shared store conformance tests that run against both the in-memory store and the SQLite store. SQLite coverage should include migration application, restart reload, duplicate mapping protection, and failure behavior for missing or stale runtime linkage.
+* **Adapter contract tests**: Tests for the Codex adapter that validate request mapping, response normalization, notification translation, and error handling against pinned Codex contract fixtures where possible.
+* **Live smoke tests**: Environment-gated tests against a real local Codex setup for the minimal lifecycle once the real adapter exists. These should stay small and verify integration seams rather than replace deterministic contract coverage.
+
+Testing guidance:
+* Protocol harness tests are the primary executable check for the public Atelier contract.
+* Domain tests should cover execution-rule failures separately from schema validation failures.
+* Store conformance tests should run against every `Store` implementation to keep behavior aligned across in-memory and SQLite backends.
+* Adapter tests should prefer pinned fixtures for determinism and reserve live runtime tests for smoke coverage only.
+
+### Deferred Architecture Decisions
+The following decisions are intentionally deferred and should be captured as separate follow-up work rather than left implicit:
+* Client-managed App Server installation, startup, restart, and reconnection behavior across local macOS and future remote-host scenarios.
+* Secure remote connection and discovery details for non-local App Server deployments.
+* Broader multi-runtime selection and capability-gating behavior beyond the initial Codex-only rollout.
+
 ### Baseline Readiness Criteria
 The implementation is ready for broader integration when:
 * The App Server can accept a WebSocket connection, initialize, and route a minimal method set.
@@ -260,5 +305,3 @@ The implementation is ready for broader integration when:
 * Approval request and resolution flow can be simulated through notifications and decisions.
 * Domain orchestration depends on `Store` interfaces rather than concrete database code.
 * Protocol harness tests can assert contract shape and lifecycle sequencing.
-
-#projects/atelier-code
