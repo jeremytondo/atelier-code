@@ -1,0 +1,31 @@
+# AGENTS.md
+
+This file guides AI coding agents working on the new `AppServer/` effort.
+It complements [Docs/app-server-design.md](/Users/jeremytondo/Projects/AtelierCode/Docs/app-server-design.md) and [issue #45](https://github.com/jeremytondo/atelier-code/issues/45); it does not replace them.
+
+## Scope
+
+Use this guidance for implementation work related to the new Bun + TypeScript App Server foundation.
+
+## AppServer Standards
+
+- Use Bun and TypeScript with ECMAScript modules (`import` / `export`) only.
+- Use Biome as the single formatter and linter for `AppServer/`.
+- Use Bun's built-in test runner (`bun:test`) for App Server tests.
+- Keep TypeScript strict. Do not use `any`; prefer `unknown`, explicit narrowing, and discriminated unions.
+- Treat protocol schemas and typed contracts as the source of truth at ingress and egress.
+- Keep Bun-specific APIs at the edges. Domain logic must stay transport-agnostic and runtime-agnostic.
+- Preserve stable IDs and typed event models for `Thread`, `Turn`, `Item`, and approval flows.
+- Model reasoning, plan, diff, and approval events as first-class typed variants even when an early phase only passes them through or stubs part of the behavior.
+- Keep side effects out of domain logic. Prefer injected interfaces and small pure mapping functions.
+- Prefer deterministic tests with fakes and fixtures. Add or update tests for lifecycle sequencing, event ordering, approvals, and error handling when behavior changes.
+- Treat generated or vendored Codex contract artifacts as read-only reference inputs. Update them through their generation or import workflow, not by hand.
+
+## Required Checks
+
+Before considering App Server work complete:
+
+- Run `biome format` or `biome check` as appropriate.
+- Run `tsc --noEmit`.
+- Run targeted `bun test` coverage for the touched area.
+- Add or update `bun:test` coverage when changing contract, domain, adapter, or persistence behavior.
