@@ -243,21 +243,21 @@ Use a storage interface boundary from the start, with:
 * **SQLite-backed implementation** as the initial durable target.
 
 Implementation choice:
-* Use **raw Bun SQLite** for the first implementation.
-* Do **not** introduce Drizzle or another typed query layer in the initial rollout.
-* Keep SQL localized behind `store/` repository-style interfaces so a future query layer can be introduced without changing protocol, domain, or adapter code.
+* Use **Drizzle ORM with SQLite** for the first durable implementation.
+* Treat Drizzle as the canonical schema and query layer for App Server metadata persistence.
+* Keep Drizzle usage localized behind `store/` repository-style interfaces so protocol, domain, and adapter code do not depend directly on ORM details.
 
 Migration approach:
-* Store schema migrations as ordered SQL files under the App Server module, for example `AppServer/migrations/0001_initial.sql`.
+* Generate and apply schema migrations using the Drizzle migration workflow for the App Server module.
+* Keep migration files checked into the repository under the App Server module so schema evolution is reviewable and reproducible.
 * Apply migrations at process startup before accepting WebSocket traffic.
-* Track applied migrations in a small metadata table such as `schema_migrations`.
 * Treat failed or partial migrations as startup failures rather than attempting best-effort runtime recovery.
 * Limit the persisted schema in early phases to Atelier-owned metadata and reattachment state, not mirrored thread/turn/item history.
 
 Rationale:
-* Keeps the first persisted version operationally simple and easy to inspect.
-* Avoids committing early to an additional abstraction layer before the metadata schema has stabilized.
-* Preserves a clean upgrade path to a richer persistence layer without forcing Phase 1 and Phase 2 work to wait on ORM decisions.
+* Avoids building a one-off migration system that would likely be replaced later.
+* Keeps schema definition, migrations, and typed queries aligned from the first persisted version.
+* Improves maintainability as the metadata model grows across persistence and restart-reattachment phases.
 
 ### Module Boundaries
 Recommended module boundaries:
