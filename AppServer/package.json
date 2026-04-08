@@ -7,8 +7,8 @@
     "start": "bun run ./src/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "format": "biome format --write ./src ./package.json ./tsconfig.json ./biome.json",
-    "check": "biome check ./src ./package.json ./tsconfig.json ./biome.json",
+    "format": "biome format --write ./src ./integration ./package.json ./tsconfig.json ./biome.json",
+    "check": "biome check ./src ./integration ./package.json ./tsconfig.json ./biome.json",
     "healthcheck": "bun run ./src/index.ts --healthcheck"
   },
   "devDependencies": {
