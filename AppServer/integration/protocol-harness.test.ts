@@ -169,7 +169,16 @@ describe("phase 1 websocket harness", () => {
         serviceTier: null,
         cwd: workspacePath,
         approvalPolicy: "on-request",
-        sandbox: "workspace-write",
+        sandbox: {
+          type: "workspaceWrite",
+          writableRoots: [workspacePath],
+          readOnlyAccess: {
+            type: "fullAccess",
+          },
+          networkAccess: false,
+          excludeTmpdirEnvVar: false,
+          excludeSlashTmp: false,
+        },
         reasoningEffort: null,
       },
     });

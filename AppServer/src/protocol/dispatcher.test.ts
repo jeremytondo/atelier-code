@@ -168,7 +168,16 @@ function createFakeService(
           serviceTier: null,
           cwd: "/tmp/project",
           approvalPolicy: "on-request",
-          sandbox: "workspace-write",
+          sandbox: {
+            type: "workspaceWrite",
+            writableRoots: ["/tmp/project"],
+            readOnlyAccess: {
+              type: "fullAccess",
+            },
+            networkAccess: false,
+            excludeTmpdirEnvVar: false,
+            excludeSlashTmp: false,
+          },
           reasoningEffort: null,
         },
       })),

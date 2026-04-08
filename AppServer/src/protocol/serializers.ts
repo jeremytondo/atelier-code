@@ -1,7 +1,12 @@
-import type { ThreadRecord, TurnRecord } from "../domain/models";
+import type {
+  SandboxModeRecord,
+  ThreadRecord,
+  TurnRecord,
+} from "../domain/models";
 import { SERVER_VERSION } from "../server/server-metadata";
 import type {
   ProtocolItem,
+  ProtocolSandboxPolicy,
   ProtocolThread,
   ProtocolTurn,
   ProtocolTurnError,
@@ -52,6 +57,39 @@ export function toProtocolTurn(
     status: turn.status,
     error: toProtocolTurnError(turn.error),
   };
+}
+
+export function toProtocolSandboxPolicy(
+  sandboxMode: SandboxModeRecord,
+  cwd: string,
+): ProtocolSandboxPolicy {
+  switch (sandboxMode) {
+    case "danger-full-access":
+      return {
+        type: "dangerFullAccess",
+      };
+    case "read-only":
+      return {
+        type: "readOnly",
+        access: {
+          type: "restricted",
+          includePlatformDefaults: true,
+          readableRoots: [cwd],
+        },
+        networkAccess: false,
+      };
+    case "workspace-write":
+      return {
+        type: "workspaceWrite",
+        writableRoots: [cwd],
+        readOnlyAccess: {
+          type: "fullAccess",
+        },
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      };
+  }
 }
 
 function toProtocolTurnError(

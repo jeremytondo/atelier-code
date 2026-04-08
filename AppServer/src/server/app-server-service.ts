@@ -12,7 +12,11 @@ import {
   buildThreadStarted,
   buildTurnStarted,
 } from "../protocol/notification-builders";
-import { toProtocolThread, toProtocolTurn } from "../protocol/serializers";
+import {
+  toProtocolSandboxPolicy,
+  toProtocolThread,
+  toProtocolTurn,
+} from "../protocol/serializers";
 import type {
   InitializeParams,
   InitializeResult,
@@ -172,7 +176,7 @@ export class AppServerService {
         serviceTier: thread.serviceTier,
         cwd: thread.cwd,
         approvalPolicy: thread.approvalPolicy,
-        sandbox: thread.sandboxMode,
+        sandbox: toProtocolSandboxPolicy(thread.sandboxMode, thread.cwd),
         reasoningEffort: thread.reasoningEffort,
       },
       followUp: async () => {

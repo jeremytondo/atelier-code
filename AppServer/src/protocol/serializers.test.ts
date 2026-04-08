@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 
 import type { ThreadRecord, TurnRecord } from "../domain/models";
 import { SERVER_VERSION } from "../server/server-metadata";
-import { toProtocolThread, toProtocolTurn } from "./serializers";
+import {
+  toProtocolSandboxPolicy,
+  toProtocolThread,
+  toProtocolTurn,
+} from "./serializers";
 
 describe("protocol serializers", () => {
   test("serializes thread/start style threads with canonical defaults", () => {
@@ -80,6 +84,36 @@ describe("protocol serializers", () => {
       items: [],
       status: "completed",
       error: null,
+    });
+  });
+
+  test("maps workspace-write sandbox mode to a Codex sandbox policy", () => {
+    expect(toProtocolSandboxPolicy("workspace-write", "/tmp/project")).toEqual({
+      type: "workspaceWrite",
+      writableRoots: ["/tmp/project"],
+      readOnlyAccess: {
+        type: "fullAccess",
+      },
+      networkAccess: false,
+      excludeTmpdirEnvVar: false,
+      excludeSlashTmp: false,
+    });
+  });
+
+  test("maps read-only and danger-full-access sandbox modes to Codex sandbox policies", () => {
+    expect(toProtocolSandboxPolicy("read-only", "/tmp/project")).toEqual({
+      type: "readOnly",
+      access: {
+        type: "restricted",
+        includePlatformDefaults: true,
+        readableRoots: ["/tmp/project"],
+      },
+      networkAccess: false,
+    });
+    expect(
+      toProtocolSandboxPolicy("danger-full-access", "/tmp/project"),
+    ).toEqual({
+      type: "dangerFullAccess",
     });
   });
 });

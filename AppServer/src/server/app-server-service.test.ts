@@ -194,6 +194,17 @@ describe("AppServerService", () => {
     );
     await threadOutcome.followUp?.();
 
+    expect(threadOutcome.result.sandbox).toEqual({
+      type: "workspaceWrite",
+      writableRoots: ["/tmp/project"],
+      readOnlyAccess: {
+        type: "fullAccess",
+      },
+      networkAccess: false,
+      excludeTmpdirEnvVar: false,
+      excludeSlashTmp: false,
+    });
+
     const turnOutcome = service.startTurn(
       session,
       {

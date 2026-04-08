@@ -98,7 +98,7 @@ export interface ThreadStartResult {
   serviceTier: ServiceTierRecord | null;
   cwd: string;
   approvalPolicy: ApprovalPolicyRecord;
-  sandbox: SandboxModeRecord;
+  sandbox: ProtocolSandboxPolicy;
   reasoningEffort: ReasoningEffortRecord | null;
 }
 
@@ -169,6 +169,40 @@ export type SupportedNotificationMethod =
   | "turn/completed";
 
 export type ProtocolItem = ItemRecord;
+
+export type ProtocolNetworkAccess = "restricted" | "enabled";
+
+export type ProtocolReadOnlyAccess =
+  | {
+      type: "restricted";
+      includePlatformDefaults: boolean;
+      readableRoots: string[];
+    }
+  | {
+      type: "fullAccess";
+    };
+
+export type ProtocolSandboxPolicy =
+  | {
+      type: "dangerFullAccess";
+    }
+  | {
+      type: "readOnly";
+      access: ProtocolReadOnlyAccess;
+      networkAccess: boolean;
+    }
+  | {
+      type: "externalSandbox";
+      networkAccess: ProtocolNetworkAccess;
+    }
+  | {
+      type: "workspaceWrite";
+      writableRoots: string[];
+      readOnlyAccess: ProtocolReadOnlyAccess;
+      networkAccess: boolean;
+      excludeTmpdirEnvVar: boolean;
+      excludeSlashTmp: boolean;
+    };
 
 export interface ProtocolTurnError {
   message: string;
