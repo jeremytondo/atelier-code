@@ -32,7 +32,7 @@ export function validateTurnStartParams(
 
   if (!isOptionalApprovalPolicy(value.approvalPolicy)) {
     return invalid(
-      "turn/start approvalPolicy must be a Codex-shaped approval policy when provided.",
+      "turn/start approvalPolicy must be a supported approval policy when provided.",
     );
   }
 

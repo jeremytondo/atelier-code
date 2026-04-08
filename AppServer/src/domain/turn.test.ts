@@ -8,6 +8,7 @@ import {
   applyItemStarted,
   applyPendingRequest,
   completeTurn,
+  failTurn,
 } from "./turn";
 
 describe("turn event reducer", () => {
@@ -104,6 +105,7 @@ describe("turn event reducer", () => {
       workspaceId: "workspace-1",
       cwd: "/tmp/project",
       now: 123,
+      ephemeral: false,
       model: "fake-codex-phase-1",
       modelProvider: "fake-codex",
       serviceTier: null,
@@ -134,5 +136,48 @@ describe("turn event reducer", () => {
     expect(completed.thread.status).toEqual({ type: "idle" });
     expect(completed.thread.updatedAt).toBe(456);
     expect(completed.turn.status).toBe("completed");
+  });
+
+  test("marks unexpected execution failures as failed turns and system errors", () => {
+    const thread = createThreadRecord({
+      id: "thread-1",
+      workspaceId: "workspace-1",
+      cwd: "/tmp/project",
+      now: 123,
+      ephemeral: false,
+      model: "fake-codex-phase-1",
+      modelProvider: "fake-codex",
+      serviceTier: null,
+      approvalPolicy: "on-request",
+      sandboxMode: "workspace-write",
+      reasoningEffort: null,
+    });
+
+    const failed = failTurn(
+      thread,
+      {
+        id: "turn-1",
+        items: [],
+        status: "inProgress",
+        error: null,
+      },
+      {
+        message: "Boom",
+        additionalDetails: "stack",
+      },
+      456,
+    );
+
+    expect(failed.thread.status).toEqual({ type: "systemError" });
+    expect(failed.thread.updatedAt).toBe(456);
+    expect(failed.turn).toEqual({
+      id: "turn-1",
+      items: [],
+      status: "failed",
+      error: {
+        message: "Boom",
+        additionalDetails: "stack",
+      },
+    });
   });
 });

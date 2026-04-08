@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { validateTurnStartParams } from "./start";
 
-describe("turn/start schema", () => {
+describe("turn/start validation", () => {
   test("requires a thread id", () => {
     expect(
       validateTurnStartParams({

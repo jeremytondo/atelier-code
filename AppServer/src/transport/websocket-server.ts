@@ -92,9 +92,7 @@ export async function startWebSocketServer(
         socket.send(JSON.stringify(outcome.response));
 
         if (outcome.followUp) {
-          queueMicrotask(() => {
-            void outcome.followUp?.();
-          });
+          void runFollowUp(outcome.followUp);
         }
       },
     },
@@ -107,6 +105,14 @@ export async function startWebSocketServer(
       server.stop(true);
     },
   };
+}
+
+async function runFollowUp(followUp: () => Promise<void>): Promise<void> {
+  try {
+    await followUp();
+  } catch (error) {
+    console.error("App Server follow-up execution failed.", error);
+  }
 }
 
 function decodeMessage(

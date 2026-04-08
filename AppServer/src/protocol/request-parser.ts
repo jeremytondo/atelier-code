@@ -1,4 +1,4 @@
-import { parseJsonRpcRequest } from "../schema/request-envelope";
+import { parseJsonRpcRequest } from "../validation/request-envelope";
 import {
   createInvalidRequestErrorOutcome,
   createParseErrorOutcome,

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { DomainError } from "../domain/errors";
+import { SERVER_VERSION } from "../server/server-metadata";
 import { createSessionRecord } from "../server/session-state";
 import { ProtocolDispatcher } from "./dispatcher";
 import type { JsonRpcNotification } from "./types";
@@ -143,16 +144,23 @@ function createFakeService(
         result: {
           thread: {
             id: "thread-1",
-            workspaceId: "workspace-1",
             preview: "New thread",
+            ephemeral: false,
+            modelProvider: "fake-codex",
             createdAt: 1,
             updatedAt: 1,
             status: {
               type: "idle",
             },
+            path: null,
             cwd: "/tmp/project",
-            modelProvider: "fake-codex",
+            cliVersion: SERVER_VERSION,
+            source: "appServer",
+            agentNickname: null,
+            agentRole: null,
+            gitInfo: null,
             name: null,
+            workspaceId: "workspace-1",
             turns: [],
           },
           model: "fake-codex-phase-1",

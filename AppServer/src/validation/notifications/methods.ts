@@ -1,4 +1,4 @@
-import type { SupportedNotificationMethod } from "../protocol/types";
+import type { SupportedNotificationMethod } from "../../protocol/types";
 
 export function isSupportedNotificationMethod(
   method: string,

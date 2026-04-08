@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import type { AgentAdapter } from "../agent-adapters/agent-adapter";
 import {
   FakeAgentAdapter,
   type FakeAgentAdapterOptions,
@@ -8,6 +9,7 @@ import type { DomainError } from "../domain/errors";
 import type { JsonRpcNotification } from "../protocol/types";
 import { InMemoryAppServerStore } from "../store/in-memory-store";
 import { AppServerService } from "./app-server-service";
+import { SERVER_VERSION } from "./server-metadata";
 import type { SessionRecord } from "./session-state";
 import type { WorkspacePathAccess } from "./workspace-paths";
 
@@ -44,6 +46,39 @@ describe("AppServerService", () => {
         code: "workspace_not_opened",
       }) satisfies Partial<DomainError>,
     );
+  });
+
+  test("canonicalizes workspace paths and reuses the same workspace id", () => {
+    const { service, session } = createHarness({
+      directoryMappings: {
+        "./project": "/tmp/project",
+        "/tmp/project": "/tmp/project",
+        "/tmp/project/": "/tmp/project",
+        "/tmp/project-link": "/tmp/project",
+      },
+    });
+    initialize(service, session);
+
+    const openedFromRelative = service.openWorkspace(session, {
+      path: "./project",
+    }).result.workspace;
+    const openedFromTrailingSlash = service.openWorkspace(session, {
+      path: "/tmp/project/",
+    }).result.workspace;
+    const openedFromSymlink = service.openWorkspace(session, {
+      path: "/tmp/project-link",
+    }).result.workspace;
+
+    expect(openedFromRelative).toEqual({
+      id: "workspace-1",
+      path: "/tmp/project",
+      createdAt: 1_700_000_000,
+      updatedAt: 1_700_000_000,
+    });
+    expect(openedFromTrailingSlash.id).toBe("workspace-1");
+    expect(openedFromTrailingSlash.path).toBe("/tmp/project");
+    expect(openedFromSymlink.id).toBe("workspace-1");
+    expect(openedFromSymlink.path).toBe("/tmp/project");
   });
 
   test("enforces thread ownership within the current workspace", () => {
@@ -181,6 +216,19 @@ describe("AppServerService", () => {
       params: {
         thread: expect.objectContaining({
           id: "thread-1",
+          preview: "New thread",
+          ephemeral: false,
+          modelProvider: "fake-codex",
+          path: null,
+          cwd: "/tmp/project",
+          cliVersion: SERVER_VERSION,
+          source: "appServer",
+          agentNickname: null,
+          agentRole: null,
+          gitInfo: null,
+          name: null,
+          workspaceId: "workspace-1",
+          turns: [],
         }),
       },
     });
@@ -205,6 +253,91 @@ describe("AppServerService", () => {
           items: [],
           status: "completed",
           error: null,
+        },
+      },
+    });
+  });
+
+  test("marks a started turn failed and emits turn/completed when follow-up execution throws", async () => {
+    const { emitted, service, session, notifications, store } = createHarness({
+      agentAdapter: new ThrowingAgentAdapter(),
+    });
+    initialize(service, session);
+    service.openWorkspace(session, {
+      path: "/tmp/project",
+    });
+    const threadOutcome = service.startThread(
+      session,
+      {
+        experimentalRawEvents: false,
+        persistExtendedHistory: false,
+      },
+      notifications,
+    );
+    await threadOutcome.followUp?.();
+
+    const turnOutcome = service.startTurn(
+      session,
+      {
+        threadId: threadOutcome.result.thread.id,
+        input: [
+          {
+            type: "text",
+            text: "Crash after response",
+            text_elements: [],
+          },
+        ],
+      },
+      notifications,
+    );
+    await turnOutcome.followUp?.();
+
+    const storedThread = store.getThread("thread-1");
+    const storedTurn = store.getTurn("thread-1", "turn-1");
+
+    expect(session.activeTurnId).toBeNull();
+    expect(session.pendingRequestId).toBeNull();
+    expect(storedThread?.status).toEqual({ type: "systemError" });
+    expect(storedTurn).toEqual({
+      id: "turn-1",
+      items: [
+        {
+          type: "userMessage",
+          id: "item-1",
+          content: [
+            {
+              type: "text",
+              text: "Crash after response",
+              text_elements: [],
+            },
+          ],
+        },
+        {
+          type: "agentMessage",
+          id: "item-2",
+          text: "",
+          phase: "final_answer",
+        },
+      ],
+      status: "failed",
+      error: {
+        message: "adapter boom",
+        additionalDetails: expect.stringContaining("adapter boom"),
+      },
+    });
+    expect(emitted.at(-1)).toEqual({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-1",
+        turn: {
+          id: "turn-1",
+          items: [],
+          status: "failed",
+          error: {
+            message: "adapter boom",
+            codexErrorInfo: null,
+            additionalDetails: expect.stringContaining("adapter boom"),
+          },
         },
       },
     });
@@ -260,7 +393,12 @@ describe("AppServerService", () => {
   });
 });
 
-function createHarness(options: FakeAgentAdapterOptions = {}) {
+function createHarness(
+  options: FakeAgentAdapterOptions & {
+    agentAdapter?: AgentAdapter;
+    directoryMappings?: Record<string, string>;
+  } = {},
+) {
   const emitted: JsonRpcNotification[] = [];
   const store = new InMemoryAppServerStore();
   const session: SessionRecord = {
@@ -279,12 +417,14 @@ function createHarness(options: FakeAgentAdapterOptions = {}) {
     store,
     service: new AppServerService(
       store,
-      new FakeAgentAdapter(options),
-      new FakeWorkspacePathAccess([
-        "/tmp/project",
-        "/tmp/project-a",
-        "/tmp/project-b",
-      ]),
+      options.agentAdapter ?? new FakeAgentAdapter(options),
+      new FakeWorkspacePathAccess(
+        options.directoryMappings ?? {
+          "/tmp/project": "/tmp/project",
+          "/tmp/project-a": "/tmp/project-a",
+          "/tmp/project-b": "/tmp/project-b",
+        },
+      ),
       new CounterIdGenerator(),
       {
         now: () => 1_700_000_000,
@@ -313,10 +453,10 @@ function initialize(service: AppServerService, session: SessionRecord): void {
 }
 
 class FakeWorkspacePathAccess implements WorkspacePathAccess {
-  constructor(private readonly directories: string[]) {}
+  constructor(private readonly directoryMappings: Record<string, string>) {}
 
-  isDirectory(path: string): boolean {
-    return this.directories.includes(path);
+  resolveDirectory(path: string): string | null {
+    return this.directoryMappings[path] ?? null;
   }
 }
 
@@ -327,5 +467,21 @@ class CounterIdGenerator {
     const nextValue = (this.counters.get(prefix) ?? 0) + 1;
     this.counters.set(prefix, nextValue);
     return `${prefix}-${nextValue}`;
+  }
+}
+
+class ThrowingAgentAdapter implements AgentAdapter {
+  async *streamTurn() {
+    yield {
+      type: "itemStarted" as const,
+      item: {
+        type: "agentMessage" as const,
+        id: "item-2",
+        text: "",
+        phase: "final_answer" as const,
+      },
+    };
+
+    throw new Error("adapter boom");
   }
 }

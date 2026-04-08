@@ -5,6 +5,7 @@ import type {
 import { DomainError } from "../domain/errors";
 import type {
   ThreadRecord,
+  TurnErrorRecord,
   TurnRecord,
   UserInputRecord,
 } from "../domain/models";
@@ -14,6 +15,7 @@ import {
   applyItemStarted,
   applyPendingRequest,
   completeTurn,
+  failTurn,
 } from "../domain/turn";
 import {
   buildAgentMessageDelta,
@@ -35,7 +37,7 @@ export interface NotificationEmitter {
   ): Promise<void> | void;
 }
 
-export class RuntimeTurnRunner {
+export class AgentTurnRunner {
   constructor(
     private readonly store: AppServerStore,
     private readonly agentAdapter: AgentAdapter,
@@ -63,6 +65,36 @@ export class RuntimeTurnRunner {
     for await (const event of agentStream) {
       await this.applyEvent(session, threadId, turnId, event, notifications);
     }
+  }
+
+  async failTurnExecution(
+    session: SessionRecord,
+    threadId: string,
+    turnId: string,
+    error: unknown,
+    notifications: NotificationEmitter,
+  ): Promise<void> {
+    const thread = this.store.getThread(threadId);
+    const turn = this.store.getTurn(threadId, turnId);
+    if (!thread || !turn) {
+      return;
+    }
+
+    if (session.activeTurnId !== turnId && turn.status !== "inProgress") {
+      return;
+    }
+
+    const failed = failTurn(
+      thread,
+      turn,
+      toTurnErrorRecord(error),
+      this.clock.now(),
+    );
+    this.store.saveTurn(threadId, failed.turn);
+    this.store.saveThread(failed.thread);
+    clearActiveTurn(session, turnId);
+    setPendingRequest(session, null);
+    await notifications.emit(buildTurnCompleted(threadId, failed.turn));
   }
 
   private async applyEvent(
@@ -128,6 +160,7 @@ export class RuntimeTurnRunner {
         this.store.saveTurn(threadId, completed.turn);
         this.store.saveThread(completed.thread);
         clearActiveTurn(session, turnId);
+        setPendingRequest(session, null);
         await notifications.emit(buildTurnCompleted(threadId, completed.turn));
       }
     }
@@ -158,5 +191,39 @@ export class RuntimeTurnRunner {
     }
 
     return turn;
+  }
+}
+
+function toTurnErrorRecord(error: unknown): TurnErrorRecord {
+  if (error instanceof Error) {
+    return {
+      message: error.message,
+      additionalDetails:
+        error.stack && error.stack !== error.message ? error.stack : null,
+    };
+  }
+
+  if (typeof error === "string") {
+    return {
+      message: error,
+      additionalDetails: null,
+    };
+  }
+
+  return {
+    message: "Unexpected App Server runtime failure.",
+    additionalDetails: safeErrorDetails(error),
+  };
+}
+
+function safeErrorDetails(error: unknown): string | null {
+  if (error === null || error === undefined) {
+    return null;
+  }
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
   }
 }

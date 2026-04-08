@@ -1,5 +1,8 @@
-import { isSupportedNotificationMethod } from "../schema/notification-methods";
-import { isPlainObject } from "../schema/shared";
+import {
+  isSupportedNotificationMethod,
+  validateNotificationParams,
+} from "../validation/notifications";
+import { isPlainObject } from "../validation/shared";
 import { createInvalidParamsError } from "./errors";
 import type {
   JsonRpcErrorResponse,
@@ -55,10 +58,12 @@ export function assertProtocolNotification<TParams>(
     ).error;
   }
 
-  if (!isPlainObject(message.params)) {
-    throw new Error(
-      "Outbound notifications must include an object params payload.",
-    );
+  const validatedParams = validateNotificationParams(
+    message.method,
+    message.params,
+  );
+  if (!validatedParams.ok) {
+    throw new Error(validatedParams.error);
   }
 
   return message;

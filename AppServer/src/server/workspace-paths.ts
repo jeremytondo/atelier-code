@@ -1,15 +1,18 @@
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 
 export interface WorkspacePathAccess {
-  isDirectory(path: string): boolean;
+  resolveDirectory(path: string): string | null;
 }
 
 export class NodeWorkspacePathAccess implements WorkspacePathAccess {
-  isDirectory(path: string): boolean {
+  resolveDirectory(path: string): string | null {
     try {
-      return statSync(path).isDirectory();
+      const resolvedPath = resolve(path);
+      const canonicalPath = realpathSync.native(resolvedPath);
+      return statSync(canonicalPath).isDirectory() ? canonicalPath : null;
     } catch {
-      return false;
+      return null;
     }
   }
 }

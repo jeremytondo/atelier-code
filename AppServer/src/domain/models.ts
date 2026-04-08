@@ -20,8 +20,8 @@ export type TurnStatusRecord =
   | "inProgress";
 
 export interface TurnErrorRecord {
-  code: string;
   message: string;
+  additionalDetails: string | null;
 }
 
 export interface TextInputRecord {
@@ -87,6 +87,7 @@ export interface ThreadRecord {
   id: string;
   workspaceId: string;
   preview: string;
+  ephemeral: boolean;
   createdAt: number;
   updatedAt: number;
   status: ThreadStatusRecord;

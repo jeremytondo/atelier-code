@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { realpathSync } from "node:fs";
 
 import type { JsonRpcNotification } from "../src/protocol/types";
+import { SERVER_VERSION } from "../src/server/server-metadata";
 import {
   type ServerProcessHarness,
   spawnServerProcess,
@@ -10,6 +12,7 @@ import { WebSocketHarness } from "./support/ws-harness";
 describe("phase 1 websocket harness", () => {
   const servers: ServerProcessHarness[] = [];
   const harnesses: WebSocketHarness[] = [];
+  const workspacePath = realpathSync.native(process.cwd());
 
   afterEach(async () => {
     for (const harness of harnesses.splice(0)) {
@@ -49,7 +52,7 @@ describe("phase 1 websocket harness", () => {
 
     const response = await harness.sendRequest(
       harness.buildRequest("req-1", "workspace/open", {
-        path: process.cwd(),
+        path: workspacePath,
       }),
     );
 
@@ -135,7 +138,7 @@ describe("phase 1 websocket harness", () => {
 
     const workspaceOpen = await harness.sendRequest(
       harness.buildRequest("workspace-1", "workspace/open", {
-        path: process.cwd(),
+        path: workspacePath,
       }),
     );
     expect(workspaceOpen).toEqual({
@@ -143,7 +146,7 @@ describe("phase 1 websocket harness", () => {
       result: {
         workspace: {
           id: "workspace-1",
-          path: process.cwd(),
+          path: workspacePath,
           createdAt: expect.any(Number),
           updatedAt: expect.any(Number),
         },
@@ -160,24 +163,11 @@ describe("phase 1 websocket harness", () => {
     expect(threadStart.response).toEqual({
       id: "thread-req-1",
       result: {
-        thread: {
-          id: "thread-1",
-          workspaceId: "workspace-1",
-          preview: "New thread",
-          createdAt: expect.any(Number),
-          updatedAt: expect.any(Number),
-          status: {
-            type: "idle",
-          },
-          cwd: process.cwd(),
-          modelProvider: "fake-codex",
-          name: null,
-          turns: [],
-        },
+        thread: buildExpectedThread(workspacePath),
         model: "fake-codex-phase-1",
         modelProvider: "fake-codex",
         serviceTier: null,
-        cwd: process.cwd(),
+        cwd: workspacePath,
         approvalPolicy: "on-request",
         sandbox: "workspace-write",
         reasoningEffort: null,
@@ -187,20 +177,7 @@ describe("phase 1 websocket harness", () => {
       {
         method: "thread/started",
         params: {
-          thread: {
-            id: "thread-1",
-            workspaceId: "workspace-1",
-            preview: "New thread",
-            createdAt: expect.any(Number),
-            updatedAt: expect.any(Number),
-            status: {
-              type: "idle",
-            },
-            cwd: process.cwd(),
-            modelProvider: "fake-codex",
-            name: null,
-            turns: [],
-          },
+          thread: buildExpectedThread(workspacePath),
         },
       },
     ]);
@@ -371,11 +348,35 @@ async function initializeHarness(harness: WebSocketHarness) {
 async function openWorkspace(harness: WebSocketHarness) {
   return harness.sendRequest(
     harness.buildRequest("workspace-1", "workspace/open", {
-      path: process.cwd(),
+      path: realpathSync.native(process.cwd()),
     }),
   );
 }
 
 function notificationMethods(notifications: JsonRpcNotification[]): string[] {
   return notifications.map((notification) => notification.method);
+}
+
+function buildExpectedThread(cwd: string) {
+  return {
+    id: "thread-1",
+    preview: "New thread",
+    ephemeral: false,
+    modelProvider: "fake-codex",
+    createdAt: expect.any(Number),
+    updatedAt: expect.any(Number),
+    status: {
+      type: "idle",
+    },
+    path: null,
+    cwd,
+    cliVersion: SERVER_VERSION,
+    source: "appServer",
+    agentNickname: null,
+    agentRole: null,
+    gitInfo: null,
+    name: null,
+    workspaceId: "workspace-1",
+    turns: [],
+  };
 }

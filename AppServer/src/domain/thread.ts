@@ -16,6 +16,7 @@ export interface CreateThreadRecordInput {
   workspaceId: string;
   cwd: string;
   now: number;
+  ephemeral: boolean;
   model: string;
   modelProvider: string;
   serviceTier: ServiceTierRecord | null;
@@ -46,6 +47,7 @@ export function createThreadRecord(
     id: input.id,
     workspaceId: input.workspaceId,
     preview: "New thread",
+    ephemeral: input.ephemeral,
     createdAt: input.now,
     updatedAt: input.now,
     status: { type: "idle" },

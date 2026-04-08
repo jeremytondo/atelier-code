@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { validateWorkspaceOpenParams } from "./open";
 
-describe("workspace/open schema", () => {
+describe("workspace/open validation", () => {
   test("rejects empty paths", () => {
     expect(
       validateWorkspaceOpenParams({

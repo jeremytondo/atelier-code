@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { SERVER_VERSION } from "../server/server-metadata";
 import { createProtocolNotificationEmitter } from "./notification-emitter";
 import type { JsonRpcNotification } from "./types";
 
@@ -14,13 +15,57 @@ describe("notification-emitter", () => {
 
     await emitter.emit({
       method: "thread/started",
-      params: {},
+      params: {
+        thread: {
+          id: "thread-1",
+          preview: "New thread",
+          ephemeral: false,
+          modelProvider: "fake-codex",
+          createdAt: 1,
+          updatedAt: 1,
+          status: {
+            type: "idle",
+          },
+          path: null,
+          cwd: "/tmp/project",
+          cliVersion: SERVER_VERSION,
+          source: "appServer",
+          agentNickname: null,
+          agentRole: null,
+          gitInfo: null,
+          name: null,
+          workspaceId: "workspace-1",
+          turns: [],
+        },
+      },
     });
 
     expect(emitted).toEqual([
       {
         method: "thread/started",
-        params: {},
+        params: {
+          thread: {
+            id: "thread-1",
+            preview: "New thread",
+            ephemeral: false,
+            modelProvider: "fake-codex",
+            createdAt: 1,
+            updatedAt: 1,
+            status: {
+              type: "idle",
+            },
+            path: null,
+            cwd: "/tmp/project",
+            cliVersion: SERVER_VERSION,
+            source: "appServer",
+            agentNickname: null,
+            agentRole: null,
+            gitInfo: null,
+            name: null,
+            workspaceId: "workspace-1",
+            turns: [],
+          },
+        },
       },
     ]);
 

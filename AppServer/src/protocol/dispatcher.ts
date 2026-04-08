@@ -1,6 +1,6 @@
 import { DomainError } from "../domain/errors";
-import { isSupportedRequestMethod } from "../schema/request-envelope";
 import type { AppServerService } from "../server/app-server-service";
+import { isSupportedRequestMethod } from "../validation/request-envelope";
 import {
   createExecutionErrorOutcome,
   createMethodNotFoundOutcome,

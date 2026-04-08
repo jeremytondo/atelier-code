@@ -24,10 +24,7 @@ import type {
   WorkspaceOpenResult,
 } from "../protocol/types";
 import type { AppServerStore } from "../store/store";
-import {
-  type NotificationEmitter,
-  RuntimeTurnRunner,
-} from "./runtime-turn-runner";
+import { AgentTurnRunner, type NotificationEmitter } from "./agent-turn-runner";
 import {
   type SessionRecord,
   assertSessionInitialized,
@@ -53,7 +50,7 @@ interface CommandOutcome<TResult> {
 }
 
 export class AppServerService {
-  private readonly runtimeTurnRunner: RuntimeTurnRunner;
+  private readonly agentTurnRunner: AgentTurnRunner;
 
   constructor(
     private readonly store: AppServerStore,
@@ -62,12 +59,7 @@ export class AppServerService {
     private readonly ids: IdGenerator,
     private readonly clock: Clock,
   ) {
-    this.runtimeTurnRunner = new RuntimeTurnRunner(
-      store,
-      agentAdapter,
-      ids,
-      clock,
-    );
+    this.agentTurnRunner = new AgentTurnRunner(store, agentAdapter, ids, clock);
   }
 
   initialize(
@@ -99,14 +91,14 @@ export class AppServerService {
     params: WorkspaceOpenParams,
   ): CommandOutcome<WorkspaceOpenResult> {
     assertSessionInitialized(session);
-    assertDirectoryPath(
+    const workspacePath = requireDirectoryPath(
       this.workspacePaths,
       params.path,
       "invalid_workspace_path",
       "workspace/open requires an existing directory path.",
     );
 
-    const existingWorkspace = this.store.getWorkspaceByPath(params.path);
+    const existingWorkspace = this.store.getWorkspaceByPath(workspacePath);
     if (existingWorkspace) {
       existingWorkspace.updatedAt = this.clock.now();
       this.store.saveWorkspace(existingWorkspace);
@@ -121,7 +113,7 @@ export class AppServerService {
     const now = this.clock.now();
     const workspace: WorkspaceRecord = {
       id: this.ids.next("workspace"),
-      path: params.path,
+      path: workspacePath,
       createdAt: now,
       updatedAt: now,
     };
@@ -144,13 +136,15 @@ export class AppServerService {
     assertSessionInitialized(session);
     const workspace = requireOpenedWorkspace(session, this.store);
 
-    const cwd = params.cwd ?? workspace.path;
-    assertDirectoryPath(
-      this.workspacePaths,
-      cwd,
-      "invalid_thread_cwd",
-      "thread/start requires cwd to reference an existing directory when provided.",
-    );
+    const cwd =
+      params.cwd === undefined || params.cwd === null
+        ? workspace.path
+        : requireDirectoryPath(
+            this.workspacePaths,
+            params.cwd,
+            "invalid_thread_cwd",
+            "thread/start requires cwd to reference an existing directory when provided.",
+          );
 
     const now = this.clock.now();
     const thread = createThreadRecord({
@@ -158,6 +152,7 @@ export class AppServerService {
       workspaceId: workspace.id,
       cwd,
       now,
+      ephemeral: params.ephemeral ?? false,
       model: params.model ?? "fake-codex-phase-1",
       modelProvider: params.modelProvider ?? "fake-codex",
       serviceTier: params.serviceTier ?? null,
@@ -208,18 +203,20 @@ export class AppServerService {
     assertThreadBelongsToWorkspace(thread, workspace);
     assertNoActiveTurn(thread);
 
+    const resolvedCwd =
+      params.cwd === undefined || params.cwd === null
+        ? params.cwd
+        : requireDirectoryPath(
+            this.workspacePaths,
+            params.cwd,
+            "invalid_turn_cwd",
+            "turn/start requires cwd to reference an existing directory when provided.",
+          );
+
     let nextThread = thread;
-    if (params.cwd !== undefined && params.cwd !== null) {
-      assertDirectoryPath(
-        this.workspacePaths,
-        params.cwd,
-        "invalid_turn_cwd",
-        "turn/start requires cwd to reference an existing directory when provided.",
-      );
-    }
 
     nextThread = applyTurnStartOverrides(nextThread, {
-      cwd: params.cwd,
+      cwd: resolvedCwd,
       model: params.model,
       serviceTier: params.serviceTier,
       approvalPolicy: params.approvalPolicy,
@@ -241,29 +238,42 @@ export class AppServerService {
         turn: toProtocolTurn(startedTurn.turn),
       },
       followUp: async () => {
-        await notifications.emit(
-          buildTurnStarted(startedTurn.thread.id, startedTurn.turn),
-        );
+        try {
+          await notifications.emit(
+            buildTurnStarted(startedTurn.thread.id, startedTurn.turn),
+          );
 
-        await this.runtimeTurnRunner.run(
-          session,
-          startedTurn.thread.id,
-          startedTurn.turn.id,
-          params.input,
-          notifications,
-        );
+          await this.agentTurnRunner.run(
+            session,
+            startedTurn.thread.id,
+            startedTurn.turn.id,
+            params.input,
+            notifications,
+          );
+        } catch (error) {
+          await this.agentTurnRunner.failTurnExecution(
+            session,
+            startedTurn.thread.id,
+            startedTurn.turn.id,
+            error,
+            notifications,
+          );
+        }
       },
     };
   }
 }
 
-function assertDirectoryPath(
+function requireDirectoryPath(
   workspacePaths: WorkspacePathAccess,
   path: string,
   code: string,
   message: string,
-): void {
-  if (!workspacePaths.isDirectory(path)) {
+): string {
+  const resolvedPath = workspacePaths.resolveDirectory(path);
+  if (resolvedPath === null) {
     throw new DomainError(code, message, { path });
   }
+
+  return resolvedPath;
 }

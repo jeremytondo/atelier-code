@@ -170,22 +170,35 @@ export type SupportedNotificationMethod =
 
 export type ProtocolItem = ItemRecord;
 
+export interface ProtocolTurnError {
+  message: string;
+  codexErrorInfo: null;
+  additionalDetails: string | null;
+}
+
 export interface ProtocolTurn {
   id: TurnRecord["id"];
-  items: [];
+  items: ProtocolItem[];
   status: TurnRecord["status"];
-  error: TurnRecord["error"];
+  error: ProtocolTurnError | null;
 }
 
 export interface ProtocolThread {
   id: ThreadRecord["id"];
-  workspaceId: ThreadRecord["workspaceId"];
   preview: ThreadRecord["preview"];
+  ephemeral: ThreadRecord["ephemeral"];
+  modelProvider: ThreadRecord["modelProvider"];
   createdAt: ThreadRecord["createdAt"];
   updatedAt: ThreadRecord["updatedAt"];
   status: ThreadRecord["status"];
+  path: string | null;
   cwd: ThreadRecord["cwd"];
-  modelProvider: ThreadRecord["modelProvider"];
+  cliVersion: string;
+  source: "appServer";
+  agentNickname: string | null;
+  agentRole: string | null;
+  gitInfo: null;
   name: ThreadRecord["name"];
-  turns: [];
+  workspaceId: ThreadRecord["workspaceId"];
+  turns: ProtocolTurn[];
 }

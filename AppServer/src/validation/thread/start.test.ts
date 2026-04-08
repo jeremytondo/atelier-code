@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { validateThreadStartParams } from "./start";
 
-describe("thread/start schema", () => {
+describe("thread/start validation", () => {
   test("requires experimentalRawEvents", () => {
     expect(
       validateThreadStartParams({
@@ -28,7 +28,7 @@ describe("thread/start schema", () => {
     ).toEqual({
       ok: false,
       error:
-        "thread/start approvalPolicy must be a Codex-shaped approval policy when provided.",
+        "thread/start approvalPolicy must be a supported approval policy when provided.",
     });
   });
 

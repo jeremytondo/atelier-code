@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { validateInitializeParams } from "./initialize";
 
-describe("initialize schema", () => {
+describe("initialize validation", () => {
   test("rejects missing clientInfo", () => {
     expect(validateInitializeParams({})).toEqual({
       ok: false,

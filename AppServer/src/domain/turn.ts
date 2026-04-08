@@ -2,6 +2,7 @@ import { DomainError } from "./errors";
 import type {
   AgentMessageItemRecord,
   ThreadRecord,
+  TurnErrorRecord,
   TurnRecord,
 } from "./models";
 
@@ -107,6 +108,26 @@ export function completeTurn(
     turn: {
       ...turn,
       status,
+    },
+  };
+}
+
+export function failTurn(
+  thread: ThreadRecord,
+  turn: TurnRecord,
+  error: TurnErrorRecord,
+  updatedAt: number,
+): { thread: ThreadRecord; turn: TurnRecord } {
+  return {
+    thread: {
+      ...thread,
+      status: { type: "systemError" },
+      updatedAt,
+    },
+    turn: {
+      ...turn,
+      status: "failed",
+      error,
     },
   };
 }

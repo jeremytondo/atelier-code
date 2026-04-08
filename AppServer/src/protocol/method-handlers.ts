@@ -1,8 +1,8 @@
-import { validateInitializeParams } from "../schema/initialize";
-import { validateThreadStartParams } from "../schema/thread/start";
-import { validateTurnStartParams } from "../schema/turn/start";
-import { validateWorkspaceOpenParams } from "../schema/workspace/open";
 import type { AppServerService } from "../server/app-server-service";
+import { validateInitializeParams } from "../validation/initialize";
+import { validateThreadStartParams } from "../validation/thread/start";
+import { validateTurnStartParams } from "../validation/turn/start";
+import { validateWorkspaceOpenParams } from "../validation/workspace/open";
 import {
   createInvalidParamsOutcome,
   createSuccessOutcome,

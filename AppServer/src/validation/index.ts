@@ -1,5 +1,8 @@
 export { validateInitializeParams } from "./initialize";
-export { isSupportedNotificationMethod } from "./notification-methods";
+export {
+  isSupportedNotificationMethod,
+  validateNotificationParams,
+} from "./notifications";
 export {
   isSupportedRequestMethod,
   parseJsonRpcRequest,

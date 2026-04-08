@@ -54,7 +54,7 @@ export function validateThreadStartParams(
 
   if (!isOptionalApprovalPolicy(value.approvalPolicy)) {
     return invalid(
-      "thread/start approvalPolicy must be a Codex-shaped approval policy when provided.",
+      "thread/start approvalPolicy must be a supported approval policy when provided.",
     );
   }
 

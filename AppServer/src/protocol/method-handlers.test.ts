@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { SERVER_VERSION } from "../server/server-metadata";
 import { createSessionRecord } from "../server/session-state";
 import {
   handleInitialize,
@@ -140,17 +141,13 @@ describe("method-handlers", () => {
     const context = createContext({
       startThread: (_session, _params, notifications: NotificationTarget) => ({
         result: {
-          thread: {
-            id: "thread-1",
-          },
+          thread: buildProtocolThread(),
         },
         followUp: async () => {
           await notifications.emit({
             method: "thread/started",
             params: {
-              thread: {
-                id: "thread-1",
-              },
+              thread: buildProtocolThread(),
             },
           });
         },
@@ -172,9 +169,7 @@ describe("method-handlers", () => {
     expect(outcome.response).toEqual({
       id: "thread-req-1",
       result: {
-        thread: {
-          id: "thread-1",
-        },
+        thread: buildProtocolThread(),
       },
     });
 
@@ -184,9 +179,7 @@ describe("method-handlers", () => {
       {
         method: "thread/started",
         params: {
-          thread: {
-            id: "thread-1",
-          },
+          thread: buildProtocolThread(),
         },
       },
     ]);
@@ -196,18 +189,14 @@ describe("method-handlers", () => {
     const context = createContext({
       startTurn: (_session, _params, notifications: NotificationTarget) => ({
         result: {
-          turn: {
-            id: "turn-1",
-          },
+          turn: buildProtocolTurn("turn-1"),
         },
         followUp: async () => {
           await notifications.emit({
             method: "turn/started",
             params: {
               threadId: "thread-1",
-              turn: {
-                id: "turn-1",
-              },
+              turn: buildProtocolTurn("turn-1"),
             },
           });
         },
@@ -234,9 +223,7 @@ describe("method-handlers", () => {
     expect(outcome.response).toEqual({
       id: "turn-req-1",
       result: {
-        turn: {
-          id: "turn-1",
-        },
+        turn: buildProtocolTurn("turn-1"),
       },
     });
 
@@ -247,9 +234,7 @@ describe("method-handlers", () => {
         method: "turn/started",
         params: {
           threadId: "thread-1",
-          turn: {
-            id: "turn-1",
-          },
+          turn: buildProtocolTurn("turn-1"),
         },
       },
     ]);
@@ -312,20 +297,49 @@ function createContext(overrides: ServiceOverrides = {}) {
         overrides.startThread ??
         (() => ({
           result: {
-            thread: {
-              id: "thread-1",
-            },
+            thread: buildProtocolThread(),
           },
         })),
       startTurn:
         overrides.startTurn ??
         (() => ({
           result: {
-            turn: {
-              id: "turn-1",
-            },
+            turn: buildProtocolTurn("turn-1"),
           },
         })),
     } as never,
+  };
+}
+
+function buildProtocolThread() {
+  return {
+    id: "thread-1",
+    preview: "New thread",
+    ephemeral: false,
+    modelProvider: "fake-codex",
+    createdAt: 1,
+    updatedAt: 1,
+    status: {
+      type: "idle" as const,
+    },
+    path: null,
+    cwd: "/tmp/project",
+    cliVersion: SERVER_VERSION,
+    source: "appServer" as const,
+    agentNickname: null,
+    agentRole: null,
+    gitInfo: null,
+    name: null,
+    workspaceId: "workspace-1",
+    turns: [],
+  };
+}
+
+function buildProtocolTurn(id: string) {
+  return {
+    id,
+    items: [],
+    status: "inProgress" as const,
+    error: null,
   };
 }
