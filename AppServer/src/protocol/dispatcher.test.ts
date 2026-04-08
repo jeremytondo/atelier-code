@@ -1,0 +1,180 @@
+import { describe, expect, test } from "bun:test";
+
+import { DomainError } from "../domain/errors";
+import { createSessionRecord } from "../server/session-state";
+import { ProtocolDispatcher } from "./dispatcher";
+import type { JsonRpcNotification } from "./types";
+
+describe("ProtocolDispatcher", () => {
+  test("returns a parse error for malformed JSON", () => {
+    const dispatcher = new ProtocolDispatcher(createFakeService());
+
+    const outcome = dispatcher.dispatchRawMessage("{", createDispatchContext());
+
+    expect(outcome.response).toEqual({
+      id: null,
+      error: {
+        code: -32700,
+        message: "Request body must be valid JSON.",
+        data: {
+          code: "parse_error",
+        },
+      },
+    });
+  });
+
+  test("returns an invalid request error for bad envelopes", () => {
+    const dispatcher = new ProtocolDispatcher(createFakeService());
+
+    const outcome = dispatcher.dispatchRawMessage(
+      JSON.stringify({
+        method: "initialize",
+      }),
+      createDispatchContext(),
+    );
+
+    expect(outcome.response).toEqual({
+      id: null,
+      error: {
+        code: -32600,
+        message: "Requests must include a string or number id.",
+        data: {
+          code: "invalid_request",
+        },
+      },
+    });
+  });
+
+  test("returns method not found for unknown phase methods", () => {
+    const dispatcher = new ProtocolDispatcher(createFakeService());
+
+    const outcome = dispatcher.dispatchParsedRequest(
+      {
+        id: "request-1",
+        method: "workspace/close",
+      },
+      createDispatchContext(),
+    );
+
+    expect(outcome.response).toEqual({
+      id: "request-1",
+      error: {
+        code: -32601,
+        message: "Method workspace/close is not supported.",
+        data: {
+          code: "method_not_found",
+          method: "workspace/close",
+        },
+      },
+    });
+  });
+
+  test("maps domain errors to execution errors", () => {
+    const dispatcher = new ProtocolDispatcher(
+      createFakeService({
+        openWorkspace: () => {
+          throw new DomainError(
+            "not_initialized",
+            "The connection must initialize before using other methods.",
+          );
+        },
+      }),
+    );
+
+    const outcome = dispatcher.dispatchParsedRequest(
+      {
+        id: "workspace-1",
+        method: "workspace/open",
+        params: {
+          path: "/tmp/project",
+        },
+      },
+      createDispatchContext(),
+    );
+
+    expect(outcome.response).toEqual({
+      id: "workspace-1",
+      error: {
+        code: -32000,
+        message: "The connection must initialize before using other methods.",
+        data: {
+          code: "not_initialized",
+        },
+      },
+    });
+  });
+});
+
+function createDispatchContext() {
+  return {
+    session: createSessionRecord("session-1"),
+    notifications: {
+      emit: async (_notification: JsonRpcNotification) => {},
+    },
+  };
+}
+
+function createFakeService(
+  overrides: Partial<{
+    initialize: (...args: unknown[]) => unknown;
+    openWorkspace: (...args: unknown[]) => unknown;
+    startThread: (...args: unknown[]) => unknown;
+    startTurn: (...args: unknown[]) => unknown;
+  }> = {},
+) {
+  return {
+    initialize:
+      overrides.initialize ?? (() => ({ result: { userAgent: "fake" } })),
+    openWorkspace:
+      overrides.openWorkspace ??
+      (() => ({
+        result: {
+          workspace: {
+            id: "workspace-1",
+            path: "/tmp/project",
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        },
+      })),
+    startThread:
+      overrides.startThread ??
+      (() => ({
+        result: {
+          thread: {
+            id: "thread-1",
+            workspaceId: "workspace-1",
+            preview: "New thread",
+            createdAt: 1,
+            updatedAt: 1,
+            status: {
+              type: "idle",
+            },
+            cwd: "/tmp/project",
+            modelProvider: "fake-codex",
+            name: null,
+            turns: [],
+          },
+          model: "fake-codex-phase-1",
+          modelProvider: "fake-codex",
+          serviceTier: null,
+          cwd: "/tmp/project",
+          approvalPolicy: "on-request",
+          sandbox: "workspace-write",
+          reasoningEffort: null,
+        },
+      })),
+    startTurn:
+      overrides.startTurn ??
+      (() => ({
+        result: {
+          turn: {
+            id: "turn-1",
+            items: [],
+            status: "inProgress",
+            error: null,
+          },
+        },
+      })),
+  } as never;
+}
