@@ -211,7 +211,7 @@ function toTurnErrorRecord(error: unknown): TurnErrorRecord {
   }
 
   return {
-    message: "Unexpected App Server runtime failure.",
+    message: "Unexpected App Server turn execution failure.",
     additionalDetails: safeErrorDetails(error),
   };
 }

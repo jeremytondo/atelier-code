@@ -14,6 +14,7 @@ Use this guidance for implementation work related to the new Bun + TypeScript Ap
 - Use Bun's built-in test runner (`bun:test`) for App Server tests.
 - Keep TypeScript strict. Do not use `any`; prefer `unknown`, explicit narrowing, and discriminated unions.
 - Treat protocol schemas and typed contracts as the source of truth at ingress and egress.
+- Prefer specific naming: use `Agent`, `App Server`, and `WebSocket Server`; avoid generic `runtime` terminology in `AppServer/`.
 - Keep Bun-specific APIs at the edges. Domain logic must stay transport-agnostic and runtime-agnostic.
 - Preserve stable IDs and typed event models for `Thread`, `Turn`, `Item`, and approval flows.
 - Model reasoning, plan, diff, and approval events as first-class typed variants even when an early phase only passes them through or stubs part of the behavior.

@@ -13,7 +13,7 @@ export interface DispatchContext {
 }
 
 // A dispatcher always returns a protocol response immediately and may attach
-// follow-up async work for notifications or runtime progression.
+// follow-up async work for notifications or turn execution follow-up.
 export interface DispatchOutcome {
   response: JsonRpcSuccessResponse | JsonRpcErrorResponse;
   followUp?: () => Promise<void>;

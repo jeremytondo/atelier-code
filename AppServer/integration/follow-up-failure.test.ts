@@ -115,7 +115,7 @@ describe("websocket follow-up failures", () => {
           status: "failed",
           error: {
             message: "adapter boom",
-            runtimeErrorInfo: null,
+            agentErrorInfo: null,
             additionalDetails: expect.stringContaining("adapter boom"),
           },
         },

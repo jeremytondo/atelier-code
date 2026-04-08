@@ -1,10 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { ThreadRecord, TurnRecord } from "../domain/models";
-import {
-  DEFAULT_MODEL,
-  DEFAULT_MODEL_PROVIDER,
-} from "../server/defaults";
+import { DEFAULT_MODEL, DEFAULT_MODEL_PROVIDER } from "../server/defaults";
 import { SERVER_VERSION } from "../server/server-metadata";
 import {
   toProtocolSandboxPolicy,
@@ -88,6 +85,28 @@ describe("protocol serializers", () => {
       items: [],
       status: "completed",
       error: null,
+    });
+  });
+
+  test("serializes turn errors with agent-specific error info", () => {
+    expect(
+      toProtocolTurn({
+        ...buildTurnRecord(),
+        status: "failed",
+        error: {
+          message: "Agent failed",
+          additionalDetails: "stack",
+        },
+      }),
+    ).toEqual({
+      id: "turn-1",
+      items: [],
+      status: "failed",
+      error: {
+        message: "Agent failed",
+        agentErrorInfo: null,
+        additionalDetails: "stack",
+      },
     });
   });
 

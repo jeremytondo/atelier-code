@@ -37,7 +37,7 @@ export function applyAgentMessageDelta(
   if (itemIndex === -1) {
     throw new DomainError(
       "item_not_found",
-      `Runtime attempted to stream delta for unknown item ${itemId}.`,
+      `Agent attempted to stream delta for unknown item ${itemId}.`,
       {
         itemId,
       },
@@ -48,7 +48,7 @@ export function applyAgentMessageDelta(
   if (!item || item.type !== "agentMessage") {
     throw new DomainError(
       "item_not_found",
-      `Runtime attempted to stream delta for unknown item ${itemId}.`,
+      `Agent attempted to stream delta for unknown item ${itemId}.`,
       {
         itemId,
       },
@@ -77,7 +77,7 @@ export function applyItemCompleted(
   if (itemIndex === -1) {
     throw new DomainError(
       "item_not_found",
-      `Runtime completed unknown item ${item.id}.`,
+      `Agent completed unknown item ${item.id}.`,
       {
         itemId: item.id,
       },

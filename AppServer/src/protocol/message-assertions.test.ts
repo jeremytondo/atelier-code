@@ -144,6 +144,31 @@ describe("message-assertions", () => {
     );
   });
 
+  test("rejects legacy turn/completed payloads with the old error info field", () => {
+    const legacyErrorInfoField = "run" + "timeErrorInfo";
+
+    expect(() =>
+      assertProtocolNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          turn: {
+            id: "turn-1",
+            items: [],
+            status: "failed",
+            error: {
+              message: "Agent failed",
+              [legacyErrorInfoField]: null,
+              additionalDetails: null,
+            },
+          },
+        },
+      }),
+    ).toThrow(
+      "turn/completed params must include a string threadId and valid protocol turn.",
+    );
+  });
+
   test("returns valid protocol messages unchanged", () => {
     expect(
       assertProtocolResponse({

@@ -9,10 +9,7 @@ import type { DomainError } from "../domain/errors";
 import type { JsonRpcNotification } from "../protocol/types";
 import { InMemoryAppServerStore } from "../store/in-memory-store";
 import { AppServerService } from "./app-server-service";
-import {
-  DEFAULT_MODEL,
-  DEFAULT_MODEL_PROVIDER,
-} from "./defaults";
+import { DEFAULT_MODEL, DEFAULT_MODEL_PROVIDER } from "./defaults";
 import { SERVER_VERSION } from "./server-metadata";
 import type { SessionRecord } from "./session-state";
 import type { WorkspacePathAccess } from "./workspace-paths";
@@ -352,7 +349,7 @@ describe("AppServerService", () => {
           status: "failed",
           error: {
             message: "adapter boom",
-            runtimeErrorInfo: null,
+            agentErrorInfo: null,
             additionalDetails: expect.stringContaining("adapter boom"),
           },
         },

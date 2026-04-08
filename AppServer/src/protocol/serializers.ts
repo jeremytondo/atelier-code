@@ -101,7 +101,7 @@ function toProtocolTurnError(
 
   return {
     message: error.message,
-    runtimeErrorInfo: null,
+    agentErrorInfo: null,
     additionalDetails: error.additionalDetails,
   };
 }

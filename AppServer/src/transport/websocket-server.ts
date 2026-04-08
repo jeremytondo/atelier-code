@@ -38,7 +38,7 @@ export async function startWebSocketServer(
   const server = Bun.serve<SocketData>({
     hostname: options.host ?? DEFAULT_HOST,
     port,
-    fetch(request, runtimeServer) {
+    fetch(request, webSocketServer) {
       const url = new URL(request.url);
 
       if (request.method === "GET" && url.pathname === "/healthz") {
@@ -49,7 +49,7 @@ export async function startWebSocketServer(
         return new Response("Not found.", { status: 404 });
       }
 
-      const upgraded = runtimeServer.upgrade(request, {
+      const upgraded = webSocketServer.upgrade(request, {
         data: {
           session: createSessionRecord(crypto.randomUUID()),
         },
