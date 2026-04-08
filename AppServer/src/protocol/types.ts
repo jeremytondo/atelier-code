@@ -206,7 +206,7 @@ export type ProtocolSandboxPolicy =
 
 export interface ProtocolTurnError {
   message: string;
-  codexErrorInfo: null;
+  runtimeErrorInfo: null;
   additionalDetails: string | null;
 }
 

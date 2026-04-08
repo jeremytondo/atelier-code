@@ -101,7 +101,7 @@ function toProtocolTurnError(
 
   return {
     message: error.message,
-    codexErrorInfo: null,
+    runtimeErrorInfo: null,
     additionalDetails: error.additionalDetails,
   };
 }

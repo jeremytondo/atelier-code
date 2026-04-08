@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { DEFAULT_MODEL_PROVIDER } from "../server/defaults";
 import { SERVER_VERSION } from "../server/server-metadata";
 import { createProtocolNotificationEmitter } from "./notification-emitter";
 import type { JsonRpcNotification } from "./types";
@@ -20,7 +21,7 @@ describe("notification-emitter", () => {
           id: "thread-1",
           preview: "New thread",
           ephemeral: false,
-          modelProvider: "fake-codex",
+          modelProvider: DEFAULT_MODEL_PROVIDER,
           createdAt: 1,
           updatedAt: 1,
           status: {
@@ -48,7 +49,7 @@ describe("notification-emitter", () => {
             id: "thread-1",
             preview: "New thread",
             ephemeral: false,
-            modelProvider: "fake-codex",
+            modelProvider: DEFAULT_MODEL_PROVIDER,
             createdAt: 1,
             updatedAt: 1,
             status: {

@@ -93,7 +93,7 @@ function isTurnError(value: unknown): boolean {
     value === null ||
     (isPlainObject(value) &&
       typeof value.message === "string" &&
-      value.codexErrorInfo === null &&
+      value.runtimeErrorInfo === null &&
       (value.additionalDetails === null ||
         typeof value.additionalDetails === "string"))
   );

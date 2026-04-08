@@ -2,6 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { realpathSync } from "node:fs";
 
 import type { JsonRpcNotification } from "../src/protocol/types";
+import {
+  DEFAULT_MODEL,
+  DEFAULT_MODEL_PROVIDER,
+} from "../src/server/defaults";
 import { SERVER_VERSION } from "../src/server/server-metadata";
 import {
   type ServerProcessHarness,
@@ -164,8 +168,8 @@ describe("phase 1 websocket harness", () => {
       id: "thread-req-1",
       result: {
         thread: buildExpectedThread(workspacePath),
-        model: "fake-codex-phase-1",
-        modelProvider: "fake-codex",
+        model: DEFAULT_MODEL,
+        modelProvider: DEFAULT_MODEL_PROVIDER,
         serviceTier: null,
         cwd: workspacePath,
         approvalPolicy: "on-request",
@@ -371,7 +375,7 @@ function buildExpectedThread(cwd: string) {
     id: "thread-1",
     preview: "New thread",
     ephemeral: false,
-    modelProvider: "fake-codex",
+    modelProvider: DEFAULT_MODEL_PROVIDER,
     createdAt: expect.any(Number),
     updatedAt: expect.any(Number),
     status: {

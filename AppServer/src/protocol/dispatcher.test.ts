@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
 import { DomainError } from "../domain/errors";
+import {
+  DEFAULT_MODEL,
+  DEFAULT_MODEL_PROVIDER,
+} from "../server/defaults";
 import { SERVER_VERSION } from "../server/server-metadata";
 import { createSessionRecord } from "../server/session-state";
 import { ProtocolDispatcher } from "./dispatcher";
@@ -146,7 +150,7 @@ function createFakeService(
             id: "thread-1",
             preview: "New thread",
             ephemeral: false,
-            modelProvider: "fake-codex",
+            modelProvider: DEFAULT_MODEL_PROVIDER,
             createdAt: 1,
             updatedAt: 1,
             status: {
@@ -163,8 +167,8 @@ function createFakeService(
             workspaceId: "workspace-1",
             turns: [],
           },
-          model: "fake-codex-phase-1",
-          modelProvider: "fake-codex",
+          model: DEFAULT_MODEL,
+          modelProvider: DEFAULT_MODEL_PROVIDER,
           serviceTier: null,
           cwd: "/tmp/project",
           approvalPolicy: "on-request",

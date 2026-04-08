@@ -30,6 +30,10 @@ import type {
 import type { AppServerStore } from "../store/store";
 import { AgentTurnRunner, type NotificationEmitter } from "./agent-turn-runner";
 import {
+  DEFAULT_MODEL,
+  DEFAULT_MODEL_PROVIDER,
+} from "./defaults";
+import {
   type SessionRecord,
   assertSessionInitialized,
   initializeSession,
@@ -157,8 +161,8 @@ export class AppServerService {
       cwd,
       now,
       ephemeral: params.ephemeral ?? false,
-      model: params.model ?? "fake-codex-phase-1",
-      modelProvider: params.modelProvider ?? "fake-codex",
+      model: params.model ?? DEFAULT_MODEL,
+      modelProvider: params.modelProvider ?? DEFAULT_MODEL_PROVIDER,
       serviceTier: params.serviceTier ?? null,
       approvalPolicy: params.approvalPolicy ?? "on-request",
       sandboxMode: params.sandbox ?? "workspace-write",

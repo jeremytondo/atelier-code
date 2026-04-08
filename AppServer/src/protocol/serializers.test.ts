@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
 import type { ThreadRecord, TurnRecord } from "../domain/models";
+import {
+  DEFAULT_MODEL,
+  DEFAULT_MODEL_PROVIDER,
+} from "../server/defaults";
 import { SERVER_VERSION } from "../server/server-metadata";
 import {
   toProtocolSandboxPolicy,
@@ -14,7 +18,7 @@ describe("protocol serializers", () => {
       id: "thread-1",
       preview: "Preview",
       ephemeral: false,
-      modelProvider: "fake-codex",
+      modelProvider: DEFAULT_MODEL_PROVIDER,
       createdAt: 1,
       updatedAt: 2,
       status: {
@@ -40,7 +44,7 @@ describe("protocol serializers", () => {
       id: "thread-1",
       preview: "Preview",
       ephemeral: false,
-      modelProvider: "fake-codex",
+      modelProvider: DEFAULT_MODEL_PROVIDER,
       createdAt: 1,
       updatedAt: 2,
       status: {
@@ -87,7 +91,7 @@ describe("protocol serializers", () => {
     });
   });
 
-  test("maps workspace-write sandbox mode to a Codex sandbox policy", () => {
+  test("maps workspace-write sandbox mode to a protocol sandbox policy", () => {
     expect(toProtocolSandboxPolicy("workspace-write", "/tmp/project")).toEqual({
       type: "workspaceWrite",
       writableRoots: ["/tmp/project"],
@@ -100,7 +104,7 @@ describe("protocol serializers", () => {
     });
   });
 
-  test("maps read-only and danger-full-access sandbox modes to Codex sandbox policies", () => {
+  test("maps read-only and danger-full-access sandbox modes to protocol sandbox policies", () => {
     expect(toProtocolSandboxPolicy("read-only", "/tmp/project")).toEqual({
       type: "readOnly",
       access: {
@@ -128,8 +132,8 @@ function buildThreadRecord(): ThreadRecord {
     updatedAt: 2,
     status: { type: "idle" },
     cwd: "/tmp/project",
-    model: "fake-codex-phase-1",
-    modelProvider: "fake-codex",
+    model: DEFAULT_MODEL,
+    modelProvider: DEFAULT_MODEL_PROVIDER,
     serviceTier: null,
     approvalPolicy: "on-request",
     sandboxMode: "workspace-write",

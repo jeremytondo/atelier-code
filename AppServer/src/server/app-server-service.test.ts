@@ -9,6 +9,10 @@ import type { DomainError } from "../domain/errors";
 import type { JsonRpcNotification } from "../protocol/types";
 import { InMemoryAppServerStore } from "../store/in-memory-store";
 import { AppServerService } from "./app-server-service";
+import {
+  DEFAULT_MODEL,
+  DEFAULT_MODEL_PROVIDER,
+} from "./defaults";
 import { SERVER_VERSION } from "./server-metadata";
 import type { SessionRecord } from "./session-state";
 import type { WorkspacePathAccess } from "./workspace-paths";
@@ -194,6 +198,8 @@ describe("AppServerService", () => {
     );
     await threadOutcome.followUp?.();
 
+    expect(threadOutcome.result.model).toBe(DEFAULT_MODEL);
+    expect(threadOutcome.result.modelProvider).toBe(DEFAULT_MODEL_PROVIDER);
     expect(threadOutcome.result.sandbox).toEqual({
       type: "workspaceWrite",
       writableRoots: ["/tmp/project"],
@@ -229,7 +235,7 @@ describe("AppServerService", () => {
           id: "thread-1",
           preview: "New thread",
           ephemeral: false,
-          modelProvider: "fake-codex",
+          modelProvider: DEFAULT_MODEL_PROVIDER,
           path: null,
           cwd: "/tmp/project",
           cliVersion: SERVER_VERSION,
@@ -346,7 +352,7 @@ describe("AppServerService", () => {
           status: "failed",
           error: {
             message: "adapter boom",
-            codexErrorInfo: null,
+            runtimeErrorInfo: null,
             additionalDetails: expect.stringContaining("adapter boom"),
           },
         },
