@@ -8,45 +8,6 @@ import { ProtocolDispatcher } from "./dispatcher";
 import type { JsonRpcNotification } from "./types";
 
 describe("ProtocolDispatcher", () => {
-  test("returns a parse error for malformed JSON", () => {
-    const dispatcher = new ProtocolDispatcher(createFakeService());
-
-    const outcome = dispatcher.dispatchRawMessage("{", createDispatchContext());
-
-    expect(outcome.response).toEqual({
-      id: null,
-      error: {
-        code: -32700,
-        message: "Request body must be valid JSON.",
-        data: {
-          code: "parse_error",
-        },
-      },
-    });
-  });
-
-  test("returns an invalid request error for bad envelopes", () => {
-    const dispatcher = new ProtocolDispatcher(createFakeService());
-
-    const outcome = dispatcher.dispatchRawMessage(
-      JSON.stringify({
-        method: "initialize",
-      }),
-      createDispatchContext(),
-    );
-
-    expect(outcome.response).toEqual({
-      id: null,
-      error: {
-        code: -32600,
-        message: "Requests must include a string or number id.",
-        data: {
-          code: "invalid_request",
-        },
-      },
-    });
-  });
-
   test("returns method not found for unknown phase methods", () => {
     const dispatcher = new ProtocolDispatcher(createFakeService());
 

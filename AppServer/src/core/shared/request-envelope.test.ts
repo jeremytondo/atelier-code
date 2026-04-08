@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { isSupportedRequestMethod, parseJsonRpcRequest } from "./validation";
+import { parseJsonRpcRequest } from "../protocol/request-parser";
 
 describe("request-envelope", () => {
   test("rejects non-object requests", () => {
@@ -56,10 +56,5 @@ describe("request-envelope", () => {
         },
       },
     });
-  });
-
-  test("identifies supported request methods", () => {
-    expect(isSupportedRequestMethod("thread/start")).toBe(true);
-    expect(isSupportedRequestMethod("thread/resume")).toBe(false);
   });
 });

@@ -1,4 +1,6 @@
-import type { IdGenerator } from "../../app/server";
+export interface IdGenerator {
+  next(prefix: string): string;
+}
 
 export class CounterIdGenerator implements IdGenerator {
   private readonly counters = new Map<string, number>();

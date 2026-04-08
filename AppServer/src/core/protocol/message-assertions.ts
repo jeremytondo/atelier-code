@@ -9,7 +9,7 @@ import {
   validateTurnStartedNotification,
 } from "../../modules/turns/turn.events";
 import { createInvalidParamsError } from "../shared/errors";
-import { invalid, isPlainObject } from "../shared/validation";
+import { invalid, isPlainObject } from "../shared/validation-utils";
 import type {
   JsonRpcErrorResponse,
   JsonRpcNotification,

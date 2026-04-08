@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { realpathSync } from "node:fs";
 
 import { AppServerService } from "../src/app/server";
-import { CounterIdGenerator } from "../src/core/shared/counter-id";
+import { createSessionRecord } from "../src/app/session";
+import { buildHealthcheckReport } from "../src/core/config/server-metadata";
+import { ProtocolDispatcher } from "../src/core/protocol/dispatcher";
+import { parseRawRequest } from "../src/core/protocol/request-parser";
+import { serializeProtocolMessage } from "../src/core/protocol/serializers";
+import { CounterIdGenerator } from "../src/core/shared/id-generator";
 import { InMemoryAppServerStore } from "../src/core/store/in-memory-store";
 import {
   type AppServerHandle,
@@ -32,19 +37,60 @@ describe("websocket follow-up failures", () => {
   test("marks the turn failed and keeps the server healthy after post-response errors", async () => {
     const store = new InMemoryAppServerStore();
     stores.push(store);
+    const service = new AppServerService(
+      store,
+      new ThrowingAgentAdapter(),
+      new FakeWorkspacePathAccess({
+        [workspacePath]: workspacePath,
+      }),
+      new CounterIdGenerator(),
+      {
+        now: () => 1_700_000_000,
+      },
+    );
+    const dispatcher = new ProtocolDispatcher(service);
+    const sessions = new Map<string, ReturnType<typeof createSessionRecord>>();
 
     const server = await startWebSocketServer({
-      service: new AppServerService(
-        store,
-        new ThrowingAgentAdapter(),
-        new FakeWorkspacePathAccess({
-          [workspacePath]: workspacePath,
-        }),
-        new CounterIdGenerator(),
-        {
-          now: () => 1_700_000_000,
-        },
-      ),
+      healthcheckResponse: buildHealthcheckReport(),
+      onConnectionOpen(connectionId) {
+        sessions.set(connectionId, createSessionRecord(connectionId));
+      },
+      onConnectionClose(connectionId) {
+        sessions.delete(connectionId);
+      },
+      async onMessage({ connectionId, message }) {
+        const session =
+          sessions.get(connectionId) ?? createSessionRecord(connectionId);
+        sessions.set(connectionId, session);
+
+        const parsedRequest = parseRawRequest(message);
+        const outcome = parsedRequest.ok
+          ? dispatcher.dispatchParsedRequest(parsedRequest.request, {
+              session,
+              notifications: {
+                async emit(notification) {
+                  if (
+                    session.optOutNotificationMethods.has(notification.method)
+                  ) {
+                    return;
+                  }
+
+                  server.send(
+                    connectionId,
+                    serializeProtocolMessage(notification),
+                  );
+                },
+              },
+            })
+          : parsedRequest.outcome;
+
+        server.send(connectionId, serializeProtocolMessage(outcome.response));
+
+        if (outcome.followUp) {
+          await outcome.followUp();
+        }
+      },
     });
     servers.push(server);
 

@@ -10,7 +10,7 @@ import {
   FakeAgentAdapter,
   type FakeAgentAdapterOptions,
 } from "../modules/agents/fake.adapter";
-import type { WorkspacePathAccess } from "../modules/workspaces/workspace.paths";
+import type { WorkspacePathAccess } from "../modules/workspaces/workspace.service";
 import { AppServerService } from "./server";
 import type { SessionRecord } from "./session";
 

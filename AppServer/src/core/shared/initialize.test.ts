@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { validateInitializeParams } from "./validation";
+import { validateInitializeParams } from "./validation-utils";
 
 describe("initialize validation", () => {
   test("rejects missing clientInfo", () => {

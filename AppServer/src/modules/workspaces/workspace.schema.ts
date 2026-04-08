@@ -3,7 +3,7 @@ import {
   type ValidationResult,
   invalid,
   isPlainObject,
-} from "../../core/shared/validation";
+} from "../../core/shared/validation-utils";
 
 export function validateWorkspaceOpenParams(
   value: unknown,

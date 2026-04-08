@@ -1,14 +1,29 @@
+import { realpathSync, statSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { DomainError } from "../../core/shared/errors";
+import type { IdGenerator } from "../../core/shared/id-generator";
 import type { WorkspaceRecord } from "../../core/shared/models";
 import type { AppServerStore } from "../../core/store/store";
-import type { WorkspacePathAccess } from "./workspace.paths";
-
-interface IdGenerator {
-  next(prefix: string): string;
-}
 
 interface Clock {
   now(): number;
+}
+
+export interface WorkspacePathAccess {
+  resolveDirectory(path: string): string | null;
+}
+
+export class NodeWorkspacePathAccess implements WorkspacePathAccess {
+  resolveDirectory(path: string): string | null {
+    try {
+      const resolvedPath = resolve(path);
+      const canonicalPath = realpathSync.native(resolvedPath);
+      return statSync(canonicalPath).isDirectory() ? canonicalPath : null;
+    } catch {
+      return null;
+    }
+  }
 }
 
 export interface OpenWorkspaceInput {

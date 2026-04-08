@@ -10,7 +10,7 @@ import {
   type ValidationResult,
   invalid,
   isPlainObject,
-} from "../../core/shared/validation";
+} from "../../core/shared/validation-utils";
 import { isProtocolItem } from "../agents/agent.events";
 
 export function buildTurnStarted(

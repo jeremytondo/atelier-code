@@ -5,6 +5,9 @@ import type {
   TurnRecord,
 } from "../shared/models";
 import type {
+  JsonRpcErrorResponse,
+  JsonRpcNotification,
+  JsonRpcSuccessResponse,
   ProtocolItem,
   ProtocolSandboxPolicy,
   ProtocolThread,
@@ -104,4 +107,13 @@ function toProtocolTurnError(
     agentErrorInfo: null,
     additionalDetails: error.additionalDetails,
   };
+}
+
+export function serializeProtocolMessage<TParams>(
+  message:
+    | JsonRpcSuccessResponse
+    | JsonRpcErrorResponse
+    | JsonRpcNotification<TParams>,
+): string {
+  return JSON.stringify(message);
 }

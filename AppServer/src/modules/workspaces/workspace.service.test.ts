@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { DomainError } from "../../core/shared/errors";
 import type { WorkspaceRecord } from "../../core/shared/models";
 import type { AppServerStore } from "../../core/store/store";
-import type { WorkspacePathAccess } from "./workspace.paths";
+import type { WorkspacePathAccess } from "./workspace.service";
 import { openWorkspaceRecord } from "./workspace.service";
 
 describe("workspace service", () => {

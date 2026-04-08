@@ -1,54 +1,64 @@
 import { createServer } from "node:net";
 
-import type { AppServerService } from "../../app/server";
-import { type SessionRecord, createSessionRecord } from "../../app/session";
-import { buildHealthcheckReport } from "../config/server-metadata";
-import { createInvalidRequestErrorResponse } from "../protocol/dispatch-responses";
-import { ProtocolDispatcher } from "../protocol/dispatcher";
-
 const DEFAULT_HOST = "127.0.0.1";
 
 export interface AppServerHandle {
   host: string;
   port: number;
+  send(connectionId: string, message: string): boolean;
   stop(): void;
 }
 
 interface SocketData {
-  session: SessionRecord;
+  connectionId: string;
+}
+
+interface ConnectionSocket {
+  send(message: string): unknown;
 }
 
 export interface StartServerOptions {
   host?: string;
   port?: number;
-  service: AppServerService;
+  healthcheckResponse?: unknown;
+  onConnectionOpen?(connectionId: string): void;
+  onConnectionClose?(connectionId: string): void;
+  onMessage(event: {
+    connectionId: string;
+    message: string;
+  }): Promise<void> | void;
 }
 
 export async function startWebSocketServer(
   options: StartServerOptions,
 ): Promise<AppServerHandle> {
-  const dispatcher = new ProtocolDispatcher(options.service);
   const port = await resolvePort(
     options.host ?? DEFAULT_HOST,
     options.port ?? 0,
   );
+  const connections = new Map<string, ConnectionSocket>();
   const server = Bun.serve<SocketData>({
     hostname: options.host ?? DEFAULT_HOST,
     port,
     fetch(request, webSocketServer) {
       const url = new URL(request.url);
 
-      if (request.method === "GET" && url.pathname === "/healthz") {
-        return Response.json(buildHealthcheckReport());
+      if (
+        request.method === "GET" &&
+        url.pathname === "/healthz" &&
+        options.healthcheckResponse !== undefined
+      ) {
+        return Response.json(options.healthcheckResponse);
       }
 
       if (url.pathname !== "/") {
         return new Response("Not found.", { status: 404 });
       }
 
+      const connectionId = crypto.randomUUID();
       const upgraded = webSocketServer.upgrade(request, {
         data: {
-          session: createSessionRecord(crypto.randomUUID()),
+          connectionId,
         },
       });
 
@@ -59,38 +69,23 @@ export async function startWebSocketServer(
       return new Response("Expected WebSocket upgrade.", { status: 426 });
     },
     websocket: {
-      async message(socket, rawMessage) {
-        const textMessage = decodeMessage(rawMessage);
-        if (textMessage === null) {
-          const response = createInvalidRequestErrorResponse(
-            "Binary frames are not supported.",
-          );
-          socket.send(JSON.stringify(response));
-          return;
-        }
-
-        const outcome = dispatcher.dispatchRawMessage(textMessage, {
-          session: socket.data.session,
-          notifications: {
-            emit: async (notification) => {
-              if (
-                socket.data.session.optOutNotificationMethods.has(
-                  notification.method,
-                )
-              ) {
-                return;
-              }
-
-              socket.send(JSON.stringify(notification));
-            },
-          },
+      open(socket) {
+        connections.set(socket.data.connectionId, socket);
+        options.onConnectionOpen?.(socket.data.connectionId);
+      },
+      close(socket) {
+        connections.delete(socket.data.connectionId);
+        options.onConnectionClose?.(socket.data.connectionId);
+      },
+      message(socket, rawMessage) {
+        void Promise.resolve(
+          options.onMessage({
+            connectionId: socket.data.connectionId,
+            message: decodeMessage(rawMessage),
+          }),
+        ).catch((error) => {
+          console.error("App Server inbound message handling failed.", error);
         });
-
-        socket.send(JSON.stringify(outcome.response));
-
-        if (outcome.followUp) {
-          void runFollowUp(outcome.followUp);
-        }
       },
     },
   });
@@ -98,23 +93,24 @@ export async function startWebSocketServer(
   return {
     host: options.host ?? DEFAULT_HOST,
     port: server.port ?? port,
+    send(connectionId: string, message: string): boolean {
+      const connection = connections.get(connectionId);
+      if (!connection) {
+        return false;
+      }
+
+      connection.send(message);
+      return true;
+    },
     stop() {
       server.stop(true);
     },
   };
 }
 
-async function runFollowUp(followUp: () => Promise<void>): Promise<void> {
-  try {
-    await followUp();
-  } catch (error) {
-    console.error("App Server follow-up execution failed.", error);
-  }
-}
-
 function decodeMessage(
   rawMessage: string | Buffer | Uint8Array | ArrayBuffer | Buffer[],
-): string | null {
+): string {
   if (typeof rawMessage === "string") {
     return rawMessage;
   }
@@ -132,7 +128,7 @@ function decodeMessage(
     return new TextDecoder().decode(new Uint8Array(bytes));
   }
 
-  return null;
+  return new TextDecoder().decode(rawMessage);
 }
 
 async function resolvePort(

@@ -4,7 +4,7 @@ import type { DomainError } from "../../core/shared/errors";
 import type { ThreadRecord } from "../../core/shared/models";
 import type { AppServerStore } from "../../core/store/store";
 import { createThreadRecord } from "../threads/thread.entity";
-import type { WorkspacePathAccess } from "../workspaces/workspace.paths";
+import type { WorkspacePathAccess } from "../workspaces/workspace.service";
 import { startTurn } from "./turn.service";
 
 describe("turn service", () => {

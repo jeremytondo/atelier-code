@@ -3,9 +3,13 @@ import {
   SERVER_VERSION,
   buildHealthcheckReport,
 } from "../core/config/server-metadata";
+import { ProtocolDispatcher } from "../core/protocol/dispatcher";
+import { parseRawRequest } from "../core/protocol/request-parser";
+import { serializeProtocolMessage } from "../core/protocol/serializers";
 import type {
   InitializeParams,
   InitializeResult,
+  JsonRpcNotification,
   ThreadStartParams,
   ThreadStartResult,
   TurnStartParams,
@@ -13,8 +17,11 @@ import type {
   WorkspaceOpenParams,
   WorkspaceOpenResult,
 } from "../core/protocol/types";
-import { CounterIdGenerator } from "../core/shared/counter-id";
 import { DomainError } from "../core/shared/errors";
+import {
+  CounterIdGenerator,
+  type IdGenerator,
+} from "../core/shared/id-generator";
 import { InMemoryAppServerStore } from "../core/store/in-memory-store";
 import type { AppServerStore } from "../core/store/store";
 import {
@@ -29,24 +36,23 @@ import { buildTurnStarted } from "../modules/turns/turn.events";
 import {
   AgentTurnRunner,
   type NotificationEmitter,
-} from "../modules/turns/turn.runner";
-import { startTurn } from "../modules/turns/turn.service";
-import { NodeWorkspacePathAccess } from "../modules/workspaces/workspace.paths";
-import type { WorkspacePathAccess } from "../modules/workspaces/workspace.paths";
-import { openWorkspaceRecord } from "../modules/workspaces/workspace.service";
+  startTurn,
+} from "../modules/turns/turn.service";
+import {
+  NodeWorkspacePathAccess,
+  type WorkspacePathAccess,
+  openWorkspaceRecord,
+} from "../modules/workspaces/workspace.service";
 import {
   type SessionRecord,
   assertSessionInitialized,
+  createSessionRecord,
   initializeSession,
   markActiveTurn,
   markLoadedThread,
   requireOpenedWorkspace,
   setOpenedWorkspace,
 } from "./session";
-
-export interface IdGenerator {
-  next(prefix: string): string;
-}
 
 export interface Clock {
   now(): number;
@@ -191,18 +197,60 @@ export class AppServerService {
 }
 
 export async function createAppServer(port = 0): Promise<AppServerHandle> {
-  return startWebSocketServer({
+  const service = new AppServerService(
+    new InMemoryAppServerStore(),
+    new FakeAgentAdapter(),
+    new NodeWorkspacePathAccess(),
+    new CounterIdGenerator(),
+    {
+      now: () => Math.floor(Date.now() / 1000),
+    },
+  );
+  const dispatcher = new ProtocolDispatcher(service);
+  const sessions = new Map<string, SessionRecord>();
+  const transport = await startWebSocketServer({
     port,
-    service: new AppServerService(
-      new InMemoryAppServerStore(),
-      new FakeAgentAdapter(),
-      new NodeWorkspacePathAccess(),
-      new CounterIdGenerator(),
-      {
-        now: () => Math.floor(Date.now() / 1000),
-      },
-    ),
+    healthcheckResponse: buildHealthcheckReport(),
+    onConnectionOpen(connectionId) {
+      sessions.set(connectionId, createSessionRecord(connectionId));
+    },
+    onConnectionClose(connectionId) {
+      sessions.delete(connectionId);
+    },
+    onMessage({ connectionId, message }) {
+      const session = ensureSession(sessions, connectionId);
+      const parsedRequest = parseRawRequest(message);
+      const outcome = parsedRequest.ok
+        ? dispatcher.dispatchParsedRequest(parsedRequest.request, {
+            session,
+            notifications: {
+              async emit<TParams>(
+                notification: JsonRpcNotification<TParams>,
+              ): Promise<void> {
+                if (
+                  session.optOutNotificationMethods.has(notification.method)
+                ) {
+                  return;
+                }
+
+                transport.send(
+                  connectionId,
+                  serializeProtocolMessage(notification),
+                );
+              },
+            },
+          })
+        : parsedRequest.outcome;
+
+      transport.send(connectionId, serializeProtocolMessage(outcome.response));
+
+      if (outcome.followUp) {
+        void runFollowUp(outcome.followUp);
+      }
+    },
   });
+
+  return transport;
 }
 
 export async function startServer(): Promise<AppServerHandle> {
@@ -210,3 +258,25 @@ export async function startServer(): Promise<AppServerHandle> {
 }
 
 export { APP_SERVER_NAME, buildHealthcheckReport, SERVER_VERSION };
+
+function ensureSession(
+  sessions: Map<string, SessionRecord>,
+  connectionId: string,
+): SessionRecord {
+  const existingSession = sessions.get(connectionId);
+  if (existingSession) {
+    return existingSession;
+  }
+
+  const session = createSessionRecord(connectionId);
+  sessions.set(connectionId, session);
+  return session;
+}
+
+async function runFollowUp(followUp: () => Promise<void>): Promise<void> {
+  try {
+    await followUp();
+  } catch (error) {
+    console.error("App Server follow-up execution failed.", error);
+  }
+}

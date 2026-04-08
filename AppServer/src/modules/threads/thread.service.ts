@@ -13,8 +13,10 @@ import type {
 import { DomainError } from "../../core/shared/errors";
 import type { ThreadRecord, WorkspaceRecord } from "../../core/shared/models";
 import type { AppServerStore } from "../../core/store/store";
-import type { WorkspacePathAccess } from "../workspaces/workspace.paths";
-import { requireDirectoryPath } from "../workspaces/workspace.service";
+import {
+  type WorkspacePathAccess,
+  requireDirectoryPath,
+} from "../workspaces/workspace.service";
 import { createThreadRecord } from "./thread.entity";
 
 interface IdGenerator {

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
-import { NodeWorkspacePathAccess } from "./workspace.paths";
+import { NodeWorkspacePathAccess } from "./workspace.service";
 
 describe("NodeWorkspacePathAccess", () => {
   const tempDirectories: string[] = [];

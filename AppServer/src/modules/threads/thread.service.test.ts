@@ -6,7 +6,7 @@ import {
 } from "../../core/config/defaults";
 import type { DomainError } from "../../core/shared/errors";
 import type { AppServerStore } from "../../core/store/store";
-import type { WorkspacePathAccess } from "../workspaces/workspace.paths";
+import type { WorkspacePathAccess } from "../workspaces/workspace.service";
 import { requireThread, startThreadRecord } from "./thread.service";
 
 describe("thread service", () => {

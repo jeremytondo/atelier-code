@@ -11,7 +11,7 @@ import {
   isOptionalServiceTier,
   isOptionalString,
   isPlainObject,
-} from "../../core/shared/validation";
+} from "../../core/shared/validation-utils";
 
 export function validateThreadStartParams(
   value: unknown,

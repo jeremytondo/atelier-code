@@ -5,7 +5,10 @@ import type {
   ThreadStartedNotification,
 } from "../../core/protocol/types";
 import type { ThreadRecord } from "../../core/shared/models";
-import { type ValidationResult, invalid } from "../../core/shared/validation";
+import {
+  type ValidationResult,
+  invalid,
+} from "../../core/shared/validation-utils";
 import { isProtocolTurn } from "../turns/turn.events";
 
 export function buildThreadStarted(
