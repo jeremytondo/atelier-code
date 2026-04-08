@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import type { JsonRpcNotification } from "../protocol/types";
+import type { JsonRpcNotification } from "../src/protocol/types";
 import {
   type ServerProcessHarness,
   spawnServerProcess,
-} from "../test-support/server-process";
-import { WebSocketHarness } from "../test-support/ws-harness";
+} from "./support/server-process";
+import { WebSocketHarness } from "./support/ws-harness";
 
 describe("phase 1 websocket harness", () => {
   const servers: ServerProcessHarness[] = [];
