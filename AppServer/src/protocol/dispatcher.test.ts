@@ -1,10 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { DomainError } from "../domain/errors";
-import {
-  DEFAULT_MODEL,
-  DEFAULT_MODEL_PROVIDER,
-} from "../server/defaults";
+import { DEFAULT_MODEL, DEFAULT_MODEL_PROVIDER } from "../server/defaults";
 import { SERVER_VERSION } from "../server/server-metadata";
 import { createSessionRecord } from "../server/session-state";
 import { ProtocolDispatcher } from "./dispatcher";

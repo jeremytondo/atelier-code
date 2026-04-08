@@ -2,10 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { realpathSync } from "node:fs";
 
 import type { JsonRpcNotification } from "../src/protocol/types";
-import {
-  DEFAULT_MODEL,
-  DEFAULT_MODEL_PROVIDER,
-} from "../src/server/defaults";
+import { DEFAULT_MODEL, DEFAULT_MODEL_PROVIDER } from "../src/server/defaults";
 import { SERVER_VERSION } from "../src/server/server-metadata";
 import {
   type ServerProcessHarness,

@@ -29,10 +29,7 @@ import type {
 } from "../protocol/types";
 import type { AppServerStore } from "../store/store";
 import { AgentTurnRunner, type NotificationEmitter } from "./agent-turn-runner";
-import {
-  DEFAULT_MODEL,
-  DEFAULT_MODEL_PROVIDER,
-} from "./defaults";
+import { DEFAULT_MODEL, DEFAULT_MODEL_PROVIDER } from "./defaults";
 import {
   type SessionRecord,
   assertSessionInitialized,
