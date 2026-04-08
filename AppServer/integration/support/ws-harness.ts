@@ -6,7 +6,7 @@ import type {
   JsonRpcRequest,
   JsonRpcSuccessResponse,
   RequestId,
-} from "../../src/protocol/types";
+} from "../../src/core/protocol/types";
 
 export class WebSocketHarness {
   readonly socket: WebSocket;

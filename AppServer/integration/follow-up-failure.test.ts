@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { realpathSync } from "node:fs";
 
-import type { AgentAdapter } from "../src/agent-adapters/agent-adapter";
-import { AppServerService } from "../src/server/app-server-service";
-import { CounterIdGenerator } from "../src/server/counter-id-generator";
-import { InMemoryAppServerStore } from "../src/store/in-memory-store";
+import { AppServerService } from "../src/app/server";
+import { CounterIdGenerator } from "../src/core/shared/counter-id";
+import { InMemoryAppServerStore } from "../src/core/store/in-memory-store";
 import {
   type AppServerHandle,
   startWebSocketServer,
-} from "../src/transport/websocket-server";
+} from "../src/core/transport/websocket-server";
+import type { AgentAdapter } from "../src/modules/agents/agent.adapter";
 import { WebSocketHarness } from "./support/ws-harness";
 
 describe("websocket follow-up failures", () => {

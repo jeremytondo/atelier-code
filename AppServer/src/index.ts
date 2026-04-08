@@ -1,16 +1,10 @@
-import { FakeAgentAdapter } from "./agent-adapters/fake-agent-adapter";
-import { AppServerService } from "./server/app-server-service";
-import { CounterIdGenerator } from "./server/counter-id-generator";
+import "./core/config/env";
+
 import {
   SERVER_VERSION,
   buildHealthcheckReport,
-} from "./server/server-metadata";
-import { NodeWorkspacePathAccess } from "./server/workspace-paths";
-import { InMemoryAppServerStore } from "./store/in-memory-store";
-import {
-  type AppServerHandle,
-  startWebSocketServer,
-} from "./transport/websocket-server";
+  startServer,
+} from "./app/server";
 
 if (import.meta.main) {
   await main();
@@ -26,7 +20,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const server = await createAppServer();
+  const server = await startServer();
   process.stdout.write(
     `${JSON.stringify({
       recordType: "app-server.startup",
@@ -36,19 +30,9 @@ async function main(): Promise<void> {
       pid: process.pid,
     })}\n`,
   );
-}
 
-export async function createAppServer(port = 0): Promise<AppServerHandle> {
-  return startWebSocketServer({
-    port,
-    service: new AppServerService(
-      new InMemoryAppServerStore(),
-      new FakeAgentAdapter(),
-      new NodeWorkspacePathAccess(),
-      new CounterIdGenerator(),
-      {
-        now: () => Math.floor(Date.now() / 1000),
-      },
-    ),
+  process.on("SIGINT", () => {
+    server.stop();
+    process.exit(0);
   });
 }
