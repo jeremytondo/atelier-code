@@ -246,7 +246,7 @@ This is the bootstrap layer and the **only** place in the codebase where `core/`
 #### Import Rules
 
 - `core/transport/`, `core/protocol/`, and `core/store/` are peers. None imports from another. All three may import from `core/shared/`.
-- Feature directories may import the database connection type from `core/store/` and utilities from `core/shared/`, but never import from `core/transport/` or any WebSocket-specific code. `core/store/` never imports from features.
+- Feature directories may import the database connection type from `core/store/` and utilities from `core/shared/`, but never import from `core/transport/` or any WebSocket-specific code. Within a feature, only `store.ts` should touch the database connection or Drizzle APIs directly. Feature services should depend on store functions or store-shaped capability objects, not on the database handle itself. `core/store/` never imports from features.
 - `src/app/` is the only place that connects transport, protocol, store, and features. It creates the database connection from `core/store/` and passes it to each feature's store at startup.
 
 
@@ -402,7 +402,7 @@ The App Server should be covered by five complementary test layers:
 
 ### Persistence Strategy
 
-Each feature owns its persistence logic. A feature's `store.ts` contains its Drizzle table definitions and query functions. For testing, in-memory fakes are plain objects that satisfy the same structural type — no separate interface file needed. `core/store/` provides only the database connection, migration runner, and shared Drizzle configuration.
+Each feature owns its persistence logic. A feature's `store.ts` contains its Drizzle table definitions and query functions, and it is the only place in that feature allowed to touch the database handle or Drizzle APIs directly. Feature services consume store functions or store-shaped capability objects so they remain transport-agnostic and testable. For testing, in-memory fakes are plain objects that satisfy the same structural type — no separate interface file needed. `core/store/` provides only the database connection, migration runner, and shared Drizzle configuration.
 
 Use **Drizzle ORM with SQLite** for the first durable implementation. Drizzle's migration tooling can scan table definitions across multiple feature directories.
 
@@ -427,5 +427,5 @@ The implementation is ready for broader integration when:
 - The App Server can accept a WebSocket connection, initialize, and route a minimal method set.
 - Thread and turn lifecycle state transitions can be exercised end-to-end in tests.
 - Approval request and resolution flow can be simulated through notifications and decisions.
-- Feature services depend on store parameters rather than direct database access, and can be tested with in-memory fakes.
+- Feature services depend on store functions or store-shaped capability objects rather than direct database access, and can be tested with in-memory fakes.
 - Protocol harness tests can assert contract shape and lifecycle sequencing.
