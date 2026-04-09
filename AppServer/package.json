@@ -1,0 +1,21 @@
+{
+  "name": "ateliercode-app-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run ./src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "format": "biome format --write ./src ./integration ./package.json ./tsconfig.json ./biome.json",
+    "check": "biome check ./src ./integration ./package.json ./tsconfig.json ./biome.json",
+    "healthcheck": "bun run ./src/index.ts --healthcheck"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/ws": "^8.18.1",
+    "bun-types": "^1.3.11",
+    "typescript": "^5.9.2",
+    "ws": "^8.18.0"
+  }
+}
