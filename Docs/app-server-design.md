@@ -367,10 +367,11 @@ Pass dependencies as function arguments or use a context object. The `app/server
 
 Each file has a single responsibility and explicitly exports its public surface. Each feature exposes one `index.ts` barrel file exporting its public API. Internal helpers stay unexported. Do not chain barrel files across directory levels.
 
-#### Naming: Avoid "Runtime"
-
-The word "runtime" is overloaded — it can mean the server process, an external agent system (Codex, Claude), or an operational status. Use specific terms instead: **agent** for external agent systems, **agent adapter** for agent-specific integration code, **execution status** or **thread status** for operational state, and **server process** for the running App Server.
-
+#### Naming Conventions
+ 
+**Avoid "runtime."** The word is overloaded — it can mean the server process, an external agent system (Codex, Claude), or an operational status. Use specific terms instead: **agent** for external agent systems, **agent adapter** for agent-specific integration code, **execution status** or **thread status** for operational state, and **server process** for the running App Server.
+ 
+**Keep "Codex" out of shared code.** Use "Codex" only in adapter-specific code under `src/agents/` or for literal provider and model values. Everywhere else in the App Server, use generic names. The App Server contract is Codex-shaped, but shared code should not be coupled to a specific agent's name.
 
 ### Testing Strategy
 
