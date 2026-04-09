@@ -1,13 +1,13 @@
 # AGENTS.md
 
 This file guides AI coding agents working on the new `AppServer/` effort.
-It complements [Docs/app-server-design.md](/Users/jeremytondo/Projects/AtelierCode/Docs/app-server-design.md) and [issue #45](https://github.com/jeremytondo/atelier-code/issues/45); it does not replace them.
+It complements [app-server-design.md](/Docs/app-server-design.md).
 
 ## Scope
 
 Use this guidance for implementation work related to the new Bun + TypeScript App Server foundation.
 
-## AppServer Standards
+## App Server Standards
 
 - Use Bun and TypeScript with ECMAScript modules (`import` / `export`) only.
 - Use Biome as the single formatter and linter for `AppServer/`.
@@ -22,7 +22,7 @@ Use this guidance for implementation work related to the new Bun + TypeScript Ap
 - Prefer deterministic tests with fakes and fixtures. Add or update tests for lifecycle sequencing, event ordering, approvals, and error handling when behavior changes.
 - Treat generated or vendored Codex contract artifacts as read-only reference inputs. Update them through their generation or import workflow, not by hand.
 
-## Required Checks
+## App Server Required Checks
 
 Before considering App Server work complete:
 
