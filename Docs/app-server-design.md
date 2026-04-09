@@ -206,102 +206,226 @@ Example approval flow:
 
 The App Server should preserve enough approval state to support active UI rendering, recovery, and auditability, but it should not invent a separate approval system when the runtime already provides the authoritative flow.
 
-## Implementation Foundations
-This section captures the baseline implementation decisions for the App Server. The goal is to keep the server contract explicit and Codex-shaped while introducing only the minimum structure required for reliability and growth.
+## Architecture & Standards
 
-### App Server Foundation
-The App Server should provide:
-* A runnable process with healthcheck and initialize flow.
-* A long-lived WebSocket entrypoint for request, response, and notification traffic.
-* A method dispatcher that maps each incoming `method` to a handler, correlates responses using request `id`, and returns consistent protocol errors for unsupported methods or invalid params.
-* Session-scoped execution state needed to coordinate active work (for example, which thread is loaded, whether a turn is currently active, and whether an approval is pending), without redefining the canonical thread/turn/item records produced by the connected agent runtime.
-* A `Store` interface for Atelier-owned data (such as workspace metadata and thread index data), where domain services call interface methods and concrete implementations (for example, in-memory or SQLite) are swapped underneath without changing WebSocket handlers or protocol message shapes.
+This section defines the module architecture, coding standards, and tooling decisions for the Atelier Code App Server. It complements the core design document and replaces the original Module Boundaries section.
+
+
+### Module Architecture (App / Core / Features)
+
+The App Server strictly separates infrastructure plumbing from domain business logic using a pragmatic **App / Core / Features** architecture. The primary organizational axis is **feature cohesion**: code that changes together lives together. Infrastructure remains generic and stable while domain logic scales with feature growth.
+
+#### Feature Directories — Domain Logic
+
+Feature directories live at the `src/` root alongside `app/` and `core/` (e.g., `src/workspaces/`, `src/threads/`, `src/turns/`, `src/agents/`). This layer contains the business value of Atelier Code. Code here represents features and entities.
+
+**Contents:** TypeBox validation schemas, business logic services, protocol entry points (`*.handlers.ts`), and feature-specific repository interfaces that define what persistence queries the feature requires.
+
+**Rule:** Feature directories are entirely blind to the transport layer. They do not know if a request came from a WebSocket, an HTTP endpoint, or a local CLI. They receive parsed objects, execute logic, and return results.
+
+**Agent adapters** live under `src/agents/`. Adapter logic is domain-meaningful — it defines how Atelier talks to a specific agent like Codex or Claude — not generic plumbing. Adapter interfaces are defined here, with concrete implementations per agent as sub-modules.
+
+**Interdependencies:** Features may depend on each other's public interfaces (turns depend on threads), but only through explicit imports of typed contracts exported from the feature's `index.ts`. Features must not reach into each other's internals.
+
+Each feature exposes a single barrel `index.ts` that exports its public API: handlers, service functions, types, and repository interfaces. Internal helpers remain unexported. Barrel files should not be chained across directory levels — one per feature is the limit.
+
+#### `src/core/` — Infrastructure Engine
+
+This layer is generic, reusable plumbing that makes the server run. It is strictly isolated from domain logic.
+
+- **`transport/`** — Manages raw socket connections (e.g., `websocket-server.ts`). It only emits and receives raw strings. It does not parse JSON or handle business logic.
+- **`protocol/`** — The translation layer. It parses raw strings from the transport layer into JSON-RPC objects and uses a generic `Dispatcher` to route methods to registered feature handlers.
+- **`store/`** — Persistence interfaces and their implementations (in-memory and SQLite via Drizzle). Feature-specific repository interfaces are defined in the features themselves; core store implementations fulfill those interfaces.
+- **`shared/`** — Truly generic utilities used across the application (e.g., custom error classes, ID generators).
+
+#### `src/app/` — Orchestrator
+
+This is the bootstrap layer and the **only** place in the codebase where `core/` and feature directories are allowed to interact.
+
+- **`server.ts`** — The main entry point. It initializes the core transport and protocol engines, registers the feature handlers with the dispatcher, wires parsed events to the transport layer, and starts the listener. It contains zero per-request business logic.
+- **`session.ts`** — Manages process-level lifecycle (startup, shutdown, healthcheck). Session-scoped execution state such as loaded threads, active turns, and pending approvals belongs in the relevant feature directories, not here.
+
+#### Import Rules
+
+- `core/transport/`, `core/protocol/`, and `core/store/` are peers. None imports from another. All three may import from `core/shared/`.
+- Feature directories never import from `core/transport/` or any WebSocket-specific code.
+- `src/app/` is the only place that connects transport, protocol, store, and features.
+
 
 ### Server Framework
-Use **raw `Bun.serve`** for the App Server shell.
 
-Rationale:
-* Keeps protocol ownership explicit at the transport boundary.
-* Minimizes framework-level indirection for long-lived WebSocket lifecycle handling.
-* Aligns with existing Bun + TypeScript tooling already used by the bridge runtime.
-* Reduces risk of framework-imposed patterns drifting from the Codex-shaped contract.
+Use **raw `Bun.serve`** for the App Server shell. No HTTP framework (Hono, Elysia, etc.) is needed.
 
-### Validation Model
-Use a three-layer validation model:
-1. **Envelope validation**: Parse and validate JSON-RPC-shaped message envelopes at ingress.
-2. **Method payload validation**: Validate `params` and event payloads with method-specific schemas.
-3. **Execution rule validation**: Enforce lifecycle and state rules in domain services.
+The App Server exposes a single long-lived WebSocket connection, not a REST API with routing and middleware. The JSON-RPC method dispatcher is the router. This is a small, protocol-critical surface that should be owned directly rather than abstracted behind a framework that provides no value for this use case.
 
-Guidelines:
-* Inbound requests and outbound notifications should both be validated against canonical schemas.
-* Validation failures should map to stable, machine-readable error codes and message shapes.
-* Execution rule violations (for example, steering a non-active turn) should be distinct from schema parse failures.
 
-### Persistence Strategy
-Use a storage interface boundary from the start, with:
-* **In-memory implementation** as the default for iteration and testing.
-* **SQLite-backed implementation** as the initial durable target.
+### Schema & Validation
 
-Implementation choice:
-* Use **Drizzle ORM with SQLite** for the first durable implementation.
-* Treat Drizzle as the canonical schema and query layer for App Server metadata persistence.
-* Keep Drizzle usage localized behind `store/` repository-style interfaces so protocol, domain, and adapter code do not depend directly on ORM details.
+Use **TypeBox** as the schema and runtime validation library.
 
-Migration approach:
-* Generate and apply schema migrations using the Drizzle migration workflow for the App Server module.
-* Keep migration files checked into the repository under the App Server module so schema evolution is reviewable and reproducible.
-* Apply migrations at process startup before accepting WebSocket traffic.
-* Treat failed or partial migrations as startup failures rather than attempting best-effort runtime recovery.
-* Limit the persisted schema in early phases to Atelier-owned metadata and reattachment state, not mirrored thread/turn/item history.
+TypeBox produces JSON Schema natively and supports compiled runtime validation, which fits a protocol-heavy WebSocket server well. Drizzle has first-class TypeBox schema generation support, keeping the persistence and validation layers aligned without a mapping step.
 
-Rationale:
-* Avoids building a one-off migration system that would likely be replaced later.
-* Keeps schema definition, migrations, and typed queries aligned from the first persisted version.
-* Improves maintainability as the metadata model grows across persistence and restart-reattachment phases.
+Validation follows three layers:
 
-### Module Boundaries
-Recommended module boundaries:
-* `transport/` for WebSocket server, connection/session lifecycle, and framing.
-* `protocol/` for envelope parsing, dispatcher, method registry, and response/error mapping.
-* `schema/` for request/response/notification payload schemas.
-* `domain/` for workspace/thread/turn/approval orchestration and invariants.
-* `store/` for persistence interfaces and in-memory implementations.
-* `runtime-adapters/` for Codex adapter and future runtime adapters.
+1. **Envelope validation** — Parse and validate JSON-RPC-shaped message envelopes at ingress.
+2. **Method payload validation** — Validate `params` and event payloads against method-specific TypeBox schemas.
+3. **Execution rule validation** — Enforce lifecycle and state rules in domain services.
 
-Dependency direction:
-* `transport/` may depend on `protocol/` but not on `domain/`, `store/`, or runtime-specific code directly.
-* `protocol/` may depend on `schema/` and `domain/` service interfaces, but should not depend on concrete `store/` or runtime adapter implementations.
-* `schema/` is a leaf for contract definitions and should not depend on transport, domain orchestration, persistence, or adapters.
-* `domain/` owns lifecycle rules and orchestration. It may depend on abstract interfaces implemented by `store/` and `runtime-adapters/`, but must not depend on transport concerns.
-* `store/` implements persistence interfaces owned by the domain boundary and must not depend on `transport/` or WebSocket protocol handling.
-* `runtime-adapters/` implement runtime-facing interfaces owned by the domain boundary and must not depend on `transport/`.
+Inbound requests and outbound notifications should both be validated against canonical schemas. Validation failures map to stable, machine-readable error codes and message shapes. Execution rule violations (e.g., steering a non-active turn) must be distinct from schema parse failures.
 
-In practical terms, dependency flow should point inward toward `domain/` contracts and outward only through injected interfaces. No lower layer should import from a higher layer simply for convenience.
+
+### Error Handling
+
+Domain services return typed `Result` values (see Coding Standards). The protocol layer is responsible for mapping those results to well-formed JSON-RPC responses — either `{ id, result }` for success or `{ id, error }` for failure.
+
+Protocol errors should use standard JSON-RPC error codes (`-32700` parse error, `-32600` invalid request, `-32601` method not found, `-32602` invalid params) for envelope and schema validation failures. Atelier-specific domain errors should use a dedicated code range (e.g., starting at `-33000`) with stable, machine-readable error codes such as `TURN_NOT_ACTIVE` or `THREAD_NOT_FOUND`. Every error response includes a `code`, a human-readable `message`, and an optional `data` field for structured context.
+
+The transport layer should have a catch-all that ensures the client always receives a well-formed error response, even for unhandled failures. No request should result in a silent drop or malformed payload.
+
+
+### Logging & Observability
+
+Use structured logging from day one. Log entries should be JSON-formatted with consistent fields: `timestamp`, `level`, `message`, and contextual correlation IDs (`connectionId`, `threadId`, `turnId`) where applicable.
+
+The logger should be provided through feature-level context created at composition time, not imported as a process-wide global. This keeps feature code testable (swap in a silent or capturing logger in tests) and avoids hidden side effects.
+
+Log levels: `debug` for internal tracing, `info` for lifecycle events (connection opened, thread started, turn completed), `warn` for recoverable issues (validation failure, stale approval), `error` for infrastructure failures (database write failed, WebSocket send failed).
+
+
+### Configuration
+
+Configuration is loaded once at startup from a configuration file, with environment variable overrides for values that vary by deployment context (e.g., port, database path in CI).
+
+The configuration file is the primary source for settings such as server port, database location, available agents, and feature flags. Environment variables may override specific values when needed but should not be the default mechanism for most settings.
+
+Configuration should be read into a typed, readonly config object during bootstrap in `app/server.ts` and passed explicitly to the subsystems that need it. Feature code should never read environment variables or configuration files directly.
+
+
+### Graceful Shutdown
+
+The server process should handle `SIGINT` and `SIGTERM` signals and shut down cleanly. Graceful shutdown means: stop accepting new WebSocket connections, interrupt or complete any active turns, flush pending store writes, close the database connection, and then exit.
+
+The shutdown sequence should be coordinated from `app/session.ts`, calling into features and core subsystems in the correct order. If shutdown takes longer than a reasonable timeout, force exit to avoid hanging indefinitely.
+
+
+### Path Aliases
+
+Use a single TypeScript path alias configured in `tsconfig.json` to keep imports clean across the project:
+
+```json
+{
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
+}
+```
+
+This covers all directories without requiring a new alias each time a feature is added. Relative imports are fine within a single feature directory; use the `@/` alias for cross-feature and cross-layer imports.
+
+
+### Coding Standards
+
+#### Functions and Data Over Classes
+
+The default unit of composition is a function that takes data and returns data. Services are modules that export functions, not class instances. Classes are reserved for genuinely stateful things — a WebSocket connection, a database handle — not used as namespaces for grouping methods.
+
+#### Colocation Over Premature Abstraction
+
+Keep code close to where it's used until duplication actually causes pain. A schema, its handler, and its service logic living in the same feature directory is the intended outcome of this architecture. Do not extract shared abstractions preemptively.
+
+#### Types as Documentation
+
+With strict TypeScript and TypeBox schemas at boundaries, types replace much of what comments and naming conventions traditionally provided. Discriminated unions for events, branded types for IDs, and `readonly` by default communicate constraints more reliably than prose. If a comment is explaining what a value can be, it should be a better type instead. Comments still have a role for non-obvious intent — protocol design decisions, lifecycle invariants, or "why" context that types alone cannot express.
+
+#### Explicit Over Clever
+
+Prefer `if`/`else` or `switch` over complex ternary chains. Prefer named intermediate variables over long method chains when readability suffers. Prefer early returns over nested conditionals. Code should be traceable linearly without jumping around.
+
+#### Errors as Values
+
+For domain logic, return result types rather than throwing:
+
+```typescript
+type Result<T, E = AppError> =
+  | { ok: true; data: T }
+  | { ok: false; error: E }
+```
+
+This makes error paths visible in the type system and forces callers to handle them. Reserve `throw` for genuinely exceptional infrastructure failures (database unreachable, WebSocket write failure). Domain-level failures such as "turn is not active" or "thread not found" are expected outcomes, not exceptions.
+
+#### Immutability by Default
+
+Use `readonly` on types, `as const` on literals, and avoid mutation in domain logic. When state needs to change, return a new value. Mutable state lives only at the edges — the store, the WebSocket connection — not in domain functions transforming data.
+
+#### Dependency Injection Without Magic
+
+Pass dependencies as function arguments or use a context object. The `app/server.ts` composition root wires things together at startup. No DI containers, decorators, or reflection.
+
+#### Small Files, Explicit Exports
+
+Each file has a single responsibility and explicitly exports its public surface. Each feature exposes one `index.ts` barrel file exporting its public API. Internal helpers stay unexported. Do not chain barrel files across directory levels.
+
+#### Naming: Avoid "Runtime"
+
+The word "runtime" is overloaded — it can mean the server process, an external agent system (Codex, Claude), or an operational status. Use specific terms instead: **agent** for external agent systems, **agent adapter** for agent-specific integration code, **execution status** or **thread status** for operational state, and **server process** for the running App Server.
+
 
 ### Testing Strategy
-The early App Server phases should be covered by three complementary test layers:
-* **Protocol harness tests**: End-to-end WebSocket contract tests that connect to the running server process, send JSON-RPC-shaped requests, and assert response shapes, protocol errors, and notification ordering for happy-path and invalid-sequencing cases.
-* **Domain service tests**: Focused unit tests for thread/turn/approval lifecycle rules using fake stores and fake runtime adapters. These tests should verify invariants such as initialize-before-use, one active turn per thread, approval scoping, and state transition correctness without requiring a live socket.
-* **Persistence tests**: Shared store conformance tests that run against both the in-memory store and the SQLite store. SQLite coverage should include migration application, restart reload, duplicate mapping protection, and failure behavior for missing or stale runtime linkage.
-* **Adapter contract tests**: Tests for the Codex adapter that validate request mapping, response normalization, notification translation, and error handling against pinned Codex contract fixtures where possible.
-* **Live smoke tests**: Environment-gated tests against a real local Codex setup for the minimal lifecycle once the real adapter exists. These should stay small and verify integration seams rather than replace deterministic contract coverage.
 
-Testing guidance:
-* Protocol harness tests are the primary executable check for the public Atelier contract.
-* Domain tests should cover execution-rule failures separately from schema validation failures.
-* Store conformance tests should run against every `Store` implementation to keep behavior aligned across in-memory and SQLite backends.
-* Adapter tests should prefer pinned fixtures for determinism and reserve live runtime tests for smoke coverage only.
+The App Server should be covered by five complementary test layers:
 
-### Deferred Architecture Decisions
-The following decisions are intentionally deferred and should be captured as separate follow-up work rather than left implicit:
-* Client-managed App Server installation, startup, restart, and reconnection behavior across local macOS and future remote-host scenarios.
-* Secure remote connection and discovery details for non-local App Server deployments.
-* Broader multi-runtime selection and capability-gating behavior beyond the initial Codex-only rollout.
+**Protocol harness tests** are the primary executable check for the public Atelier contract. These are end-to-end WebSocket tests that connect to the running server process, send JSON-RPC-shaped requests, and assert response shapes, protocol errors, and notification ordering for both happy-path and invalid-sequencing cases.
 
-### Baseline Readiness Criteria
+**Domain service tests** are focused unit tests for thread, turn, and approval lifecycle rules using fake stores and fake agent adapters. These verify invariants such as initialize-before-use, one active turn per thread, approval scoping, and state transition correctness without requiring a live socket. Domain tests should cover execution-rule failures separately from schema validation failures.
+
+**Store conformance tests** are shared tests that run against every store implementation (in-memory and SQLite) to keep behavior aligned across backends. SQLite coverage should include migration application, restart reload, duplicate mapping protection, and failure behavior for missing or stale linkage.
+
+**Agent adapter contract tests** validate request mapping, response normalization, notification translation, and error handling against pinned Codex contract fixtures where possible. Adapter tests should prefer pinned fixtures for determinism.
+
+**Live smoke tests** are environment-gated tests against a real local Codex setup for the minimal lifecycle once the real adapter exists. These should stay small and verify integration seams rather than replace deterministic contract coverage.
+
+
+### Tooling
+
+| Concern         | Tool              | Notes                                                                 |
+|-----------------|-------------------|-----------------------------------------------------------------------|
+| Execution       | Bun               | Server process, test runner, script execution.                        |
+| Language        | TypeScript (strict) | No `any`. Prefer `unknown`, explicit narrowing, discriminated unions. |
+| Server          | `Bun.serve`       | Raw WebSocket server. No HTTP framework.                              |
+| Validation      | TypeBox           | Runtime validation with native JSON Schema output.                    |
+| Persistence     | Drizzle ORM + SQLite | Behind repository interfaces. In-memory store for testing.         |
+| Formatting      | Biome             | Single formatter and linter for the App Server.                       |
+| Testing         | `bun:test`        | Bun's built-in test runner.                                          |
+
+
+### Persistence Strategy
+
+Use a storage interface boundary from the start, with an in-memory implementation as the default for iteration and testing and a SQLite-backed implementation as the initial durable target.
+
+Use **Drizzle ORM with SQLite** for the first durable implementation. Treat Drizzle as the canonical schema and query layer for App Server metadata persistence. Keep Drizzle usage localized behind repository-style interfaces in `core/store/` so protocol, feature, and adapter code do not depend directly on ORM details.
+
+Generate and apply schema migrations using the Drizzle migration workflow. Keep migration files checked into the repository under the App Server module so schema evolution is reviewable and reproducible. Apply migrations at process startup before accepting WebSocket traffic. Treat failed or partial migrations as startup failures rather than attempting best-effort recovery.
+
+Limit the persisted schema in early phases to Atelier-owned metadata and reattachment state, not mirrored thread/turn/item history.
+
+
+### Deferred Decisions
+
+The following decisions are intentionally deferred and should be captured as separate follow-up work:
+
+- Client-managed App Server installation, startup, restart, and reconnection behavior across local macOS and future remote-host scenarios.
+- Secure remote connection and discovery details for non-local App Server deployments.
+- Broader multi-agent selection and capability-gating behavior beyond the initial Codex-only rollout.
+
+
+### Readiness Criteria
+
 The implementation is ready for broader integration when:
-* The App Server can accept a WebSocket connection, initialize, and route a minimal method set.
-* Thread and turn lifecycle state transitions can be exercised end-to-end in tests.
-* Approval request and resolution flow can be simulated through notifications and decisions.
-* Domain orchestration depends on `Store` interfaces rather than concrete database code.
-* Protocol harness tests can assert contract shape and lifecycle sequencing.
+
+- The App Server can accept a WebSocket connection, initialize, and route a minimal method set.
+- Thread and turn lifecycle state transitions can be exercised end-to-end in tests.
+- Approval request and resolution flow can be simulated through notifications and decisions.
+- Feature code depends on store interfaces rather than concrete database code.
+- Protocol harness tests can assert contract shape and lifecycle sequencing.
