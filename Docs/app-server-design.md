@@ -14,21 +14,14 @@ This document is centered on the **Agentic Coding** domain. The other domains ar
 
 ___
 # Agentic Coding
-The Agentic Coding domain defines the system for working with AI agent runtimes. It governs how users do things like create workspaces, conduct conversations, run turns, receive streaming updates, respond to approval requests, and continue work over time.
-
-Its role is to provide a stable product model across one or more agent runtimes while keeping provider-specific behavior contained within runtime adapters.
-
-## Scope
-This document is focused on the Atelier App Server and Agent Adapters for the Agentic Coding domain.
-
-It defines the server contract, adapter responsibilities, and runtime model. Native client architecture and client-specific behaviors are intentionally out of scope and should be defined separately.
+The Agentic Coding domain defines the system and UI for working with AI agents. It governs how users do things like create workspaces, conduct conversations, run turns, receive streaming updates, respond to approval requests, and continue work over time.
 
 ## Core System Components
 The Agentic Coding domain is composed of four primary system components:
 
 - **Client Application**: A native macOS application, with future support for iOS, that delivers the primary end-user experience. 
 - **App Server**: The backend control plane responsible for managing sessions, persistence, approvals, real-time thread updates, and the stable client-facing protocol. It coordinates communication between the client application and supported agent runtimes and owns the Atelier product contract.
-- **Agent Adapters**: A provider-specific integration layer that maps the App Server’s Codex-shaped contract to the native interface exposed by an agent runtime. The Codex adapter should be near pass-through. Other adapters, such as Claude Agent SDK, translate runtime-specific behavior into the Codex-shaped model used by the App Server. Adapters normalize runtime differences upward but do not redefine the platform model.
+- **Agent Adapters**: A provider-specific integration layer that maps the App Server's Codex-shaped contract to the native interface exposed by an agent runtime. The Codex adapter should be near pass-through. Other adapters, such as Claude Agent SDK, translate agent-specific behavior into the Codex-shaped model used by the App Server. Adapters normalize agent differences upward but do not redefine the platform model.
 - **Agent Runtimes**: The external agent systems that perform execution on behalf of the user, including maintaining the agent loop, invoking tools, and producing outputs. Examples include [Codex App Server](https://developers.openai.com/codex/app-server) and [Claude Agent SDK](https://platform.claude.com/docs/en/agent-sdk/overview).
 
 ### Note on the Client Application
@@ -38,12 +31,17 @@ The client is responsible for connecting to the App Server and ensuring that the
 
 The exact installation, startup, restart, and reconnection mechanism is intentionally out of scope for this document. The App Server contract should not depend on those client lifecycle mechanics beyond requiring a long-lived connection model and explicit initialization on each connection.
 
+## Scope
+This document is focused on the Atelier App Server and Agent Adapters for the Agentic Coding domain.
+
+It defines the server contract, adapter responsibilities, and protocol model. Native client architecture and client-specific behaviors are intentionally out of scope and should be defined separately.
+
 ## Design Stance
-The **[Codex App Server](https://developers.openai.com/codex/app-server)** is the reference runtime model for the Atelier Code App Server.
+The **[Codex App Server](https://developers.openai.com/codex/app-server)** is the reference model for the Atelier Code App Server.
 
-The **Atelier Code App Server** should mirror Codex as closely as practical. Atelier Code is not defining a separate orchestration model; it is adopting a Codex-shaped contract and adding only Atelier-owned platform concerns such as workspace metadata, persistence, capability gating, and runtime selection.
+The **Atelier Code App Server** should mirror Codex as closely as practical. Atelier Code is not defining a separate orchestration model; it is adopting a Codex-shaped contract and adding only Atelier-owned platform concerns such as workspace metadata, persistence, capability gating, and agent selection.
 
-The **Codex adapter** should be mostly pass-through. Other adapters, such as **Claude Agent SDK**, should conform to the same Codex-shaped contract. When a runtime cannot fully support that contract, the limitation should be exposed through explicit capabilities rather than weakening the model.
+The **Codex adapter** should be mostly pass-through. Other adapters, such as **Claude Agent SDK**, should conform to the same Codex-shaped contract. When an agent runtime cannot fully support that contract, the limitation should be exposed through explicit capabilities rather than weakening the model.
 
 ### Codex App Server References 
 * [Documentation](https://developers.openai.com/codex/app-server/)
@@ -67,7 +65,7 @@ In compact form:
 Atelier-specific methods should be limited to Atelier-owned concerns such as `Workspace` and related platform metadata.
 
 ## Core Primitives
-The **Agentic Coding** domain is built around one Atelier-owned primitive, **Workspace**, layered on top of a Codex-shaped runtime model built around **Thread**, **Turn**, and **Item**.
+The **Agentic Coding** domain is built around one Atelier-owned primitive, **Workspace**, layered on top of a Codex-shaped model built around **Thread**, **Turn**, and **Item**.
 * **Workspace**: The top-level container for agent work within a specific code environment. It defines where work takes place, including the local or remote environment and working directory, and stores workspace metadata and associated threads.
 * **Thread**: A conversation between the user and an agent. Threads contain turns.
 * **Turn**: A single user request and the agent work that follows. Turns contain items and stream incremental updates.
@@ -106,46 +104,46 @@ The Atelier **App Server** mirrors the core thread and turn operations of the **
 The App Server does not attempt to mirror the full Codex API surface. Codex-specific admin, configuration, plugin, and auxiliary execution APIs remain outside the core Atelier protocol.
 
 ## Models
-The **Atelier App Server** exposes the runtime model catalog through a Codex-aligned model/list method.
+The **Atelier App Server** exposes the model catalog through a Codex-aligned model/list method.
 
-The client only needs visible models, enough metadata to render the model picker, and the reasoning options supported by each model. The response should include the model identifier, display name, supported reasoning efforts, default reasoning effort, and whether the model is the runtime’s recommended default.
+The client only needs visible models, enough metadata to render the model picker, and the reasoning options supported by each model. The response should include the model identifier, display name, supported reasoning efforts, default reasoning effort, and whether the model is the agent runtime's recommended default.
 
-New threads use the runtime default model. The client may change the model and reasoning effort for a thread, and that selection persists for subsequent turns until changed again.
+New threads use the agent runtime default model. The client may change the model and reasoning effort for a thread, and that selection persists for subsequent turns until changed again.
 
 The current model and reasoning effort for a thread should be exposed through thread data, not through model/list.
 
 ## Threads
 A **Thread** is the conversation container for agent work. Threads are started with `thread/start`, resumed for active interaction with `thread/resume`, forked with `thread/fork`, read with `thread/read`, and listed with `thread/list`.
 
-`thread/read` should remain distinct from `thread/resume`. `thread/read` returns stored thread data only. It does not load the thread for active runtime interaction and does not establish a live notification stream.
+`thread/read` should remain distinct from `thread/resume`. `thread/read` returns stored thread data only. It does not load the thread for active interaction and does not establish a live notification stream.
 
-`thread/resume` loads the thread for active runtime interaction. After resume, live execution updates should arrive through notifications rather than through repeated point-in-time reads.
+`thread/resume` loads the thread for active interaction. After resume, live execution updates should arrive through notifications rather than through repeated point-in-time reads.
 
 `thread/list` and `thread/read` support history, navigation, and point-in-time inspection. They should not be treated as the canonical surface for active execution. 
 
-Loaded-thread behavior should be represented through thread runtime status and notifications, not as a separate platform primitive. Thread runtime status should remain Codex-shaped, with states such as `notLoaded`, `idle`, `active`, and `systemError`, while live loaded-thread changes are surfaced through notifications.
+Loaded-thread behavior should be represented through thread execution status and notifications, not as a separate platform primitive. Thread execution status should remain Codex-shaped, with states such as `notLoaded`, `idle`, `active`, and `systemError`, while live loaded-thread changes are surfaced through notifications.
 
 ## Turns
 A **Turn** is a single unit of work within a thread. It begins with user input and includes the agent activity that follows.
 
 Turns are started with turn/start, may be guided further with turn/steer, and may be interrupted with turn/interrupt.
 
-A turn belongs to exactly one thread and is ordered within that thread. Only one turn may be active at a time per thread. A `Turn` is the core execution primitive. An active turn is not a separate concept; it is a turn whose status remains in progress or is awaiting user or runtime input.
+A turn belongs to exactly one thread and is ordered within that thread. Only one turn may be active at a time per thread. A `Turn` is the core execution primitive. An active turn is not a separate concept; it is a turn whose status remains in progress or is awaiting user input.
 
 ### Turn Lifecycle
 * A turn begins when the client issues turn/start.
-* The server forwards the request to the selected runtime and begins streaming updates.
+* The server forwards the request to the selected agent runtime and begins streaming updates.
 * While the turn is active, the server streams lifecycle changes, item events, and any requests for user action such as approvals.
-* The client may send turn/steer to provide additional guidance to the active turn when supported by the runtime.
-* A turn remains active while execution is in progress or awaiting required user or runtime input.
+* The client may send turn/steer to provide additional guidance to the active turn when supported by the agent runtime.
+* A turn remains active while execution is in progress or awaiting required user input.
 * A turn ends when it completes, fails, or is interrupted.
 * The final turn state is emitted through the notification stream.
 
 ### Turn State
-Turn status represents overall execution progress and is distinct from item-level updates. The App Server should stay aligned with the runtime's turn model where practical. An active turn is a turn whose status is still in progress or awaiting input. Any normalization needed for cross-runtime consistency should be handled by the adapter layer.
+Turn status represents overall execution progress and is distinct from item-level updates. The App Server should stay aligned with the agent runtime's turn model where practical. An active turn is a turn whose status is still in progress or awaiting input. Any normalization needed for cross-agent consistency should be handled by the adapter layer.
 
 ## Events
-Events are the live notification stream for thread lifecycle, turn lifecycle, item activity, and user-action requests. Read and list methods return point-in-time state; notifications are the canonical surface for active execution. After a thread is started or resumed, the client receives notifications as runtime state changes.
+Events are the live notification stream for thread lifecycle, turn lifecycle, item activity, and user-action requests. Read and list methods return point-in-time state; notifications are the canonical surface for active execution. After a thread is started or resumed, the client receives notifications as agent runtime state changes.
 
 At a minimum, the event stream should cover:
 * **Thread events** such as status changes, archive state changes, and closure.
@@ -155,9 +153,9 @@ At a minimum, the event stream should cover:
 
 Notifications are the canonical surface for loaded-thread and in-progress turn execution.
 
-`thread/status/changed` should carry runtime thread state for loaded threads. `turn/started` and `turn/completed` should mark turn lifecycle boundaries. `item/started` and `item/completed` should mark item lifecycle boundaries.
+`thread/status/changed` should carry thread execution state for loaded threads. `turn/started` and `turn/completed` should mark turn lifecycle boundaries. `item/started` and `item/completed` should mark item lifecycle boundaries.
 
-When runtime activity pauses for approval or other user input, the App Server should surface the request through the notification stream and emit a resolution event when the request is answered or cleared.
+When agent runtime activity pauses for approval or other user input, the App Server should surface the request through the notification stream and emit a resolution event when the request is answered or cleared.
 
 Example happy-path flow:
 * `initialize`
@@ -174,24 +172,24 @@ Items are the units of input and output within a turn. They should remain Codex-
 
 An item should have a stable identity within the turn, a concrete item type, and a final completed shape that the client can treat as authoritative. Some item types may also produce incremental delta events while work is in progress.
 
-Item deltas may be streamed while work is in progress when the runtime supports them. These deltas improve responsiveness, but the final item/completed payload should remain the authoritative final state for that item.
+Item deltas may be streamed while work is in progress when the agent runtime supports them. These deltas improve responsiveness, but the final item/completed payload should remain the authoritative final state for that item.
 
 The client should render live progress from deltas when available, but should reconcile to the final completed item state. The App Server should not require the client to reconstruct the durable item record solely from deltas.
 
 ## Approvals
-Approvals let the **Atelier App Server** pause execution when the selected runtime requires explicit user consent before continuing.
+Approvals let the **Atelier App Server** pause execution when the selected agent runtime requires explicit user consent before continuing.
 
 Approval requests are surfaced by the server during an active turn and resolved by the client. They are scoped to the relevant **Thread**, **Turn**, and item or request identity, and should be presented as part of the active conversation rather than as a separate workflow.
 
 At minimum, the system should support:
-* **Command execution approvals** when the runtime requires permission before running a command.
-* **File change approvals** when the runtime requires permission before applying edits.
+* **Command execution approvals** when the agent runtime requires permission before running a command.
+* **File change approvals** when the agent runtime requires permission before applying edits.
 * **Tool or connector approvals** when a tool call has side effects or otherwise requires explicit user confirmation.
 
 The App Server should treat approvals as server-initiated requests. The client responds with a user decision, and the server then resumes, declines, or clears the pending work.
 
 The approval lifecycle should remain Codex-shaped:
-* The runtime emits an item that represents the pending action.
+* The agent runtime emits an item that represents the pending action.
 * The server sends an approval request to the client for that item.
 * The client returns a decision.
 * The server emits a resolution event.
@@ -204,11 +202,11 @@ Example approval flow:
 * resolution event is emitted
 * item completes
 
-The App Server should preserve enough approval state to support active UI rendering, recovery, and auditability, but it should not invent a separate approval system when the runtime already provides the authoritative flow.
+The App Server should preserve enough approval state to support active UI rendering, recovery, and auditability, but it should not invent a separate approval system when the agent runtime already provides the authoritative flow.
 
 ## Architecture & Standards
 
-This section defines the module architecture, coding standards, and tooling decisions for the Atelier Code App Server. It complements the core design document and replaces the original Module Boundaries section.
+This section defines the module architecture, coding standards, and tooling decisions for the Atelier Code App Server.
 
 
 ### Module Architecture (App / Core / Features)
@@ -219,7 +217,7 @@ The App Server strictly separates infrastructure plumbing from domain business l
 
 Feature directories live at the `src/` root alongside `app/` and `core/` (e.g., `src/workspaces/`, `src/threads/`, `src/turns/`, `src/agents/`). This layer contains the business value of Atelier Code. Code here represents features and entities.
 
-**Contents:** TypeBox validation schemas, business logic services, protocol entry points (`*.handlers.ts`), and feature-specific repository interfaces that define what persistence queries the feature requires.
+**Contents:** TypeBox validation schemas, business logic services, protocol entry points (`*.handlers.ts`), and persistence logic (`store.ts` with Drizzle table definitions and query functions). Each feature owns its full persistence vertical.
 
 **Rule:** Feature directories are entirely blind to the transport layer. They do not know if a request came from a WebSocket, an HTTP endpoint, or a local CLI. They receive parsed objects, execute logic, and return results.
 
@@ -227,7 +225,7 @@ Feature directories live at the `src/` root alongside `app/` and `core/` (e.g., 
 
 **Interdependencies:** Features may depend on each other's public interfaces (turns depend on threads), but only through explicit imports of typed contracts exported from the feature's `index.ts`. Features must not reach into each other's internals.
 
-Each feature exposes a single barrel `index.ts` that exports its public API: handlers, service functions, types, and repository interfaces. Internal helpers remain unexported. Barrel files should not be chained across directory levels — one per feature is the limit.
+Each feature exposes a single barrel `index.ts` that exports its public API: handlers, service functions, and types. Internal helpers remain unexported. Barrel files should not be chained across directory levels — one per feature is the limit.
 
 #### `src/core/` — Infrastructure Engine
 
@@ -235,7 +233,7 @@ This layer is generic, reusable plumbing that makes the server run. It is strict
 
 - **`transport/`** — Manages raw socket connections (e.g., `websocket-server.ts`). It only emits and receives raw strings. It does not parse JSON or handle business logic.
 - **`protocol/`** — The translation layer. It parses raw strings from the transport layer into JSON-RPC objects and uses a generic `Dispatcher` to route methods to registered feature handlers.
-- **`store/`** — Persistence interfaces and their implementations (in-memory and SQLite via Drizzle). Feature-specific repository interfaces are defined in the features themselves; core store implementations fulfill those interfaces.
+- **`store/`** — Database primitives: the connection handle, migration runner, and shared Drizzle configuration. It does not contain feature-specific table definitions or query logic — those live in each feature's `store.ts`.
 - **`shared/`** — Truly generic utilities used across the application (e.g., custom error classes, ID generators).
 
 #### `src/app/` — Orchestrator
@@ -248,8 +246,8 @@ This is the bootstrap layer and the **only** place in the codebase where `core/`
 #### Import Rules
 
 - `core/transport/`, `core/protocol/`, and `core/store/` are peers. None imports from another. All three may import from `core/shared/`.
-- Feature directories never import from `core/transport/` or any WebSocket-specific code.
-- `src/app/` is the only place that connects transport, protocol, store, and features.
+- Feature directories may import the database connection type from `core/store/` and utilities from `core/shared/`, but never import from `core/transport/` or any WebSocket-specific code. `core/store/` never imports from features.
+- `src/app/` is the only place that connects transport, protocol, store, and features. It creates the database connection from `core/store/` and passes it to each feature's store at startup.
 
 
 ### Server Framework
@@ -278,9 +276,9 @@ Inbound requests and outbound notifications should both be validated against can
 
 Domain services return typed `Result` values (see Coding Standards). The protocol layer is responsible for mapping those results to well-formed JSON-RPC responses — either `{ id, result }` for success or `{ id, error }` for failure.
 
-Protocol errors should use standard JSON-RPC error codes (`-32700` parse error, `-32600` invalid request, `-32601` method not found, `-32602` invalid params) for envelope and schema validation failures. Atelier-specific domain errors should use a dedicated code range (e.g., starting at `-33000`) with stable, machine-readable error codes such as `TURN_NOT_ACTIVE` or `THREAD_NOT_FOUND`. Every error response includes a `code`, a human-readable `message`, and an optional `data` field for structured context.
+The `error` object follows JSON-RPC spec: `code` is always numeric, `message` is a human-readable string, and `data` is an optional object for structured context. Standard JSON-RPC error codes (`-32700` parse error, `-32600` invalid request, `-32601` method not found, `-32602` invalid params) cover envelope and schema validation failures. Atelier-specific errors use a dedicated numeric range starting at `-33000`. Stable, machine-readable symbolic codes such as `TURN_NOT_ACTIVE` or `THREAD_NOT_FOUND` go in `error.data.code`, not in the top-level numeric `error.code` field.
 
-The transport layer should have a catch-all that ensures the client always receives a well-formed error response, even for unhandled failures. No request should result in a silent drop or malformed payload.
+The protocol layer should have a catch-all that ensures the client always receives a well-formed error response, even for unhandled failures. No request should result in a silent drop or malformed payload. Malformed outbound notifications have no response path in JSON-RPC — these should be logged and dropped.
 
 
 ### Logging & Observability
@@ -368,10 +366,11 @@ Pass dependencies as function arguments or use a context object. The `app/server
 Each file has a single responsibility and explicitly exports its public surface. Each feature exposes one `index.ts` barrel file exporting its public API. Internal helpers stay unexported. Do not chain barrel files across directory levels.
 
 #### Naming Conventions
- 
-**Avoid "runtime."** The word is overloaded — it can mean the server process, an external agent system (Codex, Claude), or an operational status. Use specific terms instead: **agent** for external agent systems, **agent adapter** for agent-specific integration code, **execution status** or **thread status** for operational state, and **server process** for the running App Server.
- 
+
+**Qualify "runtime."** The bare word "runtime" is ambiguous — it can mean the server process, an external agent system, or an operational status. Always qualify it: **agent runtime** for external agent systems (Codex, Claude), **agent adapter** for agent-specific integration code, **execution status** or **thread status** for operational state, and **server process** for the running App Server. In code (type names, variable names, module names), prefer **agent** as the short form when context is clear.
+
 **Keep "Codex" out of shared code.** Use "Codex" only in adapter-specific code under `src/agents/` or for literal provider and model values. Everywhere else in the App Server, use generic names. The App Server contract is Codex-shaped, but shared code should not be coupled to a specific agent's name.
+
 
 ### Testing Strategy
 
@@ -381,7 +380,7 @@ The App Server should be covered by five complementary test layers:
 
 **Domain service tests** are focused unit tests for thread, turn, and approval lifecycle rules using fake stores and fake agent adapters. These verify invariants such as initialize-before-use, one active turn per thread, approval scoping, and state transition correctness without requiring a live socket. Domain tests should cover execution-rule failures separately from schema validation failures.
 
-**Store conformance tests** are shared tests that run against every store implementation (in-memory and SQLite) to keep behavior aligned across backends. SQLite coverage should include migration application, restart reload, duplicate mapping protection, and failure behavior for missing or stale linkage.
+**Store tests** verify each feature's persistence logic against both its Drizzle implementation and its in-memory test fake. SQLite coverage should include migration application, restart reload, duplicate mapping protection, and failure behavior for missing or stale linkage.
 
 **Agent adapter contract tests** validate request mapping, response normalization, notification translation, and error handling against pinned Codex contract fixtures where possible. Adapter tests should prefer pinned fixtures for determinism.
 
@@ -396,16 +395,16 @@ The App Server should be covered by five complementary test layers:
 | Language        | TypeScript (strict) | No `any`. Prefer `unknown`, explicit narrowing, discriminated unions. |
 | Server          | `Bun.serve`       | Raw WebSocket server. No HTTP framework.                              |
 | Validation      | TypeBox           | Runtime validation with native JSON Schema output.                    |
-| Persistence     | Drizzle ORM + SQLite | Behind repository interfaces. In-memory store for testing.         |
+| Persistence     | Drizzle ORM + SQLite | Feature-owned stores. In-memory fakes for testing.                 |
 | Formatting      | Biome             | Single formatter and linter for the App Server.                       |
 | Testing         | `bun:test`        | Bun's built-in test runner.                                          |
 
 
 ### Persistence Strategy
 
-Use a storage interface boundary from the start, with an in-memory implementation as the default for iteration and testing and a SQLite-backed implementation as the initial durable target.
+Each feature owns its persistence logic. A feature's `store.ts` contains its Drizzle table definitions and query functions. For testing, in-memory fakes are plain objects that satisfy the same structural type — no separate interface file needed. `core/store/` provides only the database connection, migration runner, and shared Drizzle configuration.
 
-Use **Drizzle ORM with SQLite** for the first durable implementation. Treat Drizzle as the canonical schema and query layer for App Server metadata persistence. Keep Drizzle usage localized behind repository-style interfaces in `core/store/` so protocol, feature, and adapter code do not depend directly on ORM details.
+Use **Drizzle ORM with SQLite** for the first durable implementation. Drizzle's migration tooling can scan table definitions across multiple feature directories.
 
 Generate and apply schema migrations using the Drizzle migration workflow. Keep migration files checked into the repository under the App Server module so schema evolution is reviewable and reproducible. Apply migrations at process startup before accepting WebSocket traffic. Treat failed or partial migrations as startup failures rather than attempting best-effort recovery.
 
@@ -428,5 +427,5 @@ The implementation is ready for broader integration when:
 - The App Server can accept a WebSocket connection, initialize, and route a minimal method set.
 - Thread and turn lifecycle state transitions can be exercised end-to-end in tests.
 - Approval request and resolution flow can be simulated through notifications and decisions.
-- Feature code depends on store interfaces rather than concrete database code.
+- Feature services depend on store parameters rather than direct database access, and can be tested with in-memory fakes.
 - Protocol harness tests can assert contract shape and lifecycle sequencing.
