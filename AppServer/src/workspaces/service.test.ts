@@ -62,6 +62,31 @@ describe("createWorkspacesService", () => {
     });
   });
 
+  test("only generates a workspace id when a new workspace is created", async () => {
+    const tempDirectory = await createTemporaryDirectory("atelier-appserver-workspaces-service-");
+    const workspaceDirectory = join(tempDirectory, "workspace");
+    let createWorkspaceIdCallCount = 0;
+    const service = createWorkspacesService({
+      store: createInMemoryWorkspacesStore(),
+      createWorkspaceId: () => {
+        createWorkspaceIdCallCount += 1;
+        return "workspace-1";
+      },
+      now: createTimestampSequence(["2026-04-10T10:00:00.000Z", "2026-04-10T11:00:00.000Z"]),
+    });
+
+    await mkdir(workspaceDirectory, { recursive: true });
+
+    await service.openWorkspace({
+      workspacePath: workspaceDirectory,
+    });
+    await service.openWorkspace({
+      workspacePath: workspaceDirectory,
+    });
+
+    expect(createWorkspaceIdCallCount).toBe(1);
+  });
+
   test("returns a domain error when the workspace path does not exist", async () => {
     const service = createWorkspacesService({
       store: createInMemoryWorkspacesStore(),

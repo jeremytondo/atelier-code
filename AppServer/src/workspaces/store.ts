@@ -15,11 +15,16 @@ export const workspacesTable = sqliteTable(
 );
 
 type WorkspaceRow = typeof workspacesTable.$inferSelect;
-
-export type OpenWorkspaceStoreInput = Readonly<{
+type CreateWorkspaceStoreInput = Readonly<{
   workspaceId: string;
   workspacePath: string;
   openedAt: string;
+}>;
+
+export type OpenWorkspaceStoreInput = Readonly<{
+  workspacePath: string;
+  openedAt: string;
+  createWorkspaceId: () => string;
 }>;
 
 export type WorkspacesStore = Readonly<{
@@ -38,9 +43,14 @@ export const createSqliteWorkspacesStore = (getDatabase: AppDatabaseProvider): W
     }
 
     try {
-      insertWorkspace(database, input);
+      const workspaceId = input.createWorkspaceId();
+
+      insertWorkspace(database, {
+        ...input,
+        workspaceId,
+      });
       return Object.freeze({
-        id: input.workspaceId,
+        id: workspaceId,
         workspacePath: input.workspacePath,
         createdAt: input.openedAt,
         lastOpenedAt: input.openedAt,
@@ -85,8 +95,9 @@ export const createInMemoryWorkspacesStore = (
         return reopenedWorkspace;
       }
 
+      const workspaceId = input.createWorkspaceId();
       const createdWorkspace = Object.freeze({
-        id: input.workspaceId,
+        id: workspaceId,
         workspacePath: input.workspacePath,
         createdAt: input.openedAt,
         lastOpenedAt: input.openedAt,
@@ -115,7 +126,7 @@ const findWorkspaceByPath = (
   return mapWorkspaceRow(workspaceRow);
 };
 
-const insertWorkspace = (database: AppDatabase, input: OpenWorkspaceStoreInput): void => {
+const insertWorkspace = (database: AppDatabase, input: CreateWorkspaceStoreInput): void => {
   database
     .insert(workspacesTable)
     .values({

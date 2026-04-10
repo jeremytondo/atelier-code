@@ -23,16 +23,24 @@ describe("workspaces store", () => {
   for (const storeFactory of storeFactories) {
     test(`${storeFactory.name} creates and reopens a workspace by canonical path`, async () => {
       const store = await storeFactory.createStore();
+      let nextWorkspaceId = 1;
+      let createWorkspaceIdCallCount = 0;
+      const createWorkspaceId = () => {
+        createWorkspaceIdCallCount += 1;
+        const workspaceId = `workspace-${nextWorkspaceId}`;
+        nextWorkspaceId += 1;
+        return workspaceId;
+      };
 
       const firstOpen = await store.openWorkspace({
-        workspaceId: "workspace-1",
         workspacePath: "/tmp/project",
         openedAt: "2026-04-10T10:00:00.000Z",
+        createWorkspaceId,
       });
       const secondOpen = await store.openWorkspace({
-        workspaceId: "workspace-2",
         workspacePath: "/tmp/project",
         openedAt: "2026-04-10T11:00:00.000Z",
+        createWorkspaceId,
       });
 
       expect(firstOpen).toEqual({
@@ -47,6 +55,7 @@ describe("workspaces store", () => {
         createdAt: "2026-04-10T10:00:00.000Z",
         lastOpenedAt: "2026-04-10T11:00:00.000Z",
       });
+      expect(createWorkspaceIdCallCount).toBe(1);
     });
   }
 });

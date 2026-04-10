@@ -42,9 +42,9 @@ export const createWorkspacesService = (
 
       const openedAt = now();
       const workspace = await options.store.openWorkspace({
-        workspaceId: createWorkspaceId(),
         workspacePath: canonicalWorkspacePath.data,
         openedAt,
+        createWorkspaceId,
       });
 
       return ok(workspace);
