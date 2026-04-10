@@ -1,5 +1,6 @@
 import type { Static, TSchema } from "@sinclair/typebox";
 import type { ProtocolMethodError } from "@/core/protocol/errors";
+import type { RequestId } from "@/core/protocol/schemas";
 import type { Result } from "@/core/shared";
 
 export type ProtocolSession = Readonly<{
@@ -9,6 +10,7 @@ export type ProtocolSession = Readonly<{
 
 export type ProtocolMethodContext = Readonly<{
   connectionId: string;
+  requestId: RequestId;
   session: ProtocolSession;
 }>;
 

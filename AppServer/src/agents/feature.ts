@@ -1,8 +1,11 @@
 import type { AgentAdapter } from "@/agents/adapter";
 import type { AgentsConfig } from "@/agents/config";
 import type { AgentSessionLookupError } from "@/agents/contracts";
+import { registerModelListMethod } from "@/agents/model-list.handlers";
 import { type AgentRegistry, createAgentRegistry } from "@/agents/registry";
+import { createAgentsService } from "@/agents/service";
 import type { Logger } from "@/app/logger";
+import type { ProtocolDispatcher } from "@/core/protocol";
 import type { LifecycleComponent } from "@/core/shared";
 import { err } from "@/core/shared";
 
@@ -15,6 +18,7 @@ export type CreateAgentsFeatureOptions = Readonly<{
   config: AgentsConfig;
   logger: Logger;
   adapters: readonly AgentAdapter[];
+  registerMethod: ProtocolDispatcher["registerMethod"];
 }>;
 
 export const createAgentsFeature = (options: CreateAgentsFeatureOptions): AgentsFeature => {
@@ -44,6 +48,15 @@ export const createAgentsFeature = (options: CreateAgentsFeatureOptions): Agents
     defaultAgentId: options.config.defaultAgent,
     agents: options.config.enabled,
     createSession,
+  });
+  const service = createAgentsService({
+    logger: options.logger,
+    registry,
+  });
+
+  registerModelListMethod({
+    registerMethod: options.registerMethod,
+    service,
   });
 
   return Object.freeze({

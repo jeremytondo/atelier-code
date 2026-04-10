@@ -57,8 +57,28 @@ describe("createCodexAgentSession", () => {
         nextCursor: null,
       },
       {
-        data: [],
-        nextCursor: null,
+        data: [
+          {
+            id: "gpt-5.4-hidden",
+            model: "gpt-5.4-hidden",
+            upgrade: null,
+            upgradeInfo: null,
+            availabilityNux: null,
+            displayName: "GPT-5.4 Hidden",
+            description: "Hidden model",
+            hidden: true,
+            supportedReasoningEfforts: [
+              {
+                reasoningEffort: "high",
+                description: "More reasoning",
+              },
+            ],
+            defaultReasoningEffort: "high",
+            inputModalities: ["text"],
+            supportsPersonality: false,
+          },
+        ],
+        nextCursor: "cursor-2",
       },
     ]);
 
@@ -89,7 +109,9 @@ describe("createCodexAgentSession", () => {
       limit: 20,
       includeHidden: false,
     });
-    const secondModels = await sessionResult.data.listModels("req-models-2", {});
+    const secondModels = await sessionResult.data.listModels("req-models-2", {
+      includeHidden: true,
+    });
 
     expect(transport.connectCount).toBe(1);
     expect(transport.sent).toEqual([
@@ -120,7 +142,7 @@ describe("createCodexAgentSession", () => {
         method: "model/list",
         params: {
           limit: undefined,
-          includeHidden: undefined,
+          includeHidden: true,
         },
       },
     ]);
@@ -152,8 +174,25 @@ describe("createCodexAgentSession", () => {
     expect(secondModels).toEqual({
       ok: true,
       data: {
-        models: [],
-        nextCursor: null,
+        models: [
+          {
+            id: "gpt-5.4-hidden",
+            model: "gpt-5.4-hidden",
+            displayName: "GPT-5.4 Hidden",
+            hidden: true,
+            defaultReasoningEffort: "high",
+            supportedReasoningEfforts: [
+              {
+                reasoningEffort: "high",
+                description: "More reasoning",
+              },
+            ],
+            inputModalities: ["text"],
+            supportsPersonality: false,
+            isDefault: false,
+          },
+        ],
+        nextCursor: "cursor-2",
       },
     });
   });

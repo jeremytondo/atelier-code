@@ -50,7 +50,7 @@ export type AgentModelSummary = Readonly<{
   supportedReasoningEfforts: readonly AgentModelReasoningEffort[];
   inputModalities?: readonly string[];
   supportsPersonality?: boolean;
-  isDefault?: boolean;
+  isDefault: boolean;
 }>;
 
 export type AgentThreadExecutionStatus =

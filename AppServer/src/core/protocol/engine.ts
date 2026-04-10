@@ -201,6 +201,7 @@ export const createProtocolEngine = (options: CreateProtocolEngineOptions): Prot
     try {
       const methodResult = await registeredMethod.handler({
         connectionId,
+        requestId: request.id,
         params: request.params,
         session,
       });

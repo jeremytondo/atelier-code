@@ -2,10 +2,27 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentAdapter } from "@/agents";
+import { createAgentsFeature } from "@/agents";
+import { createCodexAgentAdapter } from "@/agents/codex-adapter";
 import { createLogger } from "@/app/logger";
-import { APP_SERVER_USER_AGENT } from "@/app/protocol";
+import {
+  APP_SERVER_USER_AGENT,
+  createAppProtocolRuntime,
+  createAppTransportComponent,
+} from "@/app/protocol";
 import { type AppServer, createConfiguredAppServer, type SignalRegistrar } from "@/app/server";
+import { createApprovalsFeaturePlaceholder } from "@/approvals";
+import { createStoreBootstrap } from "@/core/store";
+import {
+  createFakeAgentAdapter,
+  createFakeAgentSession,
+  createTestAgentModel,
+} from "@/test-support/agents";
 import { getAvailablePort } from "@/test-support/network";
+import { createThreadsFeaturePlaceholder } from "@/threads";
+import { createTurnsFeaturePlaceholder } from "@/turns";
+import { createSqliteWorkspacesStore, createWorkspacesFeature } from "@/workspaces";
 
 const runningServers: AppServer[] = [];
 const temporaryDirectories: string[] = [];
@@ -194,6 +211,363 @@ describe("App Server protocol harness", () => {
     }
   });
 
+  test("returns models after initialize", async () => {
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeProtocolAgentAdapter({
+          listModelsResult: {
+            ok: true,
+            data: {
+              models: [
+                createTestAgentModel({
+                  id: "gpt-5.4",
+                  model: "gpt-5.4",
+                  displayName: "GPT-5.4",
+                  isDefault: true,
+                }),
+              ],
+              nextCursor: "cursor-2",
+            },
+          },
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+
+      client.sendJson({
+        id: "req-model-list",
+        method: "model/list",
+        params: {
+          limit: 20,
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-model-list",
+        result: {
+          models: [
+            {
+              id: "gpt-5.4",
+              model: "gpt-5.4",
+              displayName: "GPT-5.4",
+              hidden: false,
+              defaultReasoningEffort: "medium",
+              supportedReasoningEfforts: [
+                {
+                  reasoningEffort: "medium",
+                  description: "Balanced",
+                },
+              ],
+              inputModalities: ["text"],
+              supportsPersonality: true,
+              isDefault: true,
+            },
+          ],
+          nextCursor: "cursor-2",
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("maps protocol request IDs to agent request IDs before calling the adapter", async () => {
+    const session = createFakeAgentSession({
+      listModels: async () => ({
+        ok: true,
+        data: {
+          models: [createTestAgentModel()],
+          nextCursor: null,
+        },
+      }),
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+
+      client.sendJson({
+        id: "req-model-list",
+        method: "model/list",
+        params: {},
+      });
+
+      await client.nextMessage();
+
+      expect(session.listModelsCalls).toHaveLength(1);
+      expect(session.listModelsCalls[0]?.requestId).not.toBe("req-model-list");
+      expect(session.listModelsCalls[0]?.requestId).toEqual(
+        expect.stringMatching(/^atelier-appserver:model\/list:.*:req-model-list$/),
+      );
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("rejects model/list before initialize", async () => {
+    const harness = await createProtocolHarness();
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      client.sendJson({
+        id: "req-model-list",
+        method: "model/list",
+        params: {},
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-model-list",
+        error: {
+          code: -33001,
+          message: "Session not initialized",
+          data: {
+            code: "SESSION_NOT_INITIALIZED",
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("maps malformed model/list params to invalid params", async () => {
+    const harness = await createProtocolHarness();
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+
+      client.sendJson({
+        id: "req-model-list",
+        method: "model/list",
+        params: {
+          limit: "twenty",
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-model-list",
+        error: {
+          code: -32602,
+          message: "Invalid params",
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("filters hidden models by default", async () => {
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeProtocolAgentAdapter({
+          listModelsResult: {
+            ok: true,
+            data: {
+              models: [
+                createTestAgentModel(),
+                createTestAgentModel({
+                  id: "gpt-5.4-hidden",
+                  model: "gpt-5.4-hidden",
+                  displayName: "GPT-5.4 Hidden",
+                  hidden: true,
+                  defaultReasoningEffort: "high",
+                  supportsPersonality: false,
+                }),
+              ],
+              nextCursor: null,
+            },
+          },
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+
+      client.sendJson({
+        id: "req-model-list",
+        method: "model/list",
+        params: {},
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-model-list",
+        result: {
+          models: [createTestAgentModel()],
+          nextCursor: null,
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("includes hidden models when requested", async () => {
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeProtocolAgentAdapter({
+          listModelsResult: {
+            ok: true,
+            data: {
+              models: [
+                createTestAgentModel(),
+                createTestAgentModel({
+                  id: "gpt-5.4-hidden",
+                  model: "gpt-5.4-hidden",
+                  displayName: "GPT-5.4 Hidden",
+                  hidden: true,
+                  defaultReasoningEffort: "high",
+                  supportsPersonality: false,
+                }),
+              ],
+              nextCursor: null,
+            },
+          },
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+
+      client.sendJson({
+        id: "req-model-list",
+        method: "model/list",
+        params: {
+          includeHidden: true,
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-model-list",
+        result: {
+          models: [
+            createTestAgentModel(),
+            createTestAgentModel({
+              id: "gpt-5.4-hidden",
+              model: "gpt-5.4-hidden",
+              displayName: "GPT-5.4 Hidden",
+              hidden: true,
+              defaultReasoningEffort: "high",
+              supportsPersonality: false,
+            }),
+          ],
+          nextCursor: null,
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("maps agent session startup failures to agent session unavailable", async () => {
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeProtocolAgentAdapter({
+          createSessionResult: {
+            ok: false,
+            error: {
+              type: "sessionUnavailable",
+              agentId: "codex",
+              provider: "codex",
+              code: "startupFailed",
+              message: "Codex failed to start.",
+            },
+          },
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+
+      client.sendJson({
+        id: "req-model-list",
+        method: "model/list",
+        params: {},
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-model-list",
+        error: {
+          code: -33004,
+          message: "Agent session unavailable",
+          data: {
+            code: "AGENT_SESSION_UNAVAILABLE",
+            agentId: "codex",
+            provider: "codex",
+            reason: "startupFailed",
+            message: "Codex failed to start.",
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("maps provider remote errors to provider error", async () => {
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeProtocolAgentAdapter({
+          listModelsResult: {
+            ok: false,
+            error: {
+              type: "remoteError",
+              agentId: "codex",
+              provider: "codex",
+              requestId: "req-model-list",
+              code: 418,
+              message: "Provider said no.",
+            },
+          },
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+
+      client.sendJson({
+        id: "req-model-list",
+        method: "model/list",
+        params: {},
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-model-list",
+        error: {
+          code: -33005,
+          message: "Provider error",
+          data: {
+            code: "PROVIDER_ERROR",
+            agentId: "codex",
+            provider: "codex",
+            providerCode: "418",
+            providerMessage: "Provider said no.",
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
   test("opens a workspace after initialize", async () => {
     const harness = await createProtocolHarness();
     const client = await connectProtocolClient(harness.port);
@@ -367,22 +741,70 @@ type ProtocolTestClient = Readonly<{
   close: () => Promise<void>;
 }>;
 
-const createProtocolHarness = async (): Promise<Readonly<{ port: number }>> => {
+const createProtocolHarness = async (
+  options: Readonly<{
+    agentAdapters?: readonly AgentAdapter[];
+  }> = {},
+): Promise<Readonly<{ port: number }>> => {
   const port = await getAvailablePort();
   const configDirectory = await createTemporaryDirectory("atelier-appserver-protocol-");
+  const config = {
+    configPath: join(configDirectory, "appserver.config.json"),
+    port,
+    databasePath: "./var/test.sqlite",
+    logLevel: "info" as const,
+    agents: createTestAgentsConfig(),
+  };
+  const logger = createLogger({
+    level: "error",
+    write: () => {},
+  });
+  const appProtocolRuntime = createAppProtocolRuntime({
+    logger,
+  });
+  const storeBootstrap = createStoreBootstrap({
+    config,
+    logger: logger.withContext({ component: "core.store" }),
+  });
+  const workspacesFeature = createWorkspacesFeature({
+    logger: logger.withContext({ component: "feature.workspaces" }),
+    registerMethod: appProtocolRuntime.registerMethod,
+    store: createSqliteWorkspacesStore(storeBootstrap.getDatabase),
+  });
+  const agentsFeature = createAgentsFeature({
+    config: config.agents,
+    logger: logger.withContext({ component: "feature.agents" }),
+    adapters: options.agentAdapters ?? [
+      createCodexAgentAdapter({
+        logger: logger.withContext({ component: "agents.codex" }),
+      }),
+    ],
+    registerMethod: appProtocolRuntime.registerMethod,
+  });
+  const transportComponent = createAppTransportComponent({
+    config,
+    logger,
+    protocol: appProtocolRuntime,
+    onConnectionClosed: [
+      ({ connectionId }) => {
+        workspacesFeature.handleConnectionClosed(connectionId);
+      },
+    ],
+  });
   const server = createConfiguredAppServer({
-    config: {
-      configPath: join(configDirectory, "appserver.config.json"),
-      port,
-      databasePath: "./var/test.sqlite",
-      logLevel: "info",
-      agents: createTestAgentsConfig(),
-    },
-    logger: createLogger({
-      level: "error",
-      write: () => {},
-    }),
+    config,
+    logger,
     signalRegistrar: createSignalRegistrar(),
+    components: [
+      appProtocolRuntime.protocolComponent,
+      storeBootstrap.lifecycle,
+      agentsFeature.lifecycle,
+      workspacesFeature.lifecycle,
+      createThreadsFeaturePlaceholder(),
+      createTurnsFeaturePlaceholder(),
+      createApprovalsFeaturePlaceholder(),
+      transportComponent,
+    ],
   });
 
   await server.start();
@@ -408,6 +830,26 @@ const createWorkspaceDirectory = async (): Promise<string> => {
   await mkdir(workspacePath, { recursive: true });
 
   return workspacePath;
+};
+
+const initializeClient = async (client: ProtocolTestClient): Promise<void> => {
+  client.sendJson({
+    id: "req-initialize",
+    method: "initialize",
+    params: {
+      clientInfo: {
+        name: "AtelierCode Test",
+        version: "0.1.0",
+      },
+    },
+  });
+
+  await expect(client.nextMessage()).resolves.toEqual({
+    id: "req-initialize",
+    result: {
+      userAgent: APP_SERVER_USER_AGENT,
+    },
+  });
 };
 
 const connectProtocolClient = async (port: number): Promise<ProtocolTestClient> => {
@@ -518,6 +960,63 @@ const waitForSocketOpen = async (socket: WebSocket): Promise<void> => {
     socket.addEventListener("error", onError, { once: true });
   });
 };
+
+const createFakeProtocolAgentAdapter = (options: {
+  createSessionResult?:
+    | Readonly<{
+        ok: true;
+        data: ReturnType<typeof createFakeAgentSession>;
+      }>
+    | Readonly<{
+        ok: false;
+        error: {
+          type: "sessionUnavailable";
+          agentId: string;
+          provider: "codex";
+          code: "executableMissing" | "startupFailed" | "disconnected";
+          message: string;
+        };
+      }>;
+  listModelsResult?:
+    | Readonly<{
+        ok: true;
+        data: {
+          models: readonly ReturnType<typeof createTestAgentModel>[];
+          nextCursor: string | null;
+        };
+      }>
+    | Readonly<{
+        ok: false;
+        error:
+          | Readonly<{
+              type: "remoteError";
+              agentId: string;
+              provider: "codex";
+              requestId: string | number;
+              code: number;
+              message: string;
+            }>
+          | Readonly<{
+              type: "invalidProviderMessage";
+              agentId: string;
+              provider: "codex";
+              message: string;
+            }>;
+      }>;
+}): AgentAdapter =>
+  createFakeAgentAdapter({
+    createSessionResult: options.createSessionResult,
+    session: createFakeAgentSession({
+      listModels: async () =>
+        options.listModelsResult ?? {
+          ok: true,
+          data: {
+            models: [createTestAgentModel()],
+            nextCursor: null,
+          },
+        },
+    }),
+  });
 
 const toMessageText = (data: unknown): string => {
   if (typeof data === "string") {
