@@ -1,4 +1,3 @@
-import { BaseEnvironmentResolver } from "@/agents/codex-adapter/base-environment";
 import { discoverCodexExecutable } from "@/agents/codex-adapter/executable-discovery";
 import {
   mapCodexModelSummary,
@@ -67,6 +66,7 @@ import type {
   AgentTurnStartParams,
   AgentTurnSteerParams,
 } from "@/agents/contracts";
+import { BaseEnvironmentResolver } from "@/agents/environment";
 import type { Logger } from "@/app/logger";
 import { err, ok, type Result } from "@/core/shared";
 

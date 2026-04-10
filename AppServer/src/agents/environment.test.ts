@@ -1,8 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  BaseEnvironmentResolver,
-  parseShellProbeOutput,
-} from "@/agents/codex-adapter/base-environment";
+import { BaseEnvironmentResolver, parseShellProbeOutput } from "@/agents/environment";
 
 const ENCODER = new TextEncoder();
 

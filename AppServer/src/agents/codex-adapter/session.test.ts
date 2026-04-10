@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { BaseEnvironmentResolver } from "@/agents/codex-adapter/base-environment";
 import { createCodexAgentSession } from "@/agents/codex-adapter/session";
 import type {
   CodexTransport,
@@ -11,6 +10,7 @@ import type {
   CodexTransportRequest,
   CodexTransportResponse,
 } from "@/agents/codex-adapter/transport";
+import { BaseEnvironmentResolver } from "@/agents/environment";
 import { createSilentLogger } from "@/test-support/logger";
 
 const temporaryDirectories: string[] = [];
