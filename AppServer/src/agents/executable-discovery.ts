@@ -9,8 +9,7 @@ import type {
 
 export type ExecutableDiscoveryOptions = Readonly<{
   executableName: string;
-  environmentVariable?: string;
-  knownPaths?: readonly string[];
+  overrideEnvironmentVariable?: string;
 }>;
 
 export type ExecutableDiscoveryContext = Readonly<{
@@ -24,7 +23,9 @@ export const discoverExecutable = async (
 ): Promise<AgentExecutableDiscovery> => {
   const checkedPaths: string[] = [];
   const environmentPath = normalizeConfiguredPath(
-    options.environmentVariable ? context.environment[options.environmentVariable] : undefined,
+    options.overrideEnvironmentVariable
+      ? context.environment[options.overrideEnvironmentVariable]
+      : undefined,
   );
 
   if (environmentPath !== null) {
@@ -55,19 +56,6 @@ export const discoverExecutable = async (
     );
   }
 
-  for (const candidate of options.knownPaths ?? []) {
-    checkedPaths.push(candidate);
-    if (await isExecutable(candidate)) {
-      return buildResult(
-        options.executableName,
-        "known-path",
-        checkedPaths,
-        candidate,
-        context.baseEnvironmentSource,
-      );
-    }
-  }
-
   return {
     executableName: options.executableName,
     status: "missing",
@@ -76,33 +64,6 @@ export const discoverExecutable = async (
     baseEnvironmentSource: context.baseEnvironmentSource,
     checkedPaths,
   };
-};
-
-export const discoverCodexExecutable = async (
-  context: ExecutableDiscoveryContext,
-): Promise<AgentExecutableDiscovery> => {
-  const skipKnownPaths = context.environment.ATELIERCODE_SKIP_KNOWN_CODEX_PATHS === "1";
-
-  return discoverExecutable(
-    {
-      executableName: "codex",
-      environmentVariable: "ATELIERCODE_CODEX_PATH",
-      knownPaths: skipKnownPaths ? [] : codexKnownPaths(context.environment),
-    },
-    context,
-  );
-};
-
-const codexKnownPaths = (environment: Readonly<Record<string, string>>): readonly string[] => {
-  const homeDirectory = environment.HOME;
-  const candidates = [
-    "/opt/homebrew/bin/codex",
-    "/usr/local/bin/codex",
-    homeDirectory ? path.join(homeDirectory, ".local", "bin", "codex") : null,
-    homeDirectory ? path.join(homeDirectory, ".npm-global", "bin", "codex") : null,
-  ];
-
-  return candidates.flatMap((candidate) => (candidate ? [candidate] : []));
 };
 
 const findExecutableOnPath = async (

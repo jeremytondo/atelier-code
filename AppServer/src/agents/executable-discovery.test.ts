@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { discoverExecutable } from "@/agents/codex-adapter/executable-discovery";
+import { discoverExecutable } from "@/agents/executable-discovery";
 
 describe("discoverExecutable", () => {
   test("uses the resolved environment path instead of the app-server process path", async () => {
@@ -49,7 +49,7 @@ describe("discoverExecutable", () => {
       const result = await discoverExecutable(
         {
           executableName: "codex",
-          environmentVariable: "ATELIERCODE_CODEX_PATH",
+          overrideEnvironmentVariable: "ATELIERCODE_CODEX_PATH",
         },
         {
           environment: {

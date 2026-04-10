@@ -1,4 +1,3 @@
-import { discoverCodexExecutable } from "@/agents/codex-adapter/executable-discovery";
 import {
   mapCodexModelSummary,
   mapCodexThreadSummary,
@@ -48,6 +47,7 @@ import type {
   AgentApprovalResolveParams,
   AgentApprovalResolveResult,
   AgentDisconnectReason,
+  AgentExecutableDiscovery,
   AgentListModelsParams,
   AgentListModelsResult,
   AgentNotification,
@@ -67,6 +67,7 @@ import type {
   AgentTurnSteerParams,
 } from "@/agents/contracts";
 import { BaseEnvironmentResolver } from "@/agents/environment";
+import { discoverExecutable } from "@/agents/executable-discovery";
 import type { Logger } from "@/app/logger";
 import { err, ok, type Result } from "@/core/shared";
 
@@ -91,10 +92,16 @@ export const createCodexAgentSession = async (
       inheritedEnvironment: applyCodexEnvironmentOverrides(process.env, options.config),
     });
   const resolvedEnvironment = await environmentResolver.resolve();
-  const executable = await discoverCodexExecutable({
-    environment: resolvedEnvironment.environment,
-    baseEnvironmentSource: resolvedEnvironment.diagnostics.source,
-  });
+  const executable = await discoverExecutable(
+    {
+      executableName: "codex",
+      overrideEnvironmentVariable: "ATELIERCODE_CODEX_PATH",
+    },
+    {
+      environment: resolvedEnvironment.environment,
+      baseEnvironmentSource: resolvedEnvironment.diagnostics.source,
+    },
+  );
 
   if (executable.status !== "found") {
     return err({
@@ -141,7 +148,7 @@ type ConnectedSessionOptions = Readonly<{
   agentId: string;
   logger: Logger;
   transport: CodexTransport;
-  executable: Awaited<ReturnType<typeof discoverCodexExecutable>>;
+  executable: AgentExecutableDiscovery;
   environment: Awaited<ReturnType<BaseEnvironmentResolver["resolve"]>>;
 }>;
 
@@ -664,7 +671,7 @@ const applyCodexEnvironmentOverrides = (
 
 const normalizeSessionStartupError = (
   agentId: string,
-  executable: Awaited<ReturnType<typeof discoverCodexExecutable>>,
+  executable: AgentExecutableDiscovery,
   environment: Awaited<ReturnType<BaseEnvironmentResolver["resolve"]>>,
   error: unknown,
 ): AgentSessionLookupError => {
@@ -694,7 +701,7 @@ const normalizeSessionStartupError = (
 
 const normalizeOperationError = (
   agentId: string,
-  executable: Awaited<ReturnType<typeof discoverCodexExecutable>>,
+  executable: AgentExecutableDiscovery,
   environment: Awaited<ReturnType<BaseEnvironmentResolver["resolve"]>>,
   requestId: AgentRequestId,
   error: unknown,
