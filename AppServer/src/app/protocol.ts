@@ -23,6 +23,29 @@ export type AppProtocolRuntime = Readonly<{
   handleIncomingText: ProtocolEngine["handleIncomingText"];
 }>;
 
+export const runConnectionClosedHandlers = async (
+  handlers: readonly ConnectionClosedHandler[],
+  connectionId: string,
+): Promise<void> => {
+  const closeErrors: unknown[] = [];
+
+  for (const handleConnectionClosed of handlers) {
+    try {
+      await handleConnectionClosed({ connectionId });
+    } catch (error) {
+      closeErrors.push(error);
+    }
+  }
+
+  if (closeErrors.length === 1) {
+    throw closeErrors[0];
+  }
+
+  if (closeErrors.length > 1) {
+    throw new AggregateError(closeErrors, "Connection close handlers failed");
+  }
+};
+
 export const createAppProtocolRuntime = (options: { logger: Logger }): AppProtocolRuntime => {
   const protocolLogger = options.logger.withContext({ component: "core.protocol" });
   const protocol = createProtocolEngine({
@@ -78,9 +101,7 @@ export const createAppTransportComponent = (options: {
     },
     onConnectionClose: async ({ connectionId }) => {
       try {
-        for (const handleConnectionClosed of options.onConnectionClosed ?? []) {
-          await handleConnectionClosed({ connectionId });
-        }
+        await runConnectionClosedHandlers(options.onConnectionClosed ?? [], connectionId);
       } finally {
         options.protocol.closeConnection(connectionId);
       }
