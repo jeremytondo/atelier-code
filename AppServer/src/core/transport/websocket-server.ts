@@ -183,22 +183,20 @@ const createRawTextConnection = (
   Object.freeze({
     id: socket.data.connectionId,
     sendText: async (text: string) => {
-      const sendStatus = socket.sendText(text);
-
-      if (sendStatus > 0) {
-        return;
-      }
-
-      if (sendStatus === 0) {
-        throw new Error("WebSocket message was dropped");
-      }
-
-      throw new Error("WebSocket send is backpressured");
+      assertWebSocketSendSucceeded(socket.sendText(text));
     },
     close: (code?: number, reason?: string) => {
       socket.close(code, reason);
     },
   });
+
+export const assertWebSocketSendSucceeded = (sendStatus: number): void => {
+  if (sendStatus !== 0) {
+    return;
+  }
+
+  throw new Error("WebSocket message was dropped");
+};
 
 const getErrorMessage = (error: unknown): string => {
   if (error instanceof Error) {
@@ -208,15 +206,32 @@ const getErrorMessage = (error: unknown): string => {
   return String(error);
 };
 
-const waitForShutdown = async (
+type TimeoutHandle = ReturnType<typeof setTimeout>;
+
+type ShutdownTimerHooks = Readonly<{
+  clearTimer?: (timer: TimeoutHandle) => void;
+  setTimer?: (callback: () => void, timeoutMs: number) => TimeoutHandle;
+}>;
+
+export const waitForShutdown = async (
   shutdownPromise: Promise<void>,
   timeoutMs: number,
+  hooks: ShutdownTimerHooks = {},
 ): Promise<boolean> => {
+  const setTimer = hooks.setTimer ?? ((callback, delay) => setTimeout(callback, delay));
+  const clearTimer = hooks.clearTimer ?? ((timer) => clearTimeout(timer));
   const timeoutResult = Symbol("timeout");
+  let timeoutHandle: TimeoutHandle | null = null;
   const result = await Promise.race<true | typeof timeoutResult>([
-    shutdownPromise.then(() => true),
+    shutdownPromise.then(() => {
+      if (timeoutHandle !== null) {
+        clearTimer(timeoutHandle);
+      }
+
+      return true;
+    }),
     new Promise<typeof timeoutResult>((resolve) => {
-      setTimeout(() => {
+      timeoutHandle = setTimer(() => {
         resolve(timeoutResult);
       }, timeoutMs);
     }),
