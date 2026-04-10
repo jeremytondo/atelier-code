@@ -1,8 +1,10 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import type { AgentEnvironmentDiagnostics, AgentEnvironmentSource } from "@/agents/contracts";
 
 const ENV_ENTRY_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const FALLBACK_SHELL_PATH = "/bin/zsh";
+const FALLBACK_SHELL_PATH_CANDIDATES = ["/bin/zsh", "/bin/bash", "/bin/sh"] as const;
+const DEFAULT_FALLBACK_SHELL_PATH = "/bin/sh";
 const SHELL_PROBE_STDERR_TAIL_LIMIT = 2_048;
 const USER_MANAGED_PATH_MARKERS = [
   "/opt/homebrew",
@@ -129,7 +131,9 @@ export const shouldProbeBaseEnvironment = (
 };
 
 export const resolvePreferredShellPath = (environment: Readonly<Record<string, string>>): string =>
-  normalizeEnvironmentValue(environment.SHELL) ?? FALLBACK_SHELL_PATH;
+  normalizeEnvironmentValue(environment.SHELL) ??
+  FALLBACK_SHELL_PATH_CANDIDATES.find((candidate) => existsSync(candidate)) ??
+  DEFAULT_FALLBACK_SHELL_PATH;
 
 export const appendFallbackPathDirectories = (
   environment: Readonly<Record<string, string>>,

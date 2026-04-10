@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { BaseEnvironmentResolver, parseShellProbeOutput } from "@/agents/environment";
+import {
+  BaseEnvironmentResolver,
+  parseShellProbeOutput,
+  resolvePreferredShellPath,
+} from "@/agents/environment";
 
 const ENCODER = new TextEncoder();
 
@@ -92,5 +96,11 @@ describe("parseShellProbeOutput", () => {
       HOME: "/Users/tester",
       SHELL: "/bin/zsh",
     });
+  });
+});
+
+describe("resolvePreferredShellPath", () => {
+  test("falls back to an available shell when SHELL is missing", () => {
+    expect(resolvePreferredShellPath({})).toMatch(/^\/bin\/(zsh|bash|sh)$/);
   });
 });

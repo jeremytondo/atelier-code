@@ -6,7 +6,7 @@
       "name": "ateliercode-app-server",
       "dependencies": {
         "@sinclair/typebox": "^0.34.41",
-        "drizzle-orm": "^0.45.2",
+        "drizzle-orm": "0.45.2",
       },
       "devDependencies": {
         "@biomejs/biome": "^2.0.0",

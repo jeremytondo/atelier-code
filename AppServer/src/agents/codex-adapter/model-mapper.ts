@@ -1,22 +1,16 @@
 import type {
   CodexModel,
-  CodexReasoningEffort,
   CodexThread,
   CodexThreadStatus,
   CodexTurn,
 } from "@/agents/codex-adapter/protocol";
 import type {
   AgentModelSummary,
-  AgentReasoningEffort,
   AgentThreadExecutionStatus,
   AgentThreadSummary,
   AgentTurnStatus,
   AgentTurnSummary,
 } from "@/agents/contracts";
-
-export const mapCodexReasoningEffort = (
-  value: CodexReasoningEffort | null | undefined,
-): AgentReasoningEffort | undefined => value ?? undefined;
 
 export const mapCodexModelSummary = (model: CodexModel): AgentModelSummary =>
   Object.freeze({
@@ -24,7 +18,7 @@ export const mapCodexModelSummary = (model: CodexModel): AgentModelSummary =>
     model: model.model,
     displayName: model.displayName,
     hidden: model.hidden,
-    defaultReasoningEffort: mapCodexReasoningEffort(model.defaultReasoningEffort),
+    defaultReasoningEffort: model.defaultReasoningEffort ?? undefined,
     supportedReasoningEfforts: model.supportedReasoningEfforts.map((effort) =>
       Object.freeze({
         reasoningEffort: effort.reasoningEffort,
@@ -52,6 +46,8 @@ export const mapCodexThreadStatus = (status: CodexThreadStatus): AgentThreadExec
         type: "active",
         activeFlags: [...status.activeFlags],
       });
+    default:
+      return assertNever(status);
   }
 };
 
@@ -81,6 +77,8 @@ export const mapCodexTurnStatus = (turn: CodexTurn): AgentTurnStatus => {
       });
     case "inProgress":
       return Object.freeze({ type: "inProgress" });
+    default:
+      return assertNever(turn.status);
   }
 };
 
@@ -89,3 +87,7 @@ export const mapCodexTurnSummary = (turn: CodexTurn): AgentTurnSummary =>
     id: turn.id,
     status: mapCodexTurnStatus(turn),
   });
+
+const assertNever = (value: never): never => {
+  throw new Error(`Unhandled Codex mapping variant: ${JSON.stringify(value)}`);
+};

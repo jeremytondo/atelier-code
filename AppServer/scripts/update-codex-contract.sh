@@ -2,10 +2,22 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUTPUT_ROOT="$ROOT_DIR/src/agents/codex-adapter/upstream/codex-cli-0.114.0"
+PINNED_CODEX_VERSION="0.114.0"
+OUTPUT_ROOT="$ROOT_DIR/src/agents/codex-adapter/upstream/codex-cli-$PINNED_CODEX_VERSION"
+TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/atelier-codex-contract.XXXXXX")"
 
-rm -rf "$OUTPUT_ROOT/schema" "$OUTPUT_ROOT/ts"
+cleanup() {
+  rm -rf "$TEMP_ROOT"
+}
+
+trap cleanup EXIT
+
+mkdir -p "$TEMP_ROOT"
+
+codex app-server generate-json-schema --experimental --out "$TEMP_ROOT/schema"
+codex app-server generate-ts --experimental --out "$TEMP_ROOT/ts"
+
 mkdir -p "$OUTPUT_ROOT"
-
-codex app-server generate-json-schema --experimental --out "$OUTPUT_ROOT/schema"
-codex app-server generate-ts --experimental --out "$OUTPUT_ROOT/ts"
+rm -rf "$OUTPUT_ROOT/schema" "$OUTPUT_ROOT/ts"
+mv "$TEMP_ROOT/schema" "$OUTPUT_ROOT/schema"
+mv "$TEMP_ROOT/ts" "$OUTPUT_ROOT/ts"
