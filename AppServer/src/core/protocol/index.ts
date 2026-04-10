@@ -1,4 +1,4 @@
-import { createLifecyclePlaceholder, type LifecycleComponent } from "@/core/shared";
-
-export const createProtocolBootstrapPlaceholder = (): LifecycleComponent =>
-  createLifecyclePlaceholder("core.protocol");
+export * from "@/core/protocol/dispatcher";
+export * from "@/core/protocol/engine";
+export * from "@/core/protocol/errors";
+export * from "@/core/protocol/schemas";
