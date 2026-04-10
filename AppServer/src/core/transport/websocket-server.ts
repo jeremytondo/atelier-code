@@ -1,6 +1,6 @@
 import type { Server, ServerWebSocket } from "bun";
 import type { Logger } from "@/app/logger";
-import type { LifecycleComponent } from "@/core/shared";
+import { getErrorMessage, type LifecycleComponent } from "@/core/shared";
 
 type WebSocketConnectionData = Readonly<{
   connectionId: string;
@@ -74,6 +74,7 @@ export const createWebSocketServer = (
         return new Response("WebSocket upgrade failed", { status: 400 });
       },
       websocket: {
+        // Bun requires a default shape here even though upgrade() replaces it per socket.
         data: {} as WebSocketConnectionData,
         open: async (socket) => {
           const connection = createRawTextConnection(socket);
@@ -196,14 +197,6 @@ export const assertWebSocketSendSucceeded = (sendStatus: number): void => {
   }
 
   throw new Error("WebSocket message was dropped");
-};
-
-const getErrorMessage = (error: unknown): string => {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return String(error);
 };
 
 type TimeoutHandle = ReturnType<typeof setTimeout>;

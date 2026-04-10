@@ -27,7 +27,7 @@ import {
   type RequestId,
   RequestIdSchema,
 } from "@/core/protocol/schemas";
-import { type LifecycleComponent, ok, type Result } from "@/core/shared";
+import { getErrorMessage, type LifecycleComponent, ok, type Result } from "@/core/shared";
 
 export type ProtocolSendText = (text: string) => Promise<void>;
 
@@ -50,9 +50,6 @@ export type ProtocolEngine = Readonly<{
   openConnection: (options: Readonly<{ connectionId: string; sendText: ProtocolSendText }>) => void;
   closeConnection: (connectionId: string) => void;
   handleIncomingText: (options: Readonly<{ connectionId: string; text: string }>) => Promise<void>;
-  serializeNotification: (
-    notification: ProtocolNotification,
-  ) => Result<string, ProtocolSerializationError>;
   sendNotification: (
     options: Readonly<{ connectionId: string; notification: ProtocolNotification }>,
   ) => Promise<void>;
@@ -94,9 +91,6 @@ export const createProtocolEngine = (options: CreateProtocolEngineOptions): Prot
 
     logger.info("Protocol connection removed", { connectionId });
   };
-
-  const serializeNotification: ProtocolEngine["serializeNotification"] = (notification) =>
-    serializeWithSchema(ProtocolNotificationSchema, notification);
 
   const sendSerializedText = async (connectionId: string, text: string): Promise<void> => {
     const connection = connections.get(connectionId);
@@ -156,7 +150,7 @@ export const createProtocolEngine = (options: CreateProtocolEngineOptions): Prot
     connectionId,
     notification,
   }) => {
-    const serialized = serializeNotification(notification);
+    const serialized = serializeWithSchema(ProtocolNotificationSchema, notification);
 
     if (!serialized.ok) {
       logger.error("Protocol notification serialization failed", {
@@ -278,11 +272,14 @@ export const createProtocolEngine = (options: CreateProtocolEngineOptions): Prot
     }
 
     if (Value.Check(ProtocolRequestSchema, parsedPayload.data)) {
-      await handleRequest(connectionId, parsedPayload.data as ProtocolRequest, connection);
+      // TypeBox validates at runtime, but TypeScript does not narrow from Value.Check().
+      const request = parsedPayload.data as ProtocolRequest;
+      await handleRequest(connectionId, request, connection);
       return;
     }
 
     if (Value.Check(ProtocolNotificationSchema, parsedPayload.data)) {
+      // TypeBox validates at runtime, but TypeScript does not narrow from Value.Check().
       const notification = parsedPayload.data as ProtocolNotification;
 
       logger.debug("Ignoring inbound client notification", {
@@ -308,7 +305,6 @@ export const createProtocolEngine = (options: CreateProtocolEngineOptions): Prot
     openConnection,
     closeConnection,
     handleIncomingText,
-    serializeNotification,
     sendNotification,
   });
 };
@@ -377,11 +373,3 @@ const extractResponseId = (candidate: unknown): RequestId | null => {
 
 const isRecord = (candidate: unknown): candidate is Record<string, unknown> =>
   typeof candidate === "object" && candidate !== null && !Array.isArray(candidate);
-
-const getErrorMessage = (error: unknown): string => {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return String(error);
-};

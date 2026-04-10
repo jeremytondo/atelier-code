@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { APP_SERVER_CONFIG_PATH_ENV } from "@/app/config";
@@ -12,6 +11,8 @@ import {
   type SignalHandler,
   type SignalRegistrar,
 } from "@/app/server";
+import { createSilentLogger } from "@/test-support/logger";
+import { getAvailablePort } from "@/test-support/network";
 
 const temporaryDirectories: string[] = [];
 
@@ -316,12 +317,6 @@ const createSignalRegistrar = (): FakeSignalRegistrar => {
   };
 };
 
-const createSilentLogger = () =>
-  createLogger({
-    level: "info",
-    write: () => {},
-  });
-
 const createTestConfig = () =>
   Object.freeze({
     configPath: "/tmp/appserver.config.json",
@@ -359,32 +354,4 @@ const createConfigDirectory = async (port = 7331): Promise<string> => {
   );
 
   return directory;
-};
-
-const getAvailablePort = async (): Promise<number> => {
-  const server = createServer();
-
-  await new Promise<void>((resolve, reject) => {
-    server.listen(0, "127.0.0.1", () => resolve());
-    server.once("error", reject);
-  });
-
-  const address = server.address();
-
-  if (address === null || typeof address === "string") {
-    throw new Error("Expected a TCP address");
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => {
-      if (error !== undefined) {
-        reject(error);
-        return;
-      }
-
-      resolve();
-    });
-  });
-
-  return address.port;
 };

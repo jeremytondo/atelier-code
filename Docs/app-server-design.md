@@ -320,7 +320,7 @@ Use a single TypeScript path alias configured in `tsconfig.json` to keep imports
 }
 ```
 
-This covers all directories without requiring a new alias each time a feature is added. Relative imports are fine within a single feature directory; use the `@/` alias for cross-feature and cross-layer imports.
+This covers all directories without requiring a new alias each time a feature is added, and it works without a separate `baseUrl` setting. Relative imports are fine within a single feature directory; use the `@/` alias for cross-feature and cross-layer imports.
 
 
 ### Coding Standards

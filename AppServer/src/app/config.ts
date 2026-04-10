@@ -2,7 +2,6 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { type Static, Type } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
-import { LOG_LEVELS, type LogLevel } from "@/app/logger";
 import {
   ConfigParseStartupError,
   ConfigReadStartupError,
@@ -161,17 +160,8 @@ const parsePortOverride = (rawPort: string): number => {
 };
 
 const parseLogLevelOverride = (rawLogLevel: string): string => {
-  const normalizedLogLevel = rawLogLevel.trim();
-
-  if (isLogLevel(normalizedLogLevel)) {
-    return normalizedLogLevel;
-  }
-
-  return normalizedLogLevel;
+  return rawLogLevel.trim();
 };
-
-const isLogLevel = (value: string): value is LogLevel =>
-  LOG_LEVELS.some((logLevel) => logLevel === value);
 
 const resolveEnvironment = (env: AppServerEnvironment | undefined): AppServerEnvironment =>
   Object.freeze({

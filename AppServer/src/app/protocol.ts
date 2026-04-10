@@ -6,7 +6,7 @@ import {
   InitializeResultSchema,
 } from "@/core/protocol";
 import { type LifecycleComponent, ok } from "@/core/shared";
-import { createWebSocketServer, type RawTextConnection } from "@/core/transport";
+import { createWebSocketServer, type RawConnectionOpenedEvent } from "@/core/transport";
 
 export const APP_SERVER_USER_AGENT = "AtelierCode App Server/0.1.0";
 
@@ -51,7 +51,7 @@ export const createAppProtocolComponents = (options: {
   const transportComponent = createWebSocketServer({
     logger: transportLogger,
     port: options.config.port,
-    onConnectionOpen: ({ connection }: Readonly<{ connection: RawTextConnection }>) => {
+    onConnectionOpen: ({ connection }: RawConnectionOpenedEvent) => {
       protocol.openConnection({
         connectionId: connection.id,
         sendText: connection.sendText,
