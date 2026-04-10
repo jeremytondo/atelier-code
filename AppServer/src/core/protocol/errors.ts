@@ -7,10 +7,15 @@ export const JSON_RPC_METHOD_NOT_FOUND_ERROR = -32601;
 export const JSON_RPC_INVALID_PARAMS_ERROR = -32602;
 export const JSON_RPC_INTERNAL_ERROR = -32603;
 
+// Atelier-owned protocol errors reserve the `-33000` to `-33099` range.
+// Keep the registry centralized in this module to avoid collisions as more
+// feature methods add domain-specific protocol failures.
 export const ATELIER_SESSION_ALREADY_INITIALIZED_ERROR = -33000;
 export const ATELIER_SESSION_NOT_INITIALIZED_ERROR = -33001;
 export const ATELIER_WORKSPACE_PATH_NOT_FOUND_ERROR = -33002;
 export const ATELIER_WORKSPACE_PATH_NOT_DIRECTORY_ERROR = -33003;
+export const ATELIER_AGENT_SESSION_UNAVAILABLE_ERROR = -33004;
+export const ATELIER_PROVIDER_ERROR = -33005;
 
 export type ProtocolMethodError = Readonly<{
   code: number;

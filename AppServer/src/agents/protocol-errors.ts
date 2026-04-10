@@ -1,8 +1,10 @@
 import type { AgentRemoteError, AgentSessionUnavailableError } from "@/agents/contracts";
-import { createProtocolMethodError, type ProtocolMethodError } from "@/core/protocol/errors";
-
-export const ATELIER_AGENT_SESSION_UNAVAILABLE_ERROR = -33004;
-export const ATELIER_PROVIDER_ERROR = -33005;
+import {
+  ATELIER_AGENT_SESSION_UNAVAILABLE_ERROR,
+  ATELIER_PROVIDER_ERROR,
+  createProtocolMethodError,
+  type ProtocolMethodError,
+} from "@/core/protocol/errors";
 
 export const createAgentSessionUnavailableError = (
   error: AgentSessionUnavailableError,

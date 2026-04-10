@@ -1,9 +1,10 @@
 import { createAgentSessionUnavailableError, createProviderError } from "@/agents/protocol-errors";
+import { createAgentRequestId } from "@/agents/request-id";
 import { ModelListParamsSchema, ModelListResultSchema } from "@/agents/schemas";
 import type { AgentsService } from "@/agents/service";
 import type { ProtocolDispatcher } from "@/core/protocol";
 import { createSessionNotInitializedResult } from "@/core/protocol/errors";
-import { ok } from "@/core/shared";
+import { assertNever, ok } from "@/core/shared";
 
 export type RegisterModelListMethodOptions = Readonly<{
   registerMethod: ProtocolDispatcher["registerMethod"];
@@ -15,12 +16,17 @@ export const registerModelListMethod = (options: RegisterModelListMethodOptions)
     method: "model/list",
     paramsSchema: ModelListParamsSchema,
     resultSchema: ModelListResultSchema,
-    handler: async ({ params, requestId, session }) => {
+    handler: async ({ connectionId, params, requestId, session }) => {
       if (!session.isInitialized()) {
         return createSessionNotInitializedResult();
       }
 
-      const modelsResult = await options.service.listModels(requestId, params);
+      const agentRequestId = createAgentRequestId({
+        connectionId,
+        method: "model/list",
+        requestId,
+      });
+      const modelsResult = await options.service.listModels(agentRequestId, params);
 
       if (!modelsResult.ok) {
         switch (modelsResult.error.type) {
@@ -34,6 +40,8 @@ export const registerModelListMethod = (options: RegisterModelListMethodOptions)
               ok: false,
               error: createProviderError(modelsResult.error),
             };
+          default:
+            return assertNever(modelsResult.error, "Unhandled model/list protocol error");
         }
       }
 

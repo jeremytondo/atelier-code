@@ -8,7 +8,7 @@ import type {
 import type { AgentRegistry } from "@/agents/registry";
 import type { ModelListParams, ModelListResult, ModelSummary } from "@/agents/schemas";
 import type { Logger } from "@/app/logger";
-import { err, ok, type Result } from "@/core/shared";
+import { assertNever, err, ok, type Result } from "@/core/shared";
 
 export type AgentsServiceError = AgentSessionUnavailableError | AgentRemoteError;
 
@@ -45,12 +45,15 @@ export const createAgentsService = (options: CreateAgentsServiceOptions): Agents
           case "remoteError":
             return err(modelsResult.error);
           case "invalidProviderMessage":
-            throwInvalidProviderMessage(options.logger, modelsResult.error);
+            return throwInvalidProviderMessage(options.logger, modelsResult.error);
+          default:
+            return assertNever(modelsResult.error, "Unhandled agent model/list error");
         }
-
-        throw new Error("Unhandled agent model/list error.");
       }
 
+      // The service enforces the public App Server contract even if an adapter
+      // forgets to hide models by default. Adapters can still honor
+      // `includeHidden` to reduce upstream payload size.
       const models =
         params.includeHidden === true
           ? modelsResult.data.models.map(mapModelSummary)

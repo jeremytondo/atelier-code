@@ -7,5 +7,6 @@ export * from "@/agents/feature";
 export * from "@/agents/model-list.handlers";
 export * from "@/agents/protocol-errors";
 export * from "@/agents/registry";
+export * from "@/agents/request-id";
 export * from "@/agents/schemas";
 export * from "@/agents/service";

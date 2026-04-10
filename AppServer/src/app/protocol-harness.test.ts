@@ -14,6 +14,11 @@ import {
 import { type AppServer, createConfiguredAppServer, type SignalRegistrar } from "@/app/server";
 import { createApprovalsFeaturePlaceholder } from "@/approvals";
 import { createStoreBootstrap } from "@/core/store";
+import {
+  createFakeAgentAdapter,
+  createFakeAgentSession,
+  createTestAgentModel,
+} from "@/test-support/agents";
 import { getAvailablePort } from "@/test-support/network";
 import { createThreadsFeaturePlaceholder } from "@/threads";
 import { createTurnsFeaturePlaceholder } from "@/turns";
@@ -214,7 +219,7 @@ describe("App Server protocol harness", () => {
             ok: true,
             data: {
               models: [
-                createProtocolModel({
+                createTestAgentModel({
                   id: "gpt-5.4",
                   model: "gpt-5.4",
                   displayName: "GPT-5.4",
@@ -264,6 +269,46 @@ describe("App Server protocol harness", () => {
           nextCursor: "cursor-2",
         },
       });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("maps protocol request IDs to agent request IDs before calling the adapter", async () => {
+    const session = createFakeAgentSession({
+      listModels: async () => ({
+        ok: true,
+        data: {
+          models: [createTestAgentModel()],
+          nextCursor: null,
+        },
+      }),
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+
+      client.sendJson({
+        id: "req-model-list",
+        method: "model/list",
+        params: {},
+      });
+
+      await client.nextMessage();
+
+      expect(session.listModelsCalls).toHaveLength(1);
+      expect(session.listModelsCalls[0]?.requestId).not.toBe("req-model-list");
+      expect(session.listModelsCalls[0]?.requestId).toEqual(
+        expect.stringMatching(/^atelier-appserver:model\/list:.*:req-model-list$/),
+      );
     } finally {
       await client.close();
     }
@@ -329,7 +374,17 @@ describe("App Server protocol harness", () => {
           listModelsResult: {
             ok: true,
             data: {
-              models: [createProtocolModel(), createProtocolHiddenModel()],
+              models: [
+                createTestAgentModel(),
+                createTestAgentModel({
+                  id: "gpt-5.4-hidden",
+                  model: "gpt-5.4-hidden",
+                  displayName: "GPT-5.4 Hidden",
+                  hidden: true,
+                  defaultReasoningEffort: "high",
+                  supportsPersonality: false,
+                }),
+              ],
               nextCursor: null,
             },
           },
@@ -350,7 +405,7 @@ describe("App Server protocol harness", () => {
       await expect(client.nextMessage()).resolves.toEqual({
         id: "req-model-list",
         result: {
-          models: [createProtocolModel()],
+          models: [createTestAgentModel()],
           nextCursor: null,
         },
       });
@@ -366,7 +421,17 @@ describe("App Server protocol harness", () => {
           listModelsResult: {
             ok: true,
             data: {
-              models: [createProtocolModel(), createProtocolHiddenModel()],
+              models: [
+                createTestAgentModel(),
+                createTestAgentModel({
+                  id: "gpt-5.4-hidden",
+                  model: "gpt-5.4-hidden",
+                  displayName: "GPT-5.4 Hidden",
+                  hidden: true,
+                  defaultReasoningEffort: "high",
+                  supportsPersonality: false,
+                }),
+              ],
               nextCursor: null,
             },
           },
@@ -389,7 +454,17 @@ describe("App Server protocol harness", () => {
       await expect(client.nextMessage()).resolves.toEqual({
         id: "req-model-list",
         result: {
-          models: [createProtocolModel(), createProtocolHiddenModel()],
+          models: [
+            createTestAgentModel(),
+            createTestAgentModel({
+              id: "gpt-5.4-hidden",
+              model: "gpt-5.4-hidden",
+              displayName: "GPT-5.4 Hidden",
+              hidden: true,
+              defaultReasoningEffort: "high",
+              supportsPersonality: false,
+            }),
+          ],
           nextCursor: null,
         },
       });
@@ -890,7 +965,7 @@ const createFakeProtocolAgentAdapter = (options: {
   createSessionResult?:
     | Readonly<{
         ok: true;
-        data: ReturnType<typeof createFakeProtocolAgentSession>;
+        data: ReturnType<typeof createFakeAgentSession>;
       }>
     | Readonly<{
         ok: false;
@@ -906,7 +981,7 @@ const createFakeProtocolAgentAdapter = (options: {
     | Readonly<{
         ok: true;
         data: {
-          models: readonly ReturnType<typeof createProtocolModel>[];
+          models: readonly ReturnType<typeof createTestAgentModel>[];
           nextCursor: string | null;
         };
       }>
@@ -928,117 +1003,19 @@ const createFakeProtocolAgentAdapter = (options: {
               message: string;
             }>;
       }>;
-}): AgentAdapter => ({
-  provider: "codex",
-  createSession: async () =>
-    options.createSessionResult ?? {
-      ok: true,
-      data: createFakeProtocolAgentSession({
-        listModelsResult: options.listModelsResult ?? {
+}): AgentAdapter =>
+  createFakeAgentAdapter({
+    createSessionResult: options.createSessionResult,
+    session: createFakeAgentSession({
+      listModels: async () =>
+        options.listModelsResult ?? {
           ok: true,
           data: {
-            models: [createProtocolModel()],
+            models: [createTestAgentModel()],
             nextCursor: null,
           },
         },
-      }),
-    },
-});
-
-const createFakeProtocolAgentSession = (options: {
-  listModelsResult:
-    | Readonly<{
-        ok: true;
-        data: {
-          models: readonly ReturnType<typeof createProtocolModel>[];
-          nextCursor: string | null;
-        };
-      }>
-    | Readonly<{
-        ok: false;
-        error:
-          | Readonly<{
-              type: "remoteError";
-              agentId: string;
-              provider: "codex";
-              requestId: string | number;
-              code: number;
-              message: string;
-            }>
-          | Readonly<{
-              type: "invalidProviderMessage";
-              agentId: string;
-              provider: "codex";
-              message: string;
-            }>;
-      }>;
-}) => ({
-  agentId: "codex",
-  provider: "codex" as const,
-  getState: () => "ready" as const,
-  subscribe: () => () => {},
-  listModels: async () => options.listModelsResult,
-  startThread: async () => {
-    throw new Error("startThread should not be called in this test.");
-  },
-  resumeThread: async () => {
-    throw new Error("resumeThread should not be called in this test.");
-  },
-  readThread: async () => {
-    throw new Error("readThread should not be called in this test.");
-  },
-  forkThread: async () => {
-    throw new Error("forkThread should not be called in this test.");
-  },
-  startTurn: async () => {
-    throw new Error("startTurn should not be called in this test.");
-  },
-  steerTurn: async () => {
-    throw new Error("steerTurn should not be called in this test.");
-  },
-  interruptTurn: async () => {
-    throw new Error("interruptTurn should not be called in this test.");
-  },
-  resolveApproval: async () => {
-    throw new Error("resolveApproval should not be called in this test.");
-  },
-  disconnect: async () => {},
-});
-
-const createProtocolModel = (
-  overrides: Partial<
-    Readonly<{
-      id: string;
-      model: string;
-      displayName: string;
-      hidden: boolean;
-      isDefault: boolean;
-    }>
-  > = {},
-) =>
-  Object.freeze({
-    id: overrides.id ?? "gpt-5.4",
-    model: overrides.model ?? "gpt-5.4",
-    displayName: overrides.displayName ?? "GPT-5.4",
-    hidden: overrides.hidden ?? false,
-    defaultReasoningEffort: "medium" as const,
-    supportedReasoningEfforts: [
-      {
-        reasoningEffort: "medium" as const,
-        description: "Balanced",
-      },
-    ],
-    inputModalities: ["text"],
-    supportsPersonality: true,
-    isDefault: overrides.isDefault ?? false,
-  });
-
-const createProtocolHiddenModel = () =>
-  createProtocolModel({
-    id: "gpt-5.4-hidden",
-    model: "gpt-5.4-hidden",
-    displayName: "GPT-5.4 Hidden",
-    hidden: true,
+    }),
   });
 
 const toMessageText = (data: unknown): string => {
