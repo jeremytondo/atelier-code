@@ -4,23 +4,50 @@ import {
   createProtocolEngine,
   InitializeParamsSchema,
   InitializeResultSchema,
+  type ProtocolEngine,
 } from "@/core/protocol";
-import { type LifecycleComponent, ok } from "@/core/shared";
+import { ok } from "@/core/shared";
 import { createWebSocketServer, type RawConnectionOpenedEvent } from "@/core/transport";
 
 export const APP_SERVER_USER_AGENT = "AtelierCode App Server/0.1.0";
 
-export type AppProtocolComponents = Readonly<{
-  protocolComponent: LifecycleComponent;
-  transportComponent: LifecycleComponent;
+export type ConnectionClosedHandler = (
+  options: Readonly<{ connectionId: string }>,
+) => Promise<void> | void;
+
+export type AppProtocolRuntime = Readonly<{
+  protocolComponent: ProtocolEngine["lifecycle"];
+  registerMethod: ProtocolEngine["registerMethod"];
+  openConnection: ProtocolEngine["openConnection"];
+  closeConnection: ProtocolEngine["closeConnection"];
+  handleIncomingText: ProtocolEngine["handleIncomingText"];
 }>;
 
-export const createAppProtocolComponents = (options: {
-  config: AppServerConfig;
-  logger: Logger;
-}): AppProtocolComponents => {
+export const runConnectionClosedHandlers = async (
+  handlers: readonly ConnectionClosedHandler[],
+  connectionId: string,
+): Promise<void> => {
+  const closeErrors: unknown[] = [];
+
+  for (const handleConnectionClosed of handlers) {
+    try {
+      await handleConnectionClosed({ connectionId });
+    } catch (error) {
+      closeErrors.push(error);
+    }
+  }
+
+  if (closeErrors.length === 1) {
+    throw closeErrors[0];
+  }
+
+  if (closeErrors.length > 1) {
+    throw new AggregateError(closeErrors, "Connection close handlers failed");
+  }
+};
+
+export const createAppProtocolRuntime = (options: { logger: Logger }): AppProtocolRuntime => {
   const protocolLogger = options.logger.withContext({ component: "core.protocol" });
-  const transportLogger = options.logger.withContext({ component: "core.transport" });
   const protocol = createProtocolEngine({
     logger: protocolLogger,
   });
@@ -48,27 +75,40 @@ export const createAppProtocolComponents = (options: {
     },
   });
 
-  const transportComponent = createWebSocketServer({
-    logger: transportLogger,
+  return Object.freeze({
+    protocolComponent: protocol.lifecycle,
+    registerMethod: protocol.registerMethod,
+    openConnection: protocol.openConnection,
+    closeConnection: protocol.closeConnection,
+    handleIncomingText: protocol.handleIncomingText,
+  });
+};
+
+export const createAppTransportComponent = (options: {
+  config: AppServerConfig;
+  logger: Logger;
+  protocol: Pick<AppProtocolRuntime, "openConnection" | "closeConnection" | "handleIncomingText">;
+  onConnectionClosed?: readonly ConnectionClosedHandler[];
+}) =>
+  createWebSocketServer({
+    logger: options.logger.withContext({ component: "core.transport" }),
     port: options.config.port,
     onConnectionOpen: ({ connection }: RawConnectionOpenedEvent) => {
-      protocol.openConnection({
+      options.protocol.openConnection({
         connectionId: connection.id,
         sendText: connection.sendText,
       });
     },
-    onConnectionClose: ({ connectionId }) => {
-      protocol.closeConnection(connectionId);
+    onConnectionClose: async ({ connectionId }) => {
+      try {
+        await runConnectionClosedHandlers(options.onConnectionClosed ?? [], connectionId);
+      } finally {
+        options.protocol.closeConnection(connectionId);
+      }
     },
     onTextMessage: ({ connectionId, text }) =>
-      protocol.handleIncomingText({
+      options.protocol.handleIncomingText({
         connectionId,
         text,
       }),
   });
-
-  return Object.freeze({
-    protocolComponent: protocol.lifecycle,
-    transportComponent,
-  });
-};

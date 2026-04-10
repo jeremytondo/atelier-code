@@ -5,13 +5,13 @@ import {
   loadAppServerConfig,
 } from "@/app/config";
 import { createLogger, type Logger, type LogWriter } from "@/app/logger";
-import { createAppProtocolComponents } from "@/app/protocol";
+import { createAppProtocolRuntime, createAppTransportComponent } from "@/app/protocol";
 import { createApprovalsFeaturePlaceholder } from "@/approvals";
 import { getErrorMessage, type LifecycleComponent } from "@/core/shared";
-import { createStoreBootstrapPlaceholder } from "@/core/store";
+import { createStoreBootstrap } from "@/core/store";
 import { createThreadsFeaturePlaceholder } from "@/threads";
 import { createTurnsFeaturePlaceholder } from "@/turns";
-import { createWorkspacesFeaturePlaceholder } from "@/workspaces";
+import { createSqliteWorkspacesStore, createWorkspacesFeature } from "@/workspaces";
 
 export type AppServerState = "idle" | "starting" | "started" | "stopping" | "stopped";
 export type ShutdownSignal = "SIGINT" | "SIGTERM";
@@ -299,19 +299,37 @@ const createDefaultComponents = (
   config: AppServerConfig,
   logger: Logger,
 ): readonly LifecycleComponent[] => {
-  const appProtocolComponents = createAppProtocolComponents({
+  const storeBootstrap = createStoreBootstrap({
+    config,
+    logger: logger.withContext({ component: "core.store" }),
+  });
+  const appProtocolRuntime = createAppProtocolRuntime({
+    logger,
+  });
+  const workspacesFeature = createWorkspacesFeature({
+    logger: logger.withContext({ component: "feature.workspaces" }),
+    registerMethod: appProtocolRuntime.registerMethod,
+    store: createSqliteWorkspacesStore(storeBootstrap.getDatabase),
+  });
+  const transportComponent = createAppTransportComponent({
     config,
     logger,
+    protocol: appProtocolRuntime,
+    onConnectionClosed: [
+      ({ connectionId }) => {
+        workspacesFeature.handleConnectionClosed(connectionId);
+      },
+    ],
   });
 
   return Object.freeze([
-    appProtocolComponents.protocolComponent,
-    createStoreBootstrapPlaceholder(),
+    appProtocolRuntime.protocolComponent,
+    storeBootstrap.lifecycle,
     createAgentsFeaturePlaceholder(),
-    createWorkspacesFeaturePlaceholder(),
+    workspacesFeature.lifecycle,
     createThreadsFeaturePlaceholder(),
     createTurnsFeaturePlaceholder(),
     createApprovalsFeaturePlaceholder(),
-    appProtocolComponents.transportComponent,
+    transportComponent,
   ]);
 };
