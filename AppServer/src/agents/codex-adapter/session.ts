@@ -726,7 +726,7 @@ const normalizeOperationError = (
       code:
         error.code === "provider_executable_missing"
           ? "executableMissing"
-          : error.code === "process_exited"
+          : error.code === "process_exited" || error.code === "request_timeout"
             ? "disconnected"
             : "startupFailed",
       message: error.message,

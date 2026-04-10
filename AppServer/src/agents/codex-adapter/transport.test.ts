@@ -150,6 +150,49 @@ describe("CodexAppServerTransport", () => {
     );
     expect(process.killed).toBeTrue();
   });
+
+  test("times out a hung request and tears down the transport", async () => {
+    const process = new FakeCodexProcess();
+    const disconnects: CodexTransportDisconnectInfo[] = [];
+    const transport = new CodexAppServerTransport(
+      {
+        executable: foundExecutable(),
+        environment: baseEnvironment(),
+      },
+      {
+        requestTimeoutMs: 10,
+        spawnProcess: () => process,
+      },
+    );
+
+    transport.subscribe((event) => {
+      if (event.type === "disconnect") {
+        disconnects.push(event.disconnect);
+      }
+    });
+
+    await transport.connect();
+
+    const pendingResponse = transport.send({
+      id: "req-timeout",
+      method: "thread/list",
+    });
+
+    await expect(pendingResponse).rejects.toMatchObject({
+      code: "request_timeout",
+    });
+    expect(disconnects).toContainEqual(
+      expect.objectContaining({
+        reason: "request_timeout",
+        detail: expect.objectContaining({
+          requestId: "req-timeout",
+          method: "thread/list",
+          timeoutMs: 10,
+        }),
+      }),
+    );
+    expect(process.killed).toBeTrue();
+  });
 });
 
 class FakeCodexProcess implements CodexTransportProcess {

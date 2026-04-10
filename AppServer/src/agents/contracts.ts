@@ -16,6 +16,7 @@ export type AgentDisconnectReason =
   | "provider_executable_missing"
   | "startup_failed"
   | "process_exited"
+  | "request_timeout"
   | "malformed_output";
 
 export type AgentEnvironmentDiagnostics = Readonly<{

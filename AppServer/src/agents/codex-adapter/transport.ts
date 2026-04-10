@@ -3,6 +3,7 @@ import type { AgentDisconnectReason, AgentExecutableDiscovery } from "@/agents/c
 const JSON_LINE_ENCODER = new TextEncoder();
 const STDERR_TAIL_LIMIT = 4_096;
 const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 250;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 export type CodexTransportRequestId = string | number;
 
@@ -74,6 +75,7 @@ export type CodexTransportProcess = Readonly<{
 }>;
 
 export type CodexTransportDependencies = Readonly<{
+  requestTimeoutMs?: number;
   spawnProcess?: (
     executablePath: string,
     environment: Readonly<Record<string, string>>,
@@ -141,6 +143,7 @@ export class CodexAppServerTransport implements CodexTransport {
     dependencies: CodexTransportDependencies = {},
   ) {
     this.dependencies = {
+      requestTimeoutMs: dependencies.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
       spawnProcess: dependencies.spawnProcess ?? spawnCodexProcess,
     };
   }
@@ -258,7 +261,10 @@ export class CodexAppServerTransport implements CodexTransport {
       );
     }
 
-    return responsePromise as Promise<TResult>;
+    return Promise.race([
+      responsePromise as Promise<TResult>,
+      this.createRequestTimeoutPromise<TResult>(request, requestKey, responsePromise),
+    ]);
   }
 
   async respond(response: CodexTransportResponse): Promise<void> {
@@ -566,6 +572,40 @@ export class CodexAppServerTransport implements CodexTransport {
     this.pendingRequests.clear();
     this.pendingServerRequests.clear();
   }
+
+  private createRequestTimeoutPromise<TResult>(
+    request: CodexTransportRequest,
+    requestKey: string,
+    responsePromise: Promise<unknown>,
+  ): Promise<TResult> {
+    return new Promise<TResult>((_, reject) => {
+      const timer = setTimeout(() => {
+        if (!this.pendingRequests.has(requestKey) || this.finalized) {
+          return;
+        }
+
+        const process = this.process;
+        const disconnect = buildDisconnectInfo("request_timeout", null, this.stderrTail, {
+          requestId: request.id,
+          method: request.method,
+          timeoutMs: this.dependencies.requestTimeoutMs,
+        });
+
+        this.finalizeDisconnect(disconnect);
+        process?.kill();
+        reject(new CodexTransportError(disconnect.reason, disconnect.message, disconnect.detail));
+      }, this.dependencies.requestTimeoutMs);
+
+      void responsePromise.then(
+        () => {
+          clearTimeout(timer);
+        },
+        () => {
+          clearTimeout(timer);
+        },
+      );
+    });
+  }
 }
 
 const spawnCodexProcess = (
@@ -624,6 +664,7 @@ const buildDisconnectInfo = (
     provider_executable_missing: "Codex executable was not available for transport startup.",
     startup_failed: "codex app-server exited before the transport became usable.",
     process_exited: "codex app-server exited while the transport was active.",
+    request_timeout: "codex app-server did not respond before the request timeout expired.",
     malformed_output: "codex app-server emitted malformed JSONL output.",
   };
 
