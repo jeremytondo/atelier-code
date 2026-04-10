@@ -1,0 +1,5 @@
+{
+  "port": 7331,
+  "databasePath": "./var/appserver.sqlite",
+  "logLevel": "info"
+}

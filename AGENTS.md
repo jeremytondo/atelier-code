@@ -27,6 +27,7 @@ Use this guidance for implementation work related to the new Bun + TypeScript Ap
 - Prefer typed `Result` returns in domain services. Reserve `throw` for exceptional infrastructure failures, and keep domain rule failures distinct from schema and parse failures.
 - Prefer deterministic tests with fakes and fixtures. Add or update tests for lifecycle sequencing, event ordering, approvals, and error handling when behavior changes.
 - Treat generated or vendored Codex contract artifacts as read-only reference inputs. Update them through their generation or import workflow, not by hand.
+- Keep files focused on one clear responsibility; when a file starts mixing concerns or gets hard to scan, extract internal helpers or a sibling module with a clear purpose rather than adding a new abstraction only to make the file smaller.
 
 ## App Server Required Checks
 
