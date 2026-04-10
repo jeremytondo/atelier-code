@@ -240,8 +240,8 @@ This layer is generic, reusable plumbing that makes the server run. It is strict
 
 This is the bootstrap layer and the **only** place in the codebase where `core/` and feature directories are allowed to interact.
 
-- **`server.ts`** — The main entry point. It initializes the core transport and protocol engines, registers the feature handlers with the dispatcher, wires parsed events to the transport layer, and starts the listener. It contains zero per-request business logic.
-- **`session.ts`** — Manages process-level lifecycle (startup, shutdown, healthcheck). Session-scoped execution state such as loaded threads, active turns, and pending approvals belongs in the relevant feature directories, not here.
+- **App layer lifecycle** — The app layer owns process-level startup, shutdown, and healthcheck coordination. It initializes the core transport and protocol engines, registers feature handlers with the dispatcher, wires parsed events to the transport layer, and starts the listener. It contains zero per-request business logic.
+- **Feature-owned runtime state** — Loaded threads, active turns, pending approvals, and other execution state live in the relevant feature directories, not in the app lifecycle surface.
 
 #### Import Rules
 
@@ -296,14 +296,14 @@ Configuration is loaded once at startup from a configuration file, with environm
 
 The configuration file is the primary source for settings such as server port, database location, available agents, and feature flags. Environment variables may override specific values when needed but should not be the default mechanism for most settings.
 
-Configuration should be read into a typed, readonly config object during bootstrap in `app/server.ts` and passed explicitly to the subsystems that need it. Feature code should never read environment variables or configuration files directly.
+Configuration should be read into a typed, readonly config object during bootstrap in the app layer and passed explicitly to the subsystems that need it. Feature code should never read environment variables or configuration files directly.
 
 
 ### Graceful Shutdown
 
 The server process should handle `SIGINT` and `SIGTERM` signals and shut down cleanly. Graceful shutdown means: stop accepting new WebSocket connections, interrupt or complete any active turns, flush pending store writes, close the database connection, and then exit.
 
-The shutdown sequence should be coordinated from `app/session.ts`, calling into features and core subsystems in the correct order. If shutdown takes longer than a reasonable timeout, force exit to avoid hanging indefinitely.
+The shutdown sequence should be coordinated from the app layer, calling into features and core subsystems in the correct order. If shutdown takes longer than a reasonable timeout, force exit to avoid hanging indefinitely.
 
 
 ### Path Aliases
