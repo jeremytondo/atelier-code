@@ -1,4 +1,4 @@
-import { createLifecyclePlaceholder, type LifecycleComponent } from "@/core/shared";
-
-export const createWorkspacesFeaturePlaceholder = (): LifecycleComponent =>
-  createLifecyclePlaceholder("feature.workspaces");
+export * from "@/workspaces/schemas";
+export * from "@/workspaces/service";
+export * from "@/workspaces/store";
+export * from "@/workspaces/workspace.handlers";

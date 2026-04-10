@@ -317,13 +317,17 @@ const createSignalRegistrar = (): FakeSignalRegistrar => {
   };
 };
 
-const createTestConfig = () =>
-  Object.freeze({
-    configPath: "/tmp/appserver.config.json",
+const createTestConfig = () => {
+  const rootDirectory = join(tmpdir(), `atelier-appserver-server-${crypto.randomUUID()}`);
+  temporaryDirectories.push(rootDirectory);
+
+  return Object.freeze({
+    configPath: join(rootDirectory, "appserver.config.json"),
     port: 0,
     databasePath: "./var/test.sqlite",
     logLevel: "info" as const,
   });
+};
 
 const createDeferredPromise = <T>() => {
   let resolvePromise: (value: T | PromiseLike<T>) => void = () => {};

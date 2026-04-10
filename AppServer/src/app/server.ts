@@ -8,10 +8,10 @@ import { createLogger, type Logger, type LogWriter } from "@/app/logger";
 import { createAppProtocolComponents } from "@/app/protocol";
 import { createApprovalsFeaturePlaceholder } from "@/approvals";
 import { getErrorMessage, type LifecycleComponent } from "@/core/shared";
-import { createStoreBootstrapPlaceholder } from "@/core/store";
+import { createStoreBootstrap } from "@/core/store";
 import { createThreadsFeaturePlaceholder } from "@/threads";
 import { createTurnsFeaturePlaceholder } from "@/turns";
-import { createWorkspacesFeaturePlaceholder } from "@/workspaces";
+import { createSqliteWorkspacesStore, createWorkspacesFeature } from "@/workspaces";
 
 export type AppServerState = "idle" | "starting" | "started" | "stopping" | "stopped";
 export type ShutdownSignal = "SIGINT" | "SIGTERM";
@@ -299,16 +299,33 @@ const createDefaultComponents = (
   config: AppServerConfig,
   logger: Logger,
 ): readonly LifecycleComponent[] => {
+  const storeBootstrap = createStoreBootstrap({
+    config,
+    logger: logger.withContext({ component: "core.store" }),
+  });
+  let handleWorkspaceConnectionClosed = (_connectionId: string) => {};
   const appProtocolComponents = createAppProtocolComponents({
     config,
     logger,
+    onConnectionClosed: [
+      ({ connectionId }) => {
+        handleWorkspaceConnectionClosed(connectionId);
+      },
+    ],
   });
+  const workspacesFeature = createWorkspacesFeature({
+    logger: logger.withContext({ component: "feature.workspaces" }),
+    registerMethod: appProtocolComponents.registerMethod,
+    store: createSqliteWorkspacesStore(storeBootstrap.getDatabase),
+  });
+
+  handleWorkspaceConnectionClosed = workspacesFeature.handleConnectionClosed;
 
   return Object.freeze([
     appProtocolComponents.protocolComponent,
-    createStoreBootstrapPlaceholder(),
+    storeBootstrap.lifecycle,
     createAgentsFeaturePlaceholder(),
-    createWorkspacesFeaturePlaceholder(),
+    workspacesFeature.lifecycle,
     createThreadsFeaturePlaceholder(),
     createTurnsFeaturePlaceholder(),
     createApprovalsFeaturePlaceholder(),

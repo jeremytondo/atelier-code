@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createLogger } from "@/app/logger";
 import { APP_SERVER_USER_AGENT } from "@/app/protocol";
 import { type AppServer, createConfiguredAppServer, type SignalRegistrar } from "@/app/server";
 import { getAvailablePort } from "@/test-support/network";
 
 const runningServers: AppServer[] = [];
+const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
   while (runningServers.length > 0) {
@@ -19,6 +23,16 @@ afterEach(async () => {
     } catch {
       // Ignore cleanup failures so the original test error stays visible.
     }
+  }
+
+  while (temporaryDirectories.length > 0) {
+    const directory = temporaryDirectories.pop();
+
+    if (directory === undefined) {
+      continue;
+    }
+
+    await rm(directory, { force: true, recursive: true });
   }
 });
 
@@ -179,6 +193,171 @@ describe("App Server protocol harness", () => {
       await client.close();
     }
   });
+
+  test("opens a workspace after initialize", async () => {
+    const harness = await createProtocolHarness();
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      const workspacePath = await createWorkspaceDirectory();
+      const canonicalWorkspacePath = await realpath(workspacePath);
+
+      client.sendJson({
+        id: "req-initialize",
+        method: "initialize",
+        params: {
+          clientInfo: {
+            name: "AtelierCode Test",
+            version: "0.1.0",
+          },
+        },
+      });
+      await client.nextMessage();
+
+      client.sendJson({
+        id: "req-workspace-open",
+        method: "workspace/open",
+        params: {
+          workspacePath,
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-workspace-open",
+        result: {
+          workspace: {
+            id: expect.any(String),
+            workspacePath: canonicalWorkspacePath,
+            createdAt: expect.any(String),
+            lastOpenedAt: expect.any(String),
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("rejects workspace/open before initialize", async () => {
+    const harness = await createProtocolHarness();
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      const workspacePath = await createWorkspaceDirectory();
+
+      client.sendJson({
+        id: "req-workspace-open",
+        method: "workspace/open",
+        params: {
+          workspacePath,
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-workspace-open",
+        error: {
+          code: -33001,
+          message: "Session not initialized",
+          data: {
+            code: "SESSION_NOT_INITIALIZED",
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("maps malformed workspace/open params to invalid params", async () => {
+    const harness = await createProtocolHarness();
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      client.sendJson({
+        id: "req-initialize",
+        method: "initialize",
+        params: {
+          clientInfo: {
+            name: "AtelierCode Test",
+            version: "0.1.0",
+          },
+        },
+      });
+      await client.nextMessage();
+
+      client.sendJson({
+        id: "req-workspace-open",
+        method: "workspace/open",
+        params: {
+          workspacePath: 123,
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-workspace-open",
+        error: {
+          code: -32602,
+          message: "Invalid params",
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("returns the same workspace identity for repeat opens of the same canonical directory", async () => {
+    const harness = await createProtocolHarness();
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      const workspacePath = await createWorkspaceDirectory();
+      const canonicalWorkspacePath = await realpath(workspacePath);
+      const aliasWorkspacePath = join(workspacePath, ".");
+
+      client.sendJson({
+        id: "req-initialize",
+        method: "initialize",
+        params: {
+          clientInfo: {
+            name: "AtelierCode Test",
+            version: "0.1.0",
+          },
+        },
+      });
+      await client.nextMessage();
+
+      client.sendJson({
+        id: "req-workspace-open-1",
+        method: "workspace/open",
+        params: {
+          workspacePath,
+        },
+      });
+      const firstResponse = (await client.nextMessage()) as {
+        readonly result: {
+          readonly workspace: {
+            readonly id: string;
+            readonly workspacePath: string;
+          };
+        };
+      };
+
+      client.sendJson({
+        id: "req-workspace-open-2",
+        method: "workspace/open",
+        params: {
+          workspacePath: aliasWorkspacePath,
+        },
+      });
+      const secondResponse = (await client.nextMessage()) as typeof firstResponse;
+
+      expect(firstResponse.result.workspace.workspacePath).toBe(canonicalWorkspacePath);
+      expect(secondResponse.result.workspace.workspacePath).toBe(canonicalWorkspacePath);
+      expect(secondResponse.result.workspace.id).toBe(firstResponse.result.workspace.id);
+    } finally {
+      await client.close();
+    }
+  });
 });
 
 type ProtocolTestClient = Readonly<{
@@ -190,9 +369,10 @@ type ProtocolTestClient = Readonly<{
 
 const createProtocolHarness = async (): Promise<Readonly<{ port: number }>> => {
   const port = await getAvailablePort();
+  const configDirectory = await createTemporaryDirectory("atelier-appserver-protocol-");
   const server = createConfiguredAppServer({
     config: {
-      configPath: "/tmp/appserver.config.json",
+      configPath: join(configDirectory, "appserver.config.json"),
       port,
       databasePath: "./var/test.sqlite",
       logLevel: "info",
@@ -208,6 +388,15 @@ const createProtocolHarness = async (): Promise<Readonly<{ port: number }>> => {
   runningServers.push(server);
 
   return Object.freeze({ port });
+};
+
+const createWorkspaceDirectory = async (): Promise<string> => {
+  const rootDirectory = await createTemporaryDirectory("atelier-appserver-workspace-");
+  const workspacePath = join(rootDirectory, "workspace");
+
+  await mkdir(workspacePath, { recursive: true });
+
+  return workspacePath;
 };
 
 const connectProtocolClient = async (port: number): Promise<ProtocolTestClient> => {
@@ -339,3 +528,9 @@ const createSignalRegistrar = (): SignalRegistrar =>
   Object.freeze({
     subscribe: () => () => {},
   });
+
+const createTemporaryDirectory = async (prefix: string): Promise<string> => {
+  const directory = await mkdtemp(join(tmpdir(), prefix));
+  temporaryDirectories.push(directory);
+  return directory;
+};

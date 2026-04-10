@@ -4,20 +4,27 @@ import {
   createProtocolEngine,
   InitializeParamsSchema,
   InitializeResultSchema,
+  type ProtocolEngine,
 } from "@/core/protocol";
 import { type LifecycleComponent, ok } from "@/core/shared";
 import { createWebSocketServer, type RawConnectionOpenedEvent } from "@/core/transport";
 
 export const APP_SERVER_USER_AGENT = "AtelierCode App Server/0.1.0";
 
+export type ConnectionClosedHandler = (
+  options: Readonly<{ connectionId: string }>,
+) => Promise<void> | void;
+
 export type AppProtocolComponents = Readonly<{
   protocolComponent: LifecycleComponent;
   transportComponent: LifecycleComponent;
+  registerMethod: ProtocolEngine["registerMethod"];
 }>;
 
 export const createAppProtocolComponents = (options: {
   config: AppServerConfig;
   logger: Logger;
+  onConnectionClosed?: readonly ConnectionClosedHandler[];
 }): AppProtocolComponents => {
   const protocolLogger = options.logger.withContext({ component: "core.protocol" });
   const transportLogger = options.logger.withContext({ component: "core.transport" });
@@ -57,8 +64,14 @@ export const createAppProtocolComponents = (options: {
         sendText: connection.sendText,
       });
     },
-    onConnectionClose: ({ connectionId }) => {
-      protocol.closeConnection(connectionId);
+    onConnectionClose: async ({ connectionId }) => {
+      try {
+        for (const handleConnectionClosed of options.onConnectionClosed ?? []) {
+          await handleConnectionClosed({ connectionId });
+        }
+      } finally {
+        protocol.closeConnection(connectionId);
+      }
     },
     onTextMessage: ({ connectionId, text }) =>
       protocol.handleIncomingText({
@@ -70,5 +83,6 @@ export const createAppProtocolComponents = (options: {
   return Object.freeze({
     protocolComponent: protocol.lifecycle,
     transportComponent,
+    registerMethod: protocol.registerMethod,
   });
 };
