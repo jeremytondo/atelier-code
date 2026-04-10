@@ -320,6 +320,7 @@ const createDefaultComponents = (
         logger: logger.withContext({ component: "agents.codex" }),
       }),
     ],
+    registerMethod: appProtocolRuntime.registerMethod,
   });
   const transportComponent = createAppTransportComponent({
     config,

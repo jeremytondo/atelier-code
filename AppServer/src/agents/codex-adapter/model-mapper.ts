@@ -27,7 +27,7 @@ export const mapCodexModelSummary = (model: CodexModel): AgentModelSummary =>
     ),
     inputModalities: model.inputModalities ? [...model.inputModalities] : undefined,
     supportsPersonality: model.supportsPersonality,
-    isDefault: model.isDefault,
+    isDefault: model.isDefault === true,
   });
 
 export const mapCodexThreadStatus = (status: CodexThreadStatus): AgentThreadExecutionStatus => {

@@ -4,4 +4,8 @@ export * from "@/agents/contracts";
 export * from "@/agents/environment";
 export * from "@/agents/executable-discovery";
 export * from "@/agents/feature";
+export * from "@/agents/model-list.handlers";
+export * from "@/agents/protocol-errors";
 export * from "@/agents/registry";
+export * from "@/agents/schemas";
+export * from "@/agents/service";
