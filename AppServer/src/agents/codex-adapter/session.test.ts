@@ -11,6 +11,7 @@ import {
   type CodexTransportRequest,
   type CodexTransportResponse,
 } from "@/agents/codex-adapter/transport";
+import type { AgentNotification } from "@/agents/contracts";
 import { BaseEnvironmentResolver } from "@/agents/environment";
 import { createSilentLogger } from "@/test-support/logger";
 
@@ -309,6 +310,111 @@ describe("createCodexAgentSession", () => {
       },
     });
     expect(sessionResult.data.getState()).toBe("disconnected");
+  });
+
+  test("cleans up pending approvals and listeners after disconnect", async () => {
+    const executablePath = createFakeExecutable();
+    const transport = new FakeTransport([{ userAgent: "Codex/Test" }]);
+    const sessionResult = await createCodexAgentSession({
+      agentId: "codex",
+      config: {
+        id: "codex",
+        provider: "codex",
+      },
+      logger: createSilentLogger(),
+      transport,
+      environmentResolver: new BaseEnvironmentResolver({
+        inheritedEnvironment: {
+          ATELIERCODE_CODEX_PATH: executablePath,
+          PATH: path.dirname(executablePath),
+          HOME: "/Users/tester",
+          SHELL: "/bin/zsh",
+        },
+      }),
+    });
+
+    expect(sessionResult.ok).toBe(true);
+    if (!sessionResult.ok) {
+      throw new Error("Expected the Codex session to be created.");
+    }
+
+    await sessionResult.data.listModels("req-init", {});
+
+    const notifications: AgentNotification[] = [];
+    sessionResult.data.subscribe((notification) => {
+      notifications.push(notification);
+    });
+
+    transport.emit({
+      type: "serverRequest",
+      request: {
+        id: "approval-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          itemId: "item-1",
+        },
+      },
+    });
+
+    transport.emit({
+      type: "disconnect",
+      disconnect: {
+        reason: "process_exited",
+        message: "codex app-server exited while the transport was active.",
+      },
+    });
+
+    transport.emit({
+      type: "notification",
+      notification: {
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          turn: {
+            id: "turn-2",
+            status: "inProgress",
+            error: null,
+          },
+        },
+      },
+    });
+
+    const resolveResult = await sessionResult.data.resolveApproval({
+      requestId: "approval-1",
+      resolution: "approved",
+    });
+
+    expect(notifications.filter((notification) => notification.type === "disconnect")).toHaveLength(
+      1,
+    );
+    expect(notifications).toContainEqual(
+      expect.objectContaining({
+        type: "approval",
+        event: "requested",
+        requestId: "approval-1",
+      }),
+    );
+    expect(notifications).not.toContainEqual(
+      expect.objectContaining({
+        type: "turn",
+        event: "started",
+        turnId: "turn-2",
+      }),
+    );
+    expect(resolveResult).toEqual({
+      ok: false,
+      error: {
+        type: "invalidProviderMessage",
+        agentId: "codex",
+        provider: "codex",
+        message: "No pending approval exists for request approval-1.",
+        detail: {
+          requestId: "approval-1",
+        },
+      },
+    });
   });
 });
 

@@ -174,6 +174,13 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
         ...(notification.exitCode !== undefined ? { exitCode: notification.exitCode } : {}),
         ...(notification.detail !== undefined ? { detail: notification.detail } : {}),
       };
+      const disconnectListeners = [...listeners];
+      for (const listener of disconnectListeners) {
+        listener(notification);
+      }
+      approvalsByRequestId.clear();
+      listeners.clear();
+      return;
     }
 
     for (const listener of listeners) {
