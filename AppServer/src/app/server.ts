@@ -5,7 +5,7 @@ import {
   loadAppServerConfig,
 } from "@/app/config";
 import { createLogger, type Logger, type LogWriter } from "@/app/logger";
-import { createAppProtocolComponents } from "@/app/protocol";
+import { createAppProtocolRuntime, createAppTransportComponent } from "@/app/protocol";
 import { createApprovalsFeaturePlaceholder } from "@/approvals";
 import { getErrorMessage, type LifecycleComponent } from "@/core/shared";
 import { createStoreBootstrap } from "@/core/store";
@@ -303,32 +303,33 @@ const createDefaultComponents = (
     config,
     logger: logger.withContext({ component: "core.store" }),
   });
-  let handleWorkspaceConnectionClosed = (_connectionId: string) => {};
-  const appProtocolComponents = createAppProtocolComponents({
-    config,
+  const appProtocolRuntime = createAppProtocolRuntime({
     logger,
-    onConnectionClosed: [
-      ({ connectionId }) => {
-        handleWorkspaceConnectionClosed(connectionId);
-      },
-    ],
   });
   const workspacesFeature = createWorkspacesFeature({
     logger: logger.withContext({ component: "feature.workspaces" }),
-    registerMethod: appProtocolComponents.registerMethod,
+    registerMethod: appProtocolRuntime.registerMethod,
     store: createSqliteWorkspacesStore(storeBootstrap.getDatabase),
   });
-
-  handleWorkspaceConnectionClosed = workspacesFeature.handleConnectionClosed;
+  const transportComponent = createAppTransportComponent({
+    config,
+    logger,
+    protocol: appProtocolRuntime,
+    onConnectionClosed: [
+      ({ connectionId }) => {
+        workspacesFeature.handleConnectionClosed(connectionId);
+      },
+    ],
+  });
 
   return Object.freeze([
-    appProtocolComponents.protocolComponent,
+    appProtocolRuntime.protocolComponent,
     storeBootstrap.lifecycle,
     createAgentsFeaturePlaceholder(),
     workspacesFeature.lifecycle,
     createThreadsFeaturePlaceholder(),
     createTurnsFeaturePlaceholder(),
     createApprovalsFeaturePlaceholder(),
-    appProtocolComponents.transportComponent,
+    transportComponent,
   ]);
 };
