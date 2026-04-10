@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { createServer } from "node:net";
 import { createLogger } from "@/app/logger";
 import { APP_SERVER_USER_AGENT } from "@/app/protocol";
 import { type AppServer, createConfiguredAppServer, type SignalRegistrar } from "@/app/server";
+import { getAvailablePort } from "@/test-support/network";
 
 const runningServers: AppServer[] = [];
 
@@ -339,31 +339,3 @@ const createSignalRegistrar = (): SignalRegistrar =>
   Object.freeze({
     subscribe: () => () => {},
   });
-
-const getAvailablePort = async (): Promise<number> => {
-  const server = createServer();
-
-  await new Promise<void>((resolve, reject) => {
-    server.listen(0, "127.0.0.1", () => resolve());
-    server.once("error", reject);
-  });
-
-  const address = server.address();
-
-  if (address === null || typeof address === "string") {
-    throw new Error("Expected a TCP address");
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => {
-      if (error !== undefined) {
-        reject(error);
-        return;
-      }
-
-      resolve();
-    });
-  });
-
-  return address.port;
-};

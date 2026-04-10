@@ -7,7 +7,7 @@ import {
 import { createLogger, type Logger, type LogWriter } from "@/app/logger";
 import { createAppProtocolComponents } from "@/app/protocol";
 import { createApprovalsFeaturePlaceholder } from "@/approvals";
-import type { LifecycleComponent } from "@/core/shared";
+import { getErrorMessage, type LifecycleComponent } from "@/core/shared";
 import { createStoreBootstrapPlaceholder } from "@/core/store";
 import { createThreadsFeaturePlaceholder } from "@/threads";
 import { createTurnsFeaturePlaceholder } from "@/turns";
@@ -264,18 +264,6 @@ type Deferred = Readonly<{
   promise: Promise<void>;
   resolve: () => void;
 }>;
-
-const getErrorMessage = (error: unknown): string => {
-  if (error instanceof AggregateError) {
-    return error.errors.map(getErrorMessage).join("; ");
-  }
-
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return String(error);
-};
 
 const createDeferred = (): Deferred => {
   let isResolved = false;
