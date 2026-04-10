@@ -77,7 +77,8 @@ export const createConfiguredAppServer = (options: CreateConfiguredAppServerOpti
   let state: AppServerState = "idle";
   let startPromise: Promise<void> | null = null;
   let stopPromise: Promise<void> | null = null;
-  let hasStarted = false;
+  let stopReason: string | null = null;
+  let startedComponents: LifecycleComponent[] = [];
   let signalUnsubscribes: readonly Unsubscribe[] = [];
   const waitForStop = createDeferred();
 
@@ -85,7 +86,12 @@ export const createConfiguredAppServer = (options: CreateConfiguredAppServerOpti
     const subscriptions = (["SIGINT", "SIGTERM"] as const).map((signal) =>
       signalRegistrar.subscribe(signal, () => {
         lifecycleLogger.info("Shutdown signal received", { signal });
-        void stop(signal);
+        void stop(signal).catch((error) => {
+          lifecycleLogger.error("App Server stop failed", {
+            reason: signal,
+            error: getErrorMessage(error),
+          });
+        });
       }),
     );
 
@@ -100,9 +106,35 @@ export const createConfiguredAppServer = (options: CreateConfiguredAppServerOpti
     signalUnsubscribes = Object.freeze([]);
   };
 
+  const stopStartedComponents = async (reason: string): Promise<void> => {
+    const stopErrors: unknown[] = [];
+
+    for (const component of [...startedComponents].reverse()) {
+      try {
+        await component.stop(reason);
+      } catch (error) {
+        stopErrors.push(error);
+      }
+    }
+
+    startedComponents = [];
+
+    if (stopErrors.length === 1) {
+      throw stopErrors[0];
+    }
+
+    if (stopErrors.length > 1) {
+      throw new AggregateError(stopErrors, "App Server shutdown failed");
+    }
+  };
+
   const start = async (): Promise<void> => {
     if (state === "started") {
       return;
+    }
+
+    if (state === "stopping") {
+      return stopPromise ?? Promise.resolve();
     }
 
     if (state === "stopped") {
@@ -121,10 +153,18 @@ export const createConfiguredAppServer = (options: CreateConfiguredAppServerOpti
       });
 
       for (const component of components) {
+        if (stopReason !== null) {
+          return;
+        }
+
         await component.start();
+        startedComponents.push(component);
       }
 
-      hasStarted = true;
+      if (stopReason !== null) {
+        return;
+      }
+
       registerSignalHandlers();
       state = "started";
       lifecycleLogger.info("App Server started", {
@@ -137,7 +177,17 @@ export const createConfiguredAppServer = (options: CreateConfiguredAppServerOpti
       await startPromise;
     } catch (error) {
       unregisterSignalHandlers();
-      state = "idle";
+      try {
+        await stopStartedComponents(stopReason ?? "startup-failed");
+      } catch (rollbackError) {
+        state = stopReason === null ? "idle" : "stopping";
+        throw new AggregateError(
+          [error, rollbackError],
+          "App Server startup failed and rollback failed",
+        );
+      }
+
+      state = stopReason === null ? "idle" : "stopping";
       throw error;
     } finally {
       startPromise = null;
@@ -153,20 +203,45 @@ export const createConfiguredAppServer = (options: CreateConfiguredAppServerOpti
       return stopPromise;
     }
 
+    stopReason = stopReason ?? reason;
     state = "stopping";
     unregisterSignalHandlers();
     stopPromise = (async () => {
-      lifecycleLogger.info("App Server stopping", { reason });
+      lifecycleLogger.info("App Server stopping", { reason: stopReason });
 
-      if (hasStarted) {
-        for (const component of [...components].reverse()) {
-          await component.stop(reason);
+      let stopError: unknown = null;
+
+      if (startPromise !== null) {
+        try {
+          await startPromise;
+        } catch (error) {
+          stopError = error;
+        }
+      }
+
+      if (startedComponents.length > 0) {
+        try {
+          await stopStartedComponents(stopReason);
+        } catch (error) {
+          stopError =
+            stopError === null
+              ? error
+              : new AggregateError([stopError, error], "App Server shutdown failed");
         }
       }
 
       state = "stopped";
-      lifecycleLogger.info("App Server stopped", { reason });
       waitForStop.resolve();
+
+      if (stopError !== null) {
+        lifecycleLogger.error("App Server stopped with errors", {
+          reason: stopReason,
+          error: getErrorMessage(stopError),
+        });
+        throw stopError;
+      }
+
+      lifecycleLogger.info("App Server stopped", { reason: stopReason });
     })();
 
     try {
@@ -190,6 +265,18 @@ type Deferred = Readonly<{
   promise: Promise<void>;
   resolve: () => void;
 }>;
+
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof AggregateError) {
+    return error.errors.map(getErrorMessage).join("; ");
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+};
 
 const createDeferred = (): Deferred => {
   let isResolved = false;

@@ -163,6 +163,108 @@ describe("AppServer lifecycle", () => {
     expect(server.getState()).toBe("stopped");
   });
 
+  test("finishes shutdown when stop is requested during startup", async () => {
+    const events: string[] = [];
+    const slowStart = createDeferredPromise<void>();
+    const server = createConfiguredAppServer({
+      config: createTestConfig(),
+      logger: createSilentLogger(),
+      signalRegistrar: createSignalRegistrar(),
+      components: [
+        {
+          name: "slow-component",
+          start: async () => {
+            events.push("slow:start:begin");
+            await slowStart.promise;
+            events.push("slow:start:end");
+          },
+          stop: async (reason) => {
+            events.push(`slow:stop:${reason}`);
+          },
+        },
+        {
+          name: "second-component",
+          start: async () => {
+            events.push("second:start");
+          },
+          stop: async (reason) => {
+            events.push(`second:stop:${reason}`);
+          },
+        },
+      ],
+    });
+
+    const startPromise = server.start();
+    await Promise.resolve();
+
+    const stopPromise = server.stop("manual");
+    slowStart.resolve();
+
+    await Promise.all([startPromise, stopPromise, server.waitForStop()]);
+
+    expect(server.getState()).toBe("stopped");
+    expect(events).toEqual(["slow:start:begin", "slow:start:end", "slow:stop:manual"]);
+  });
+
+  test("reaches a terminal state when component stop fails", async () => {
+    const signalRegistrar = createSignalRegistrar();
+    const server = createConfiguredAppServer({
+      config: createTestConfig(),
+      logger: createSilentLogger(),
+      signalRegistrar,
+      components: [
+        {
+          name: "failing-stop-component",
+          start: async () => {},
+          stop: async () => {
+            throw new Error("stop failed");
+          },
+        },
+      ],
+    });
+
+    await server.start();
+    await expect(server.stop("manual")).rejects.toThrow("stop failed");
+    await server.waitForStop();
+
+    expect(server.getState()).toBe("stopped");
+  });
+
+  test("rolls back started components when startup fails partway through", async () => {
+    const events: string[] = [];
+    const server = createConfiguredAppServer({
+      config: createTestConfig(),
+      logger: createSilentLogger(),
+      signalRegistrar: createSignalRegistrar(),
+      components: [
+        {
+          name: "first-component",
+          start: async () => {
+            events.push("first:start");
+          },
+          stop: async (reason) => {
+            events.push(`first:stop:${reason}`);
+          },
+        },
+        {
+          name: "failing-start-component",
+          start: async () => {
+            events.push("second:start");
+            throw new Error("start failed");
+          },
+          stop: async () => {
+            events.push("second:stop");
+          },
+        },
+      ],
+    });
+
+    await expect(server.start()).rejects.toThrow("start failed");
+
+    expect(server.getState()).toBe("idle");
+    expect(events).toEqual(["first:start", "second:start", "first:stop:startup-failed"]);
+  });
+
   test("resolves waitForStop after shutdown", async () => {
     const server = createConfiguredAppServer({
       config: createTestConfig(),
@@ -225,6 +327,21 @@ const createTestConfig = () =>
     databasePath: "./var/test.sqlite",
     logLevel: "info" as const,
   });
+
+const createDeferredPromise = <T>() => {
+  let resolvePromise: (value: T | PromiseLike<T>) => void = () => {};
+
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+
+  return {
+    promise,
+    resolve: (value: T) => {
+      resolvePromise(value);
+    },
+  };
+};
 
 const createConfigDirectory = async (): Promise<string> => {
   const directory = await mkdtemp(join(tmpdir(), "atelier-appserver-server-"));
