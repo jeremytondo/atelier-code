@@ -5,11 +5,10 @@ import {
   loadAppServerConfig,
 } from "@/app/config";
 import { createLogger, type Logger, type LogWriter } from "@/app/logger";
+import { createAppProtocolComponents } from "@/app/protocol";
 import { createApprovalsFeaturePlaceholder } from "@/approvals";
-import { createProtocolBootstrapPlaceholder } from "@/core/protocol";
 import type { LifecycleComponent } from "@/core/shared";
 import { createStoreBootstrapPlaceholder } from "@/core/store";
-import { createTransportBootstrapPlaceholder } from "@/core/transport";
 import { createThreadsFeaturePlaceholder } from "@/threads";
 import { createTurnsFeaturePlaceholder } from "@/turns";
 import { createWorkspacesFeaturePlaceholder } from "@/workspaces";
@@ -71,7 +70,7 @@ export const createConfiguredAppServer = (options: CreateConfiguredAppServerOpti
       write: options.writeLog,
     });
   const lifecycleLogger = logger.withContext({ component: "app-server" });
-  const components = [...(options.components ?? createDefaultComponents())];
+  const components = [...(options.components ?? createDefaultComponents(options.config, logger))];
   const signalRegistrar = options.signalRegistrar ?? processSignalRegistrar;
 
   let state: AppServerState = "idle";
@@ -308,14 +307,23 @@ export const processSignalRegistrar: SignalRegistrar = Object.freeze({
   },
 });
 
-const createDefaultComponents = (): readonly LifecycleComponent[] =>
-  Object.freeze([
-    createTransportBootstrapPlaceholder(),
-    createProtocolBootstrapPlaceholder(),
+const createDefaultComponents = (
+  config: AppServerConfig,
+  logger: Logger,
+): readonly LifecycleComponent[] => {
+  const appProtocolComponents = createAppProtocolComponents({
+    config,
+    logger,
+  });
+
+  return Object.freeze([
+    appProtocolComponents.protocolComponent,
     createStoreBootstrapPlaceholder(),
     createAgentsFeaturePlaceholder(),
     createWorkspacesFeaturePlaceholder(),
     createThreadsFeaturePlaceholder(),
     createTurnsFeaturePlaceholder(),
     createApprovalsFeaturePlaceholder(),
+    appProtocolComponents.transportComponent,
   ]);
+};

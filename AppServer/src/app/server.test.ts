@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { APP_SERVER_CONFIG_PATH_ENV } from "@/app/config";
@@ -41,7 +42,8 @@ describe("createAppServer", () => {
   });
 
   test("starts successfully", async () => {
-    const tempDirectory = await createConfigDirectory();
+    const port = await getAvailablePort();
+    const tempDirectory = await createConfigDirectory(port);
     const server = await createAppServer({
       cwd: tempDirectory,
       env: {
@@ -54,7 +56,7 @@ describe("createAppServer", () => {
     await server.start();
 
     expect(server.getState()).toBe("started");
-    expect(server.config.port).toBe(7331);
+    expect(server.config.port).toBe(port);
   });
 
   test("loads config in the high-level constructor while the configured constructor avoids config I/O", async () => {
@@ -323,7 +325,7 @@ const createSilentLogger = () =>
 const createTestConfig = () =>
   Object.freeze({
     configPath: "/tmp/appserver.config.json",
-    port: 7331,
+    port: 0,
     databasePath: "./var/test.sqlite",
     logLevel: "info" as const,
   });
@@ -343,18 +345,46 @@ const createDeferredPromise = <T>() => {
   };
 };
 
-const createConfigDirectory = async (): Promise<string> => {
+const createConfigDirectory = async (port = 7331): Promise<string> => {
   const directory = await mkdtemp(join(tmpdir(), "atelier-appserver-server-"));
   temporaryDirectories.push(directory);
 
   await writeFile(
     join(directory, "appserver.config.json"),
     JSON.stringify({
-      port: 7331,
+      port,
       databasePath: "./var/test.sqlite",
       logLevel: "info",
     }),
   );
 
   return directory;
+};
+
+const getAvailablePort = async (): Promise<number> => {
+  const server = createServer();
+
+  await new Promise<void>((resolve, reject) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+    server.once("error", reject);
+  });
+
+  const address = server.address();
+
+  if (address === null || typeof address === "string") {
+    throw new Error("Expected a TCP address");
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error !== undefined) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
+
+  return address.port;
 };
