@@ -29,11 +29,14 @@ export const createAgentRegistry = (options: CreateAgentRegistryOptions): AgentR
   const agentsById = new Map(options.agents.map((agent) => [agent.id, agent] as const));
   const activeSessionsById = new Map<string, AgentSession>();
   const pendingSessionsById = new Map<string, Promise<AgentSessionLookupResult<AgentSession>>>();
+  const sessionLifecycleUnsubscribesById = new Map<string, () => void>();
 
   const resolveAgentId = (agentId: string | undefined): string => agentId ?? options.defaultAgentId;
 
   const bindSessionLifecycle = (session: AgentSession): void => {
-    session.subscribe((notification: AgentNotification) => {
+    sessionLifecycleUnsubscribesById.get(session.agentId)?.();
+
+    const unsubscribe = session.subscribe((notification: AgentNotification) => {
       if (notification.type !== "disconnect") {
         return;
       }
@@ -42,7 +45,12 @@ export const createAgentRegistry = (options: CreateAgentRegistryOptions): AgentR
       if (activeSession === session) {
         activeSessionsById.delete(session.agentId);
       }
+
+      sessionLifecycleUnsubscribesById.get(session.agentId)?.();
+      sessionLifecycleUnsubscribesById.delete(session.agentId);
     });
+
+    sessionLifecycleUnsubscribesById.set(session.agentId, unsubscribe);
   };
 
   const getSession = async (
@@ -60,7 +68,7 @@ export const createAgentRegistry = (options: CreateAgentRegistryOptions): AgentR
     }
 
     const cachedSession = activeSessionsById.get(agentId);
-    if (cachedSession !== undefined && cachedSession.getState() !== "disconnected") {
+    if (cachedSession !== undefined && isSessionReusable(cachedSession)) {
       return ok(cachedSession);
     }
 
@@ -94,7 +102,16 @@ export const createAgentRegistry = (options: CreateAgentRegistryOptions): AgentR
       pendingSessionsById.clear();
       const sessions = [...activeSessionsById.values()];
       activeSessionsById.clear();
+      for (const unsubscribe of sessionLifecycleUnsubscribesById.values()) {
+        unsubscribe();
+      }
+      sessionLifecycleUnsubscribesById.clear();
       await Promise.all(sessions.map((session) => session.disconnect("requested_disconnect")));
     },
   });
+};
+
+const isSessionReusable = (session: AgentSession): boolean => {
+  const state = session.getState();
+  return state !== "disconnected" && state !== "disconnecting";
 };

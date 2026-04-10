@@ -272,10 +272,9 @@ export class CodexAppServerTransport implements CodexTransport {
       throw new CodexTransportError("process_exited", "Codex transport is not connected.");
     }
 
-    this.pendingServerRequests.delete(requestIdKey(response.id));
-
     try {
       await this.process.stdin.write(encodeJsonLine(response));
+      this.pendingServerRequests.delete(requestIdKey(response.id));
     } catch (error) {
       this.finalizeDisconnect(
         buildDisconnectInfo("process_exited", null, this.stderrTail, {

@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import path from "node:path";
 import type {
   AgentEnvironmentSource,
@@ -90,6 +90,11 @@ const findExecutableOnPath = async (
 
 const isExecutable = async (candidatePath: string): Promise<boolean> => {
   try {
+    const candidateStat = await stat(candidatePath);
+    if (!candidateStat.isFile()) {
+      return false;
+    }
+
     await access(candidatePath, fsConstants.X_OK);
     return true;
   } catch {

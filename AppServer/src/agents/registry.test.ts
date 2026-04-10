@@ -73,11 +73,73 @@ describe("createAgentRegistry", () => {
     expect(createCount).toBe(2);
     expect(firstLookup.ok && secondLookup.ok && firstLookup.data === secondLookup.data).toBe(false);
   });
+
+  test("does not reuse sessions that are disconnecting", async () => {
+    let createCount = 0;
+    const createdSessions: Array<ReturnType<typeof createFakeSession>> = [];
+    const registry = createAgentRegistry({
+      defaultAgentId: "codex",
+      agents: [
+        {
+          id: "codex",
+          provider: "codex",
+        },
+      ],
+      createSession: async () => {
+        createCount += 1;
+        const session = createFakeSession("codex");
+        createdSessions.push(session);
+        return {
+          ok: true,
+          data: session,
+        };
+      },
+    });
+
+    const firstLookup = await registry.getSession();
+    expect(firstLookup.ok).toBe(true);
+    createdSessions[0].setState("disconnecting");
+
+    const secondLookup = await registry.getSession();
+
+    expect(secondLookup.ok).toBe(true);
+    expect(createCount).toBe(2);
+    expect(firstLookup.ok && secondLookup.ok && firstLookup.data === secondLookup.data).toBe(false);
+  });
+
+  test("unsubscribes registry lifecycle listeners after disconnect", async () => {
+    const session = createFakeSession("codex");
+    const registry = createAgentRegistry({
+      defaultAgentId: "codex",
+      agents: [
+        {
+          id: "codex",
+          provider: "codex",
+        },
+      ],
+      createSession: async () => ({
+        ok: true,
+        data: session,
+      }),
+    });
+
+    const firstLookup = await registry.getSession();
+    expect(firstLookup.ok).toBe(true);
+    expect(session.getListenerCount()).toBe(1);
+
+    emitDisconnect(session);
+
+    expect(session.getListenerCount()).toBe(0);
+  });
 });
 
 const createFakeSession = (
   agentId: string,
-): AgentSession & { emit: (notification: AgentNotification) => void } => {
+): AgentSession & {
+  emit: (notification: AgentNotification) => void;
+  getListenerCount: () => number;
+  setState: (state: AgentSession["getState"] extends () => infer T ? T : never) => void;
+} => {
   let state: AgentSession["getState"] extends () => infer T ? T : never = "ready";
   const listeners = new Set<(notification: AgentNotification) => void>();
 
@@ -162,6 +224,10 @@ const createFakeSession = (
     }),
     disconnect: async () => {
       state = "disconnected";
+    },
+    getListenerCount: () => listeners.size,
+    setState: (nextState) => {
+      state = nextState;
     },
     emit: (notification) => {
       if (notification.type === "disconnect") {
