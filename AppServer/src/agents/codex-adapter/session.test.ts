@@ -3,12 +3,13 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createCodexAgentSession } from "@/agents/codex-adapter/session";
-import type {
-  CodexTransport,
-  CodexTransportEvent,
-  CodexTransportNotification,
-  CodexTransportRequest,
-  CodexTransportResponse,
+import {
+  type CodexTransport,
+  CodexTransportError,
+  type CodexTransportEvent,
+  type CodexTransportNotification,
+  type CodexTransportRequest,
+  type CodexTransportResponse,
 } from "@/agents/codex-adapter/transport";
 import { BaseEnvironmentResolver } from "@/agents/environment";
 import { createSilentLogger } from "@/test-support/logger";
@@ -247,7 +248,73 @@ describe("createCodexAgentSession", () => {
       }),
     );
   });
+
+  test("does not mark the session ready when transport disconnects during initialized notification", async () => {
+    const executablePath = createFakeExecutable();
+    const transport = new FakeTransport([{ userAgent: "Codex/Test" }], {
+      onNotify: (notification, fakeTransport) => {
+        if (notification.method !== "initialized") {
+          return;
+        }
+
+        fakeTransport.emit({
+          type: "disconnect",
+          disconnect: {
+            reason: "process_exited",
+            message: "codex app-server exited while the transport was active.",
+          },
+        });
+      },
+    });
+    const sessionResult = await createCodexAgentSession({
+      agentId: "codex",
+      config: {
+        id: "codex",
+        provider: "codex",
+      },
+      logger: createSilentLogger(),
+      transport,
+      environmentResolver: new BaseEnvironmentResolver({
+        inheritedEnvironment: {
+          ATELIERCODE_CODEX_PATH: executablePath,
+          PATH: path.dirname(executablePath),
+          HOME: "/Users/tester",
+          SHELL: "/bin/zsh",
+        },
+      }),
+    });
+
+    expect(sessionResult.ok).toBe(true);
+    if (!sessionResult.ok) {
+      throw new Error("Expected the Codex session to be created.");
+    }
+
+    const initializationResult = await sessionResult.data.listModels("req-init", {});
+
+    expect(initializationResult).toMatchObject({
+      ok: false,
+      error: {
+        type: "sessionUnavailable",
+        agentId: "codex",
+        provider: "codex",
+        code: "disconnected",
+        message: "codex app-server exited while the transport was active.",
+        executable: {
+          executableName: "codex",
+          resolvedPath: executablePath,
+        },
+        environment: {
+          source: "login_probe",
+        },
+      },
+    });
+    expect(sessionResult.data.getState()).toBe("disconnected");
+  });
 });
+
+type FakeTransportOptions = Readonly<{
+  onNotify?: (notification: CodexTransportNotification, transport: FakeTransport) => void;
+}>;
 
 class FakeTransport implements CodexTransport {
   readonly sent: CodexTransportRequest[] = [];
@@ -256,26 +323,46 @@ class FakeTransport implements CodexTransport {
   connectCount = 0;
 
   private readonly listeners = new Set<(event: CodexTransportEvent) => void>();
+  private disconnected = false;
 
-  constructor(private readonly responses: unknown[] = []) {}
+  constructor(
+    private readonly responses: unknown[] = [],
+    private readonly options: FakeTransportOptions = {},
+  ) {}
 
   async connect(): Promise<void> {
     this.connectCount += 1;
+    this.disconnected = false;
   }
 
-  async disconnect(): Promise<void> {}
+  async disconnect(): Promise<void> {
+    this.disconnected = true;
+  }
 
   async send<TResult = unknown>(request: CodexTransportRequest): Promise<TResult> {
+    if (this.disconnected) {
+      throw new CodexTransportError("process_exited", "Codex transport is not connected.");
+    }
+
     this.sent.push(request);
     const response = this.responses.shift();
     return response as TResult;
   }
 
   async notify(notification: CodexTransportNotification): Promise<void> {
+    if (this.disconnected) {
+      throw new CodexTransportError("process_exited", "Codex transport is not connected.");
+    }
+
     this.notified.push(notification);
+    this.options.onNotify?.(notification, this);
   }
 
   async respond(response: CodexTransportResponse): Promise<void> {
+    if (this.disconnected) {
+      throw new CodexTransportError("process_exited", "Codex transport is not connected.");
+    }
+
     this.responded.push(response);
   }
 
@@ -287,6 +374,10 @@ class FakeTransport implements CodexTransport {
   }
 
   emit(event: CodexTransportEvent): void {
+    if (event.type === "disconnect") {
+      this.disconnected = true;
+    }
+
     for (const listener of this.listeners) {
       listener(event);
     }

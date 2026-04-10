@@ -37,6 +37,7 @@ import {
 import {
   CodexAppServerTransport,
   type CodexTransport,
+  type CodexTransportDisconnectInfo,
   CodexTransportError,
   CodexTransportRemoteError,
   type CodexTransportResponse,
@@ -56,6 +57,7 @@ import type {
   AgentRequestId,
   AgentSession,
   AgentSessionLookupError,
+  AgentSessionUnavailableError,
   AgentThreadForkParams,
   AgentThreadReadParams,
   AgentThreadResult,
@@ -161,10 +163,17 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
   let state: AgentSession["getState"] extends () => infer T ? T : never = "idle";
   let initializePromise: Promise<Result<void, AgentOperationError>> | null = null;
   let initialized = false;
+  let latestDisconnect: CodexTransportDisconnectInfo | null = null;
 
   const emit = (notification: AgentNotification): void => {
     if (notification.type === "disconnect") {
       state = "disconnected";
+      latestDisconnect = {
+        reason: notification.reason,
+        message: notification.message,
+        ...(notification.exitCode !== undefined ? { exitCode: notification.exitCode } : {}),
+        ...(notification.detail !== undefined ? { detail: notification.detail } : {}),
+      };
     }
 
     for (const listener of listeners) {
@@ -237,7 +246,7 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
     }
 
     state = "connecting";
-    initializePromise = (async () => {
+    const pendingInitialization: Promise<Result<void, AgentOperationError>> = (async () => {
       try {
         const initializeParams: CodexInitializeParams = {
           clientInfo: {
@@ -260,6 +269,9 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
           method: "initialized",
         };
         await options.transport.notify(initializedNotification);
+        if (latestDisconnect !== null) {
+          return err(buildInitializationDisconnectError(options, latestDisconnect));
+        }
         initialized = true;
         state = "ready";
         options.logger.info("Codex session initialized");
@@ -279,8 +291,9 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
         initializePromise = null;
       }
     })();
+    initializePromise = pendingInitialization;
 
-    return initializePromise;
+    return pendingInitialization;
   };
 
   const runOperation = async <T>(
@@ -698,6 +711,20 @@ const normalizeSessionStartupError = (
     environment: environment.diagnostics,
   };
 };
+
+const buildInitializationDisconnectError = (
+  options: ConnectedSessionOptions,
+  disconnect: CodexTransportDisconnectInfo | null,
+): AgentSessionUnavailableError => ({
+  type: "sessionUnavailable",
+  agentId: options.agentId,
+  provider: "codex",
+  code: disconnect?.reason === "provider_executable_missing" ? "executableMissing" : "disconnected",
+  message: disconnect?.message ?? "Codex transport disconnected during initialization.",
+  executable: options.executable,
+  environment: options.environment.diagnostics,
+  ...(disconnect?.detail ? { detail: disconnect.detail } : {}),
+});
 
 const normalizeOperationError = (
   agentId: string,
