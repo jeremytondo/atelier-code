@@ -6,6 +6,7 @@
   "scripts": {
     "start": "bun run ./src/index.ts",
     "db:generate": "drizzle-kit generate",
+    "generate:codex-contract": "./scripts/update-codex-contract.sh",
     "check": "biome check .",
     "typecheck": "tsc --noEmit",
     "test": "bun test"

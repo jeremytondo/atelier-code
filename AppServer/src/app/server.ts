@@ -1,4 +1,5 @@
-import { createAgentsFeaturePlaceholder } from "@/agents";
+import { createAgentsFeature } from "@/agents";
+import { createCodexAgentAdapter } from "@/agents/codex-adapter";
 import {
   type AppServerConfig,
   type LoadAppServerConfigOptions,
@@ -311,6 +312,15 @@ const createDefaultComponents = (
     registerMethod: appProtocolRuntime.registerMethod,
     store: createSqliteWorkspacesStore(storeBootstrap.getDatabase),
   });
+  const agentsFeature = createAgentsFeature({
+    config: config.agents,
+    logger: logger.withContext({ component: "feature.agents" }),
+    adapters: [
+      createCodexAgentAdapter({
+        logger: logger.withContext({ component: "agents.codex" }),
+      }),
+    ],
+  });
   const transportComponent = createAppTransportComponent({
     config,
     logger,
@@ -325,7 +335,7 @@ const createDefaultComponents = (
   return Object.freeze([
     appProtocolRuntime.protocolComponent,
     storeBootstrap.lifecycle,
-    createAgentsFeaturePlaceholder(),
+    agentsFeature.lifecycle,
     workspacesFeature.lifecycle,
     createThreadsFeaturePlaceholder(),
     createTurnsFeaturePlaceholder(),

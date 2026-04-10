@@ -27,6 +27,7 @@ describe("resolveDatabasePath", () => {
         port: 7331,
         databasePath: "./var/appserver.sqlite",
         logLevel: "info",
+        agents: createTestAgentsConfig(),
       }),
     ).toBe("/tmp/config/var/appserver.sqlite");
   });
@@ -128,6 +129,7 @@ const createTestConfig = async () => {
     port: 0,
     databasePath: "./var/test.sqlite",
     logLevel: "info" as const,
+    agents: createTestAgentsConfig(),
   });
 };
 
@@ -136,3 +138,13 @@ const createTemporaryDirectory = async (prefix: string): Promise<string> => {
   temporaryDirectories.push(directory);
   return directory;
 };
+
+const createTestAgentsConfig = () => ({
+  defaultAgent: "codex",
+  enabled: [
+    {
+      id: "codex",
+      provider: "codex" as const,
+    },
+  ],
+});

@@ -376,6 +376,7 @@ const createProtocolHarness = async (): Promise<Readonly<{ port: number }>> => {
       port,
       databasePath: "./var/test.sqlite",
       logLevel: "info",
+      agents: createTestAgentsConfig(),
     },
     logger: createLogger({
       level: "error",
@@ -389,6 +390,16 @@ const createProtocolHarness = async (): Promise<Readonly<{ port: number }>> => {
 
   return Object.freeze({ port });
 };
+
+const createTestAgentsConfig = () => ({
+  defaultAgent: "codex",
+  enabled: [
+    {
+      id: "codex",
+      provider: "codex" as const,
+    },
+  ],
+});
 
 const createWorkspaceDirectory = async (): Promise<string> => {
   const rootDirectory = await createTemporaryDirectory("atelier-appserver-workspace-");
