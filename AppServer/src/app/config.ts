@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { type Static, Type } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
+import { AgentsConfigSchema, validateAgentsConfig } from "@/agents";
 import {
   ConfigParseStartupError,
   ConfigReadStartupError,
@@ -25,6 +26,7 @@ const AppServerConfigFileSchema = Type.Object(
       Type.Literal("warn"),
       Type.Literal("error"),
     ]),
+    agents: AgentsConfigSchema,
   },
   { additionalProperties: false },
 );
@@ -106,22 +108,28 @@ const validateConfig = (
   source: string,
 ): AppServerConfigFile => {
   if (!Value.Check(AppServerConfigFileSchema, candidate)) {
-    const issues = [...Value.Errors(AppServerConfigFileSchema, candidate)].map(
-      (validationError) => {
+    const issues = [
+      ...[...Value.Errors(AppServerConfigFileSchema, candidate)].map((validationError) => {
         const path = validationError.path || "/";
         return `${source} ${path}: ${validationError.message}`;
-      },
-    );
+      }),
+    ];
 
     throw new ConfigValidationStartupError(configPath, issues);
   }
 
   const validatedConfig = candidate as AppServerConfigFile;
+  const agentConfigIssues = validateAgentsConfig(validatedConfig.agents);
+
+  if (agentConfigIssues.length > 0) {
+    throw new ConfigValidationStartupError(configPath, [...agentConfigIssues]);
+  }
 
   return Object.freeze({
     port: validatedConfig.port,
     databasePath: validatedConfig.databasePath,
     logLevel: validatedConfig.logLevel,
+    agents: validatedConfig.agents,
   });
 };
 

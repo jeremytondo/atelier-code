@@ -34,6 +34,7 @@ describe("loadAppServerConfig", () => {
         port: 7331,
         databasePath: "./var/test.sqlite",
         logLevel: "info",
+        agents: createTestAgentsConfig(),
       }),
     );
 
@@ -49,6 +50,7 @@ describe("loadAppServerConfig", () => {
       port: 7331,
       databasePath: "./var/test.sqlite",
       logLevel: "info",
+      agents: createTestAgentsConfig(),
     });
   });
 
@@ -62,6 +64,7 @@ describe("loadAppServerConfig", () => {
         port: 7000,
         databasePath: "./var/original.sqlite",
         logLevel: "info",
+        agents: createTestAgentsConfig(),
       }),
     );
 
@@ -80,6 +83,7 @@ describe("loadAppServerConfig", () => {
       port: 9000,
       databasePath: "./var/override.sqlite",
       logLevel: "debug",
+      agents: createTestAgentsConfig(),
     });
   });
 
@@ -109,6 +113,39 @@ describe("loadAppServerConfig", () => {
         port: 0,
         databasePath: "",
         logLevel: "loud",
+        agents: createTestAgentsConfig(),
+      }),
+    );
+
+    await expect(
+      loadAppServerConfig({
+        cwd: tempDirectory,
+        env: {
+          [APP_SERVER_CONFIG_PATH_ENV]: "appserver.config.json",
+        },
+      }),
+    ).rejects.toBeInstanceOf(ConfigValidationStartupError);
+  });
+
+  test("fails when the default agent is not enabled", async () => {
+    const tempDirectory = await createTempDirectory();
+    const configPath = join(tempDirectory, "appserver.config.json");
+
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        port: 7331,
+        databasePath: "./var/test.sqlite",
+        logLevel: "info",
+        agents: {
+          defaultAgent: "claude",
+          enabled: [
+            {
+              id: "codex",
+              provider: "codex",
+            },
+          ],
+        },
       }),
     );
 
@@ -129,3 +166,13 @@ const createTempDirectory = async (): Promise<string> => {
 
   return directory;
 };
+
+const createTestAgentsConfig = () => ({
+  defaultAgent: "codex",
+  enabled: [
+    {
+      id: "codex",
+      provider: "codex" as const,
+    },
+  ],
+});

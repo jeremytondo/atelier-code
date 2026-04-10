@@ -6,13 +6,14 @@
   "scripts": {
     "start": "bun run ./src/index.ts",
     "db:generate": "drizzle-kit generate",
+    "generate:codex-contract": "./scripts/update-codex-contract.sh",
     "check": "biome check .",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.41",
-    "drizzle-orm": "^0.45.2"
+    "drizzle-orm": "0.45.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.0",

@@ -60,6 +60,30 @@ describe("createAppServer", () => {
     expect(server.config.port).toBe(port);
   });
 
+  test("starts even when the configured codex executable is unavailable", async () => {
+    const port = await getAvailablePort();
+    const server = createConfiguredAppServer({
+      config: Object.freeze({
+        ...createTestConfig(port),
+        agents: {
+          defaultAgent: "codex",
+          enabled: [
+            {
+              id: "codex",
+              provider: "codex" as const,
+              executablePath: "/definitely/missing/codex",
+            },
+          ],
+        },
+      }),
+      logger: createSilentLogger(),
+      signalRegistrar: createSignalRegistrar(),
+    });
+
+    await expect(server.start()).resolves.toBeUndefined();
+    await server.stop("test-stop");
+  });
+
   test("loads config in the high-level constructor while the configured constructor avoids config I/O", async () => {
     let readCount = 0;
 
@@ -75,6 +99,7 @@ describe("createAppServer", () => {
           port: 7331,
           databasePath: "./var/test.sqlite",
           logLevel: "info",
+          agents: createTestAgentsConfig(),
         });
       },
       writeLog: () => {},
@@ -87,6 +112,7 @@ describe("createAppServer", () => {
         port: 7444,
         databasePath: "./var/configured.sqlite",
         logLevel: "info",
+        agents: createTestAgentsConfig(),
       }),
       logger: createLogger({
         level: "info",
@@ -317,15 +343,16 @@ const createSignalRegistrar = (): FakeSignalRegistrar => {
   };
 };
 
-const createTestConfig = () => {
+const createTestConfig = (port = 0) => {
   const rootDirectory = join(tmpdir(), `atelier-appserver-server-${crypto.randomUUID()}`);
   temporaryDirectories.push(rootDirectory);
 
   return Object.freeze({
     configPath: join(rootDirectory, "appserver.config.json"),
-    port: 0,
+    port,
     databasePath: "./var/test.sqlite",
     logLevel: "info" as const,
+    agents: createTestAgentsConfig(),
   });
 };
 
@@ -354,8 +381,19 @@ const createConfigDirectory = async (port = 7331): Promise<string> => {
       port,
       databasePath: "./var/test.sqlite",
       logLevel: "info",
+      agents: createTestAgentsConfig(),
     }),
   );
 
   return directory;
 };
+
+const createTestAgentsConfig = () => ({
+  defaultAgent: "codex",
+  enabled: [
+    {
+      id: "codex",
+      provider: "codex" as const,
+    },
+  ],
+});
