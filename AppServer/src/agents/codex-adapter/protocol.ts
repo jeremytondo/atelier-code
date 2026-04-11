@@ -84,9 +84,19 @@ const CodexThreadSchema = Type.Object(
   {
     id: Type.String(),
     preview: Type.String(),
+    createdAt: Type.Number(),
     updatedAt: Type.Number(),
     name: Type.Union([Type.String(), Type.Null()]),
     status: CodexThreadStatusSchema,
+    cwd: Type.String(),
+  },
+  { additionalProperties: true },
+);
+
+const CodexThreadListResponseSchema = Type.Object(
+  {
+    data: Type.Array(CodexThreadSchema),
+    nextCursor: Type.Union([Type.String(), Type.Null()]),
   },
   { additionalProperties: true },
 );
@@ -200,6 +210,7 @@ export type CodexModel = Static<typeof CodexModelSchema>;
 export type CodexModelListResponse = Static<typeof CodexModelListResponseSchema>;
 export type CodexThreadStatus = Static<typeof CodexThreadStatusSchema>;
 export type CodexThread = Static<typeof CodexThreadSchema>;
+export type CodexThreadListResponse = Static<typeof CodexThreadListResponseSchema>;
 export type CodexTurn = Static<typeof CodexTurnSchema>;
 export type CodexInitializeResponse = Static<typeof CodexInitializeResponseSchema>;
 export type CodexTurnPlanUpdatedNotification = Static<
@@ -240,6 +251,13 @@ export type CodexAskForApproval = "untrusted" | "on-failure" | "on-request" | "n
 export type CodexModelListParams = Readonly<{
   limit?: number;
   includeHidden?: boolean;
+}>;
+
+export type CodexThreadListParams = Readonly<{
+  cursor?: string;
+  limit?: number;
+  archived?: boolean;
+  cwd?: string;
 }>;
 
 export type CodexThreadStartParams = Readonly<{
@@ -314,6 +332,9 @@ export const parseCodexInitializeResponse = (candidate: unknown): CodexInitializ
 
 export const parseCodexModelListResponse = (candidate: unknown): CodexModelListResponse =>
   validateCodexPayload(CodexModelListResponseSchema, candidate, "model/list response");
+
+export const parseCodexThreadListResponse = (candidate: unknown): CodexThreadListResponse =>
+  validateCodexPayload(CodexThreadListResponseSchema, candidate, "thread/list response");
 
 export const parseCodexThreadResponse = (candidate: unknown): { thread: CodexThread } =>
   validateCodexPayload(CodexThreadResponseSchema, candidate, "thread response");

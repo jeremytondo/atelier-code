@@ -1,4 +1,4 @@
 import { createLifecyclePlaceholder, type LifecycleComponent } from "@/core/shared";
 
-export const createApprovalsFeaturePlaceholder = (): LifecycleComponent =>
-  createLifecyclePlaceholder("feature.approvals");
+export const createApprovalsModulePlaceholder = (): LifecycleComponent =>
+  createLifecyclePlaceholder("module.approvals");

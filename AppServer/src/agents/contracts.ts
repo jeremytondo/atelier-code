@@ -59,6 +59,17 @@ export type AgentThreadExecutionStatus =
   | Readonly<{ type: "active"; activeFlags: readonly string[] }>
   | Readonly<{ type: "systemError"; message?: string }>;
 
+export type AgentThread = Readonly<{
+  id: string;
+  preview: string;
+  createdAt: string;
+  updatedAt: string;
+  workspacePath: string;
+  name: string | null;
+  archived: boolean;
+  status: AgentThreadExecutionStatus;
+}>;
+
 export type AgentTurnStatus =
   | Readonly<{ type: "inProgress" }>
   | Readonly<{ type: "awaitingInput" }>
@@ -262,6 +273,18 @@ export type AgentListModelsResult = Readonly<{
   nextCursor: string | null;
 }>;
 
+export type AgentListThreadsParams = Readonly<{
+  cursor?: string;
+  limit?: number;
+  archived?: boolean;
+  workspacePath?: string;
+}>;
+
+export type AgentListThreadsResult = Readonly<{
+  threads: readonly AgentThread[];
+  nextCursor: string | null;
+}>;
+
 export type AgentThreadStartParams = Readonly<{
   workspacePath: string;
   title?: string;
@@ -283,6 +306,7 @@ export type AgentThreadResumeParams = Readonly<{
 export type AgentThreadReadParams = Readonly<{
   threadId: string;
   includeTurns: boolean;
+  archived?: boolean;
 }>;
 
 export type AgentThreadForkParams = Readonly<{
@@ -290,7 +314,7 @@ export type AgentThreadForkParams = Readonly<{
 }>;
 
 export type AgentThreadResult = Readonly<{
-  thread: AgentThreadSummary;
+  thread: AgentThread;
 }>;
 
 export type AgentTurnStartParams = Readonly<{
@@ -335,6 +359,10 @@ export type AgentSession = Readonly<{
     requestId: AgentRequestId,
     params: AgentListModelsParams,
   ) => Promise<AgentOperationResult<AgentListModelsResult>>;
+  listThreads: (
+    requestId: AgentRequestId,
+    params: AgentListThreadsParams,
+  ) => Promise<AgentOperationResult<AgentListThreadsResult>>;
   startThread: (
     requestId: AgentRequestId,
     params: AgentThreadStartParams,

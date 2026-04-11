@@ -9,19 +9,19 @@ import type { ProtocolDispatcher } from "@/core/protocol";
 import type { LifecycleComponent } from "@/core/shared";
 import { err } from "@/core/shared";
 
-export type AgentsFeature = Readonly<{
+export type AgentsModule = Readonly<{
   lifecycle: LifecycleComponent;
   registry: AgentRegistry;
 }>;
 
-export type CreateAgentsFeatureOptions = Readonly<{
+export type CreateAgentsModuleOptions = Readonly<{
   config: AgentsConfig;
   logger: Logger;
   adapters: readonly AgentAdapter[];
   registerMethod: ProtocolDispatcher["registerMethod"];
 }>;
 
-export const createAgentsFeature = (options: CreateAgentsFeatureOptions): AgentsFeature => {
+export const createAgentsModule = (options: CreateAgentsModuleOptions): AgentsModule => {
   const adaptersByProvider = new Map(
     options.adapters.map((adapter) => [adapter.provider, adapter] as const),
   );
@@ -62,9 +62,9 @@ export const createAgentsFeature = (options: CreateAgentsFeatureOptions): Agents
   return Object.freeze({
     registry,
     lifecycle: Object.freeze({
-      name: "feature.agents",
+      name: "module.agents",
       start: async () => {
-        options.logger.info("Agents feature ready", {
+        options.logger.info("Agents module ready", {
           defaultAgent: options.config.defaultAgent,
           enabledAgents: options.config.enabled.map((agent) => agent.id).join(","),
           registeredProviders: [...adaptersByProvider.keys()].join(","),
@@ -72,7 +72,7 @@ export const createAgentsFeature = (options: CreateAgentsFeatureOptions): Agents
       },
       stop: async (reason: string) => {
         await registry.disconnectAll(reason);
-        options.logger.info("Agents feature stopped", { reason });
+        options.logger.info("Agents module stopped", { reason });
       },
     }),
   });

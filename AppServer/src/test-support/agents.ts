@@ -2,12 +2,17 @@ import type { AgentAdapter } from "@/agents/adapter";
 import type {
   AgentListModelsParams,
   AgentListModelsResult,
+  AgentListThreadsParams,
+  AgentListThreadsResult,
   AgentNotification,
   AgentOperationResult,
   AgentRequestId,
   AgentSession,
   AgentSessionLookupError,
   AgentSessionState,
+  AgentThread,
+  AgentThreadReadParams,
+  AgentThreadResult,
 } from "@/agents/contracts";
 import type { AgentRegistry } from "@/agents/registry";
 
@@ -16,6 +21,14 @@ export type FakeAgentSession = AgentSession &
     listModelsCalls: readonly Readonly<{
       requestId: AgentRequestId;
       params: AgentListModelsParams;
+    }>[];
+    listThreadsCalls: readonly Readonly<{
+      requestId: AgentRequestId;
+      params: AgentListThreadsParams;
+    }>[];
+    readThreadCalls: readonly Readonly<{
+      requestId: AgentRequestId;
+      params: AgentThreadReadParams;
     }>[];
   }>;
 
@@ -26,6 +39,14 @@ export type CreateFakeAgentSessionOptions = Readonly<{
     requestId: AgentRequestId,
     params: AgentListModelsParams,
   ) => Promise<AgentOperationResult<AgentListModelsResult>>;
+  listThreads?: (
+    requestId: AgentRequestId,
+    params: AgentListThreadsParams,
+  ) => Promise<AgentOperationResult<AgentListThreadsResult>>;
+  readThread?: (
+    requestId: AgentRequestId,
+    params: AgentThreadReadParams,
+  ) => Promise<AgentOperationResult<AgentThreadResult>>;
 }>;
 
 export const createFakeAgentSession = (
@@ -36,6 +57,18 @@ export const createFakeAgentSession = (
     Readonly<{
       requestId: AgentRequestId;
       params: AgentListModelsParams;
+    }>
+  > = [];
+  const listThreadsCalls: Array<
+    Readonly<{
+      requestId: AgentRequestId;
+      params: AgentListThreadsParams;
+    }>
+  > = [];
+  const readThreadCalls: Array<
+    Readonly<{
+      requestId: AgentRequestId;
+      params: AgentThreadReadParams;
     }>
   > = [];
 
@@ -62,14 +95,46 @@ export const createFakeAgentSession = (
         }
       );
     },
+    listThreads: async (requestId, params) => {
+      listThreadsCalls.push(
+        Object.freeze({
+          requestId,
+          params,
+        }),
+      );
+
+      return (
+        (await options.listThreads?.(requestId, params)) ?? {
+          ok: true,
+          data: {
+            threads: [],
+            nextCursor: null,
+          },
+        }
+      );
+    },
     startThread: async () => {
       throw new Error("startThread should not be called in this test.");
     },
     resumeThread: async () => {
       throw new Error("resumeThread should not be called in this test.");
     },
-    readThread: async () => {
-      throw new Error("readThread should not be called in this test.");
+    readThread: async (requestId, params) => {
+      readThreadCalls.push(
+        Object.freeze({
+          requestId,
+          params,
+        }),
+      );
+
+      return (
+        (await options.readThread?.(requestId, params)) ?? {
+          ok: true,
+          data: {
+            thread: createTestAgentThread(),
+          },
+        }
+      );
     },
     forkThread: async () => {
       throw new Error("forkThread should not be called in this test.");
@@ -90,6 +155,8 @@ export const createFakeAgentSession = (
       state = "disconnected";
     },
     listModelsCalls,
+    listThreadsCalls,
+    readThreadCalls,
   };
 };
 
@@ -183,4 +250,29 @@ export const createTestAgentModel = (
     inputModalities: ["text"],
     supportsPersonality: overrides.supportsPersonality ?? true,
     isDefault: overrides.isDefault ?? false,
+  });
+
+export const createTestAgentThread = (
+  overrides: Partial<
+    Readonly<{
+      id: string;
+      preview: string;
+      createdAt: string;
+      updatedAt: string;
+      workspacePath: string;
+      name: string | null;
+      archived: boolean;
+      status: AgentThread["status"];
+    }>
+  > = {},
+) =>
+  Object.freeze({
+    id: overrides.id ?? "thread-1",
+    preview: overrides.preview ?? "Thread preview",
+    createdAt: overrides.createdAt ?? "2026-04-10T10:00:00.000Z",
+    updatedAt: overrides.updatedAt ?? "2026-04-10T11:00:00.000Z",
+    workspacePath: overrides.workspacePath ?? "/tmp/project",
+    name: overrides.name ?? null,
+    archived: overrides.archived ?? false,
+    status: overrides.status ?? ({ type: "idle" } as const),
   });

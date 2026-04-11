@@ -1,6 +1,6 @@
 import {
   mapCodexModelSummary,
-  mapCodexThreadSummary,
+  mapCodexThread,
   mapCodexTurnSummary,
 } from "@/agents/codex-adapter/model-mapper";
 import {
@@ -18,6 +18,7 @@ import type {
   CodexMcpServerElicitationRequestResponse,
   CodexModelListParams,
   CodexThreadForkParams,
+  CodexThreadListParams,
   CodexThreadReadParams,
   CodexThreadResumeParams,
   CodexThreadStartParams,
@@ -29,6 +30,7 @@ import type {
 import {
   parseCodexInitializeResponse,
   parseCodexModelListResponse,
+  parseCodexThreadListResponse,
   parseCodexThreadResponse,
   parseCodexTurnInterruptResponse,
   parseCodexTurnResponse,
@@ -51,6 +53,8 @@ import type {
   AgentExecutableDiscovery,
   AgentListModelsParams,
   AgentListModelsResult,
+  AgentListThreadsParams,
+  AgentListThreadsResult,
   AgentNotification,
   AgentOperationError,
   AgentOperationResult,
@@ -350,6 +354,35 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
       };
     });
 
+  const listThreads = async (
+    requestId: AgentRequestId,
+    params: AgentListThreadsParams,
+  ): Promise<AgentOperationResult<AgentListThreadsResult>> =>
+    runOperation(requestId, async () => {
+      const rawParams: CodexThreadListParams = {
+        cursor: params.cursor,
+        limit: params.limit,
+        archived: params.archived,
+        cwd: params.workspacePath,
+      };
+      const response = parseCodexThreadListResponse(
+        await options.transport.send({
+          id: requestId,
+          method: "thread/list",
+          params: rawParams,
+        }),
+      );
+
+      return {
+        threads: response.data.map((thread) =>
+          mapCodexThread(thread, {
+            archived: params.archived === true,
+          }),
+        ),
+        nextCursor: response.nextCursor,
+      };
+    });
+
   const startThread = async (
     requestId: AgentRequestId,
     params: AgentThreadStartParams,
@@ -364,7 +397,7 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
       );
 
       return {
-        thread: mapCodexThreadSummary(response.thread),
+        thread: mapCodexThread(response.thread),
       };
     });
 
@@ -382,7 +415,7 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
       );
 
       return {
-        thread: mapCodexThreadSummary(response.thread),
+        thread: mapCodexThread(response.thread),
       };
     });
 
@@ -404,7 +437,9 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
       );
 
       return {
-        thread: mapCodexThreadSummary(response.thread),
+        thread: mapCodexThread(response.thread, {
+          archived: params.archived,
+        }),
       };
     });
 
@@ -426,7 +461,7 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
       );
 
       return {
-        thread: mapCodexThreadSummary(response.thread),
+        thread: mapCodexThread(response.thread),
       };
     });
 
@@ -545,6 +580,7 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
       };
     },
     listModels,
+    listThreads,
     startThread,
     resumeThread,
     readThread,
