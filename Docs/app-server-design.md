@@ -221,6 +221,8 @@ Feature directories live at the `src/` root alongside `app/` and `core/` (e.g., 
 
 **Rule:** Feature directories are entirely blind to the transport layer. They do not know if a request came from a WebSocket, an HTTP endpoint, or a local CLI. They receive parsed objects, execute logic, and return results.
 
+When a feature directory exposes a composed runtime unit for `src/app/` to wire up, that exported unit may be named a **module** to distinguish the instantiated composition surface from the broader architectural concept of a feature.
+
 **Agent adapters** live under `src/agents/`. Adapter logic is domain-meaningful — it defines how Atelier talks to a specific agent like Codex or Claude — not generic plumbing. Adapter interfaces are defined here, with concrete implementations per agent as sub-modules.
 
 **Interdependencies:** Features may depend on each other's public interfaces (turns depend on threads), but only through explicit imports of typed contracts exported from the feature's `index.ts`. Features must not reach into each other's internals.

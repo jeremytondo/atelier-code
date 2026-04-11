@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAdapter } from "@/agents";
-import { createAgentsFeature } from "@/agents";
+import { createAgentsModule } from "@/agents";
 import { createCodexAgentAdapter } from "@/agents/codex-adapter";
 import { createLogger } from "@/app/logger";
 import {
@@ -12,7 +12,7 @@ import {
   createAppTransportComponent,
 } from "@/app/protocol";
 import { type AppServer, createConfiguredAppServer, type SignalRegistrar } from "@/app/server";
-import { createApprovalsFeaturePlaceholder } from "@/approvals";
+import { createApprovalsModulePlaceholder } from "@/approvals";
 import { createStoreBootstrap } from "@/core/store";
 import {
   createFakeAgentAdapter,
@@ -21,9 +21,9 @@ import {
   createTestAgentThread,
 } from "@/test-support/agents";
 import { getAvailablePort } from "@/test-support/network";
-import { createSqliteThreadsStore, createThreadsFeature } from "@/threads";
-import { createTurnsFeaturePlaceholder } from "@/turns";
-import { createSqliteWorkspacesStore, createWorkspacesFeature } from "@/workspaces";
+import { createSqliteThreadsStore, createThreadsModule } from "@/threads";
+import { createTurnsModulePlaceholder } from "@/turns";
+import { createSqliteWorkspacesStore, createWorkspacesModule } from "@/workspaces";
 
 const runningServers: AppServer[] = [];
 const temporaryDirectories: string[] = [];
@@ -1231,14 +1231,14 @@ const createProtocolHarness = async (
     config,
     logger: logger.withContext({ component: "core.store" }),
   });
-  const workspacesFeature = createWorkspacesFeature({
-    logger: logger.withContext({ component: "feature.workspaces" }),
+  const workspacesModule = createWorkspacesModule({
+    logger: logger.withContext({ component: "module.workspaces" }),
     registerMethod: appProtocolRuntime.registerMethod,
     store: createSqliteWorkspacesStore(storeBootstrap.getDatabase),
   });
-  const agentsFeature = createAgentsFeature({
+  const agentsModule = createAgentsModule({
     config: config.agents,
-    logger: logger.withContext({ component: "feature.agents" }),
+    logger: logger.withContext({ component: "module.agents" }),
     adapters: options.agentAdapters ?? [
       createCodexAgentAdapter({
         logger: logger.withContext({ component: "agents.codex" }),
@@ -1246,12 +1246,12 @@ const createProtocolHarness = async (
     ],
     registerMethod: appProtocolRuntime.registerMethod,
   });
-  const threadsFeature = createThreadsFeature({
-    logger: logger.withContext({ component: "feature.threads" }),
+  const threadsModule = createThreadsModule({
+    logger: logger.withContext({ component: "module.threads" }),
     registerMethod: appProtocolRuntime.registerMethod,
-    registry: agentsFeature.registry,
+    registry: agentsModule.registry,
     store: createSqliteThreadsStore(storeBootstrap.getDatabase),
-    getOpenedWorkspace: workspacesFeature.getOpenedWorkspace,
+    getOpenedWorkspace: workspacesModule.getOpenedWorkspace,
   });
   const transportComponent = createAppTransportComponent({
     config,
@@ -1259,7 +1259,7 @@ const createProtocolHarness = async (
     protocol: appProtocolRuntime,
     onConnectionClosed: [
       ({ connectionId }) => {
-        workspacesFeature.handleConnectionClosed(connectionId);
+        workspacesModule.handleConnectionClosed(connectionId);
       },
     ],
   });
@@ -1270,11 +1270,11 @@ const createProtocolHarness = async (
     components: [
       appProtocolRuntime.protocolComponent,
       storeBootstrap.lifecycle,
-      agentsFeature.lifecycle,
-      workspacesFeature.lifecycle,
-      threadsFeature.lifecycle,
-      createTurnsFeaturePlaceholder(),
-      createApprovalsFeaturePlaceholder(),
+      agentsModule.lifecycle,
+      workspacesModule.lifecycle,
+      threadsModule.lifecycle,
+      createTurnsModulePlaceholder(),
+      createApprovalsModulePlaceholder(),
       transportComponent,
     ],
   });

@@ -9,22 +9,22 @@ import {
 } from "@/workspaces/schemas";
 import { type CreateWorkspacesServiceOptions, createWorkspacesService } from "@/workspaces/service";
 
-export type WorkspacesFeature = Readonly<{
+export type WorkspacesModule = Readonly<{
   lifecycle: LifecycleComponent;
   getOpenedWorkspace: (connectionId: string) => Workspace | undefined;
   handleConnectionClosed: (connectionId: string) => void;
 }>;
 
-export type CreateWorkspacesFeatureOptions = Readonly<
+export type CreateWorkspacesModuleOptions = Readonly<
   {
     logger: Logger;
     registerMethod: ProtocolDispatcher["registerMethod"];
   } & CreateWorkspacesServiceOptions
 >;
 
-export const createWorkspacesFeature = (
-  options: CreateWorkspacesFeatureOptions,
-): WorkspacesFeature => {
+export const createWorkspacesModule = (
+  options: CreateWorkspacesModuleOptions,
+): WorkspacesModule => {
   const service = createWorkspacesService(options);
   const openedWorkspacesByConnectionId = new Map<string, Workspace>();
 
@@ -59,13 +59,13 @@ export const createWorkspacesFeature = (
 
   return Object.freeze({
     lifecycle: Object.freeze({
-      name: "feature.workspaces",
+      name: "module.workspaces",
       start: async () => {
-        options.logger.info("Workspaces feature ready");
+        options.logger.info("Workspaces module ready");
       },
       stop: async (reason: string) => {
         openedWorkspacesByConnectionId.clear();
-        options.logger.info("Workspaces feature stopped", { reason });
+        options.logger.info("Workspaces module stopped", { reason });
       },
     }),
     getOpenedWorkspace: (connectionId) => openedWorkspacesByConnectionId.get(connectionId),

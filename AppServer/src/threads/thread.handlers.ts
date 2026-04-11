@@ -20,11 +20,11 @@ import { createThreadsService } from "@/threads/service";
 import type { ThreadsStore } from "@/threads/store";
 import type { Workspace } from "@/workspaces/schemas";
 
-export type ThreadsFeature = Readonly<{
+export type ThreadsModule = Readonly<{
   lifecycle: LifecycleComponent;
 }>;
 
-export type CreateThreadsFeatureOptions = Readonly<{
+export type CreateThreadsModuleOptions = Readonly<{
   logger: Logger;
   registerMethod: ProtocolDispatcher["registerMethod"];
   registry: AgentRegistry;
@@ -33,7 +33,7 @@ export type CreateThreadsFeatureOptions = Readonly<{
   now?: () => string;
 }>;
 
-export const createThreadsFeature = (options: CreateThreadsFeatureOptions): ThreadsFeature => {
+export const createThreadsModule = (options: CreateThreadsModuleOptions): ThreadsModule => {
   const service = createThreadsService({
     logger: options.logger,
     registry: options.registry,
@@ -147,12 +147,12 @@ export const createThreadsFeature = (options: CreateThreadsFeatureOptions): Thre
 
   return Object.freeze({
     lifecycle: Object.freeze({
-      name: "feature.threads",
+      name: "module.threads",
       start: async () => {
-        options.logger.info("Threads feature ready");
+        options.logger.info("Threads module ready");
       },
       stop: async (reason: string) => {
-        options.logger.info("Threads feature stopped", { reason });
+        options.logger.info("Threads module stopped", { reason });
       },
     }),
   });

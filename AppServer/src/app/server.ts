@@ -1,4 +1,4 @@
-import { createAgentsFeature } from "@/agents";
+import { createAgentsModule } from "@/agents";
 import { createCodexAgentAdapter } from "@/agents/codex-adapter";
 import {
   type AppServerConfig,
@@ -7,12 +7,12 @@ import {
 } from "@/app/config";
 import { createLogger, type Logger, type LogWriter } from "@/app/logger";
 import { createAppProtocolRuntime, createAppTransportComponent } from "@/app/protocol";
-import { createApprovalsFeaturePlaceholder } from "@/approvals";
+import { createApprovalsModulePlaceholder } from "@/approvals";
 import { getErrorMessage, type LifecycleComponent } from "@/core/shared";
 import { createStoreBootstrap } from "@/core/store";
-import { createSqliteThreadsStore, createThreadsFeature } from "@/threads";
-import { createTurnsFeaturePlaceholder } from "@/turns";
-import { createSqliteWorkspacesStore, createWorkspacesFeature } from "@/workspaces";
+import { createSqliteThreadsStore, createThreadsModule } from "@/threads";
+import { createTurnsModulePlaceholder } from "@/turns";
+import { createSqliteWorkspacesStore, createWorkspacesModule } from "@/workspaces";
 
 export type AppServerState = "idle" | "starting" | "started" | "stopping" | "stopped";
 export type ShutdownSignal = "SIGINT" | "SIGTERM";
@@ -307,14 +307,14 @@ const createDefaultComponents = (
   const appProtocolRuntime = createAppProtocolRuntime({
     logger,
   });
-  const workspacesFeature = createWorkspacesFeature({
-    logger: logger.withContext({ component: "feature.workspaces" }),
+  const workspacesModule = createWorkspacesModule({
+    logger: logger.withContext({ component: "module.workspaces" }),
     registerMethod: appProtocolRuntime.registerMethod,
     store: createSqliteWorkspacesStore(storeBootstrap.getDatabase),
   });
-  const agentsFeature = createAgentsFeature({
+  const agentsModule = createAgentsModule({
     config: config.agents,
-    logger: logger.withContext({ component: "feature.agents" }),
+    logger: logger.withContext({ component: "module.agents" }),
     adapters: [
       createCodexAgentAdapter({
         logger: logger.withContext({ component: "agents.codex" }),
@@ -322,12 +322,12 @@ const createDefaultComponents = (
     ],
     registerMethod: appProtocolRuntime.registerMethod,
   });
-  const threadsFeature = createThreadsFeature({
-    logger: logger.withContext({ component: "feature.threads" }),
+  const threadsModule = createThreadsModule({
+    logger: logger.withContext({ component: "module.threads" }),
     registerMethod: appProtocolRuntime.registerMethod,
-    registry: agentsFeature.registry,
+    registry: agentsModule.registry,
     store: createSqliteThreadsStore(storeBootstrap.getDatabase),
-    getOpenedWorkspace: workspacesFeature.getOpenedWorkspace,
+    getOpenedWorkspace: workspacesModule.getOpenedWorkspace,
   });
   const transportComponent = createAppTransportComponent({
     config,
@@ -335,7 +335,7 @@ const createDefaultComponents = (
     protocol: appProtocolRuntime,
     onConnectionClosed: [
       ({ connectionId }) => {
-        workspacesFeature.handleConnectionClosed(connectionId);
+        workspacesModule.handleConnectionClosed(connectionId);
       },
     ],
   });
@@ -343,11 +343,11 @@ const createDefaultComponents = (
   return Object.freeze([
     appProtocolRuntime.protocolComponent,
     storeBootstrap.lifecycle,
-    agentsFeature.lifecycle,
-    workspacesFeature.lifecycle,
-    threadsFeature.lifecycle,
-    createTurnsFeaturePlaceholder(),
-    createApprovalsFeaturePlaceholder(),
+    agentsModule.lifecycle,
+    workspacesModule.lifecycle,
+    threadsModule.lifecycle,
+    createTurnsModulePlaceholder(),
+    createApprovalsModulePlaceholder(),
     transportComponent,
   ]);
 };
