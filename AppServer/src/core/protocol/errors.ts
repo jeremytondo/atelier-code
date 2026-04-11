@@ -16,6 +16,9 @@ export const ATELIER_WORKSPACE_PATH_NOT_FOUND_ERROR = -33002;
 export const ATELIER_WORKSPACE_PATH_NOT_DIRECTORY_ERROR = -33003;
 export const ATELIER_AGENT_SESSION_UNAVAILABLE_ERROR = -33004;
 export const ATELIER_PROVIDER_ERROR = -33005;
+export const ATELIER_WORKSPACE_NOT_OPENED_ERROR = -33006;
+export const ATELIER_THREAD_READ_INCLUDE_TURNS_UNSUPPORTED_ERROR = -33007;
+export const ATELIER_THREAD_WORKSPACE_MISMATCH_ERROR = -33008;
 
 export type ProtocolMethodError = Readonly<{
   code: number;
@@ -110,3 +113,52 @@ export const createWorkspacePathNotDirectoryError = (workspacePath: string): Pro
 export const createWorkspacePathNotDirectoryResult = (
   workspacePath: string,
 ): Result<never, ProtocolMethodError> => err(createWorkspacePathNotDirectoryError(workspacePath));
+
+export const createWorkspaceNotOpenedError = (): ProtocolMethodError =>
+  createProtocolMethodError(
+    ATELIER_WORKSPACE_NOT_OPENED_ERROR,
+    "Workspace not opened",
+    Object.freeze({
+      code: "WORKSPACE_NOT_OPENED",
+    }),
+  );
+
+export const createWorkspaceNotOpenedResult = (): Result<never, ProtocolMethodError> =>
+  err(createWorkspaceNotOpenedError());
+
+export const createThreadReadIncludeTurnsUnsupportedError = (): ProtocolMethodError =>
+  createProtocolMethodError(
+    ATELIER_THREAD_READ_INCLUDE_TURNS_UNSUPPORTED_ERROR,
+    "Thread read with includeTurns=true is not supported yet",
+    Object.freeze({
+      code: "THREAD_READ_INCLUDE_TURNS_UNSUPPORTED",
+    }),
+  );
+
+export const createThreadReadIncludeTurnsUnsupportedResult = (): Result<
+  never,
+  ProtocolMethodError
+> => err(createThreadReadIncludeTurnsUnsupportedError());
+
+export const createThreadWorkspaceMismatchError = (
+  threadId: string,
+  openedWorkspacePath: string,
+  threadWorkspacePath: string,
+): ProtocolMethodError =>
+  createProtocolMethodError(
+    ATELIER_THREAD_WORKSPACE_MISMATCH_ERROR,
+    "Thread does not belong to the opened workspace",
+    Object.freeze({
+      code: "THREAD_WORKSPACE_MISMATCH",
+      threadId,
+      openedWorkspacePath,
+      threadWorkspacePath,
+    }),
+  );
+
+export const createThreadWorkspaceMismatchResult = (
+  threadId: string,
+  openedWorkspacePath: string,
+  threadWorkspacePath: string,
+): Result<never, ProtocolMethodError> =>
+  err(createThreadWorkspaceMismatchError(threadId, openedWorkspacePath, threadWorkspacePath));

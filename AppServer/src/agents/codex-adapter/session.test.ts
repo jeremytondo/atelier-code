@@ -197,6 +197,251 @@ describe("createCodexAgentSession", () => {
     });
   });
 
+  test("maps thread/list results with nextCursor preservation and status normalization", async () => {
+    const executablePath = createFakeExecutable();
+    const transport = new FakeTransport([
+      { userAgent: "Codex/Test" },
+      {
+        data: [
+          {
+            id: "thread-1",
+            preview: "Ship thread browsing",
+            ephemeral: false,
+            modelProvider: "openai",
+            createdAt: 1_744_280_000,
+            updatedAt: 1_744_283_600,
+            status: {
+              type: "active",
+              activeFlags: ["running", "awaiting_approval"],
+            },
+            path: null,
+            cwd: "/tmp/project",
+            cliVersion: "0.114.0",
+            source: "app-server",
+            agentNickname: null,
+            agentRole: null,
+            gitInfo: null,
+            name: "Thread browsing",
+            turns: [],
+          },
+          {
+            id: "thread-2",
+            preview: "Handle failure",
+            ephemeral: false,
+            modelProvider: "openai",
+            createdAt: 1_744_286_000,
+            updatedAt: 1_744_289_600,
+            status: {
+              type: "systemError",
+              error: {
+                message: "Provider disconnected",
+              },
+            },
+            path: null,
+            cwd: "/tmp/project",
+            cliVersion: "0.114.0",
+            source: "app-server",
+            agentNickname: null,
+            agentRole: null,
+            gitInfo: null,
+            name: null,
+            turns: [],
+          },
+        ],
+        nextCursor: "cursor-2",
+      },
+    ]);
+    const sessionResult = await createCodexAgentSession({
+      agentId: "codex",
+      config: {
+        id: "codex",
+        provider: "codex",
+      },
+      logger: createSilentLogger(),
+      transport,
+      environmentResolver: new BaseEnvironmentResolver({
+        inheritedEnvironment: {
+          ATELIERCODE_CODEX_PATH: executablePath,
+          PATH: path.dirname(executablePath),
+          HOME: "/Users/tester",
+          SHELL: "/bin/zsh",
+        },
+      }),
+    });
+
+    expect(sessionResult.ok).toBe(true);
+    if (!sessionResult.ok) {
+      throw new Error("Expected the Codex session to be created.");
+    }
+
+    const listResult = await sessionResult.data.listThreads("req-threads-1", {
+      cursor: "cursor-1",
+      limit: 10,
+      archived: true,
+      workspacePath: "/tmp/project",
+    });
+
+    expect(transport.sent).toEqual([
+      {
+        id: "atelier-appserver-initialize",
+        method: "initialize",
+        params: {
+          clientInfo: {
+            name: "AtelierCode App Server",
+            title: null,
+            version: "0.1.0",
+          },
+          capabilities: {
+            experimentalApi: true,
+          },
+        },
+      },
+      {
+        id: "req-threads-1",
+        method: "thread/list",
+        params: {
+          cursor: "cursor-1",
+          limit: 10,
+          archived: true,
+          cwd: "/tmp/project",
+        },
+      },
+    ]);
+    expect(listResult).toEqual({
+      ok: true,
+      data: {
+        threads: [
+          {
+            id: "thread-1",
+            preview: "Ship thread browsing",
+            createdAt: "2025-04-10T10:13:20.000Z",
+            updatedAt: "2025-04-10T11:13:20.000Z",
+            workspacePath: "/tmp/project",
+            name: "Thread browsing",
+            archived: true,
+            status: {
+              type: "active",
+              activeFlags: ["running", "awaiting_approval"],
+            },
+          },
+          {
+            id: "thread-2",
+            preview: "Handle failure",
+            createdAt: "2025-04-10T11:53:20.000Z",
+            updatedAt: "2025-04-10T12:53:20.000Z",
+            workspacePath: "/tmp/project",
+            name: null,
+            archived: true,
+            status: {
+              type: "systemError",
+              message: "Provider disconnected",
+            },
+          },
+        ],
+        nextCursor: "cursor-2",
+      },
+    });
+  });
+
+  test("maps thread/read with includeTurns false and workspace metadata", async () => {
+    const executablePath = createFakeExecutable();
+    const transport = new FakeTransport([
+      { userAgent: "Codex/Test" },
+      {
+        thread: {
+          id: "thread-1",
+          preview: "Read this thread",
+          ephemeral: false,
+          modelProvider: "openai",
+          createdAt: 1_744_280_000,
+          updatedAt: 1_744_283_600,
+          status: {
+            type: "idle",
+          },
+          path: null,
+          cwd: "/tmp/project",
+          cliVersion: "0.114.0",
+          source: "app-server",
+          agentNickname: null,
+          agentRole: null,
+          gitInfo: null,
+          name: "Readable thread",
+          turns: [],
+        },
+      },
+    ]);
+    const sessionResult = await createCodexAgentSession({
+      agentId: "codex",
+      config: {
+        id: "codex",
+        provider: "codex",
+      },
+      logger: createSilentLogger(),
+      transport,
+      environmentResolver: new BaseEnvironmentResolver({
+        inheritedEnvironment: {
+          ATELIERCODE_CODEX_PATH: executablePath,
+          PATH: path.dirname(executablePath),
+          HOME: "/Users/tester",
+          SHELL: "/bin/zsh",
+        },
+      }),
+    });
+
+    expect(sessionResult.ok).toBe(true);
+    if (!sessionResult.ok) {
+      throw new Error("Expected the Codex session to be created.");
+    }
+
+    const readResult = await sessionResult.data.readThread("req-thread-read", {
+      threadId: "thread-1",
+      includeTurns: false,
+      archived: true,
+    });
+
+    expect(transport.sent).toEqual([
+      {
+        id: "atelier-appserver-initialize",
+        method: "initialize",
+        params: {
+          clientInfo: {
+            name: "AtelierCode App Server",
+            title: null,
+            version: "0.1.0",
+          },
+          capabilities: {
+            experimentalApi: true,
+          },
+        },
+      },
+      {
+        id: "req-thread-read",
+        method: "thread/read",
+        params: {
+          threadId: "thread-1",
+          includeTurns: false,
+        },
+      },
+    ]);
+    expect(readResult).toEqual({
+      ok: true,
+      data: {
+        thread: {
+          id: "thread-1",
+          preview: "Read this thread",
+          createdAt: "2025-04-10T10:13:20.000Z",
+          updatedAt: "2025-04-10T11:13:20.000Z",
+          workspacePath: "/tmp/project",
+          name: "Readable thread",
+          archived: true,
+          status: {
+            type: "idle",
+          },
+        },
+      },
+    });
+  });
+
   test("translates approval requests and resolves them through provider responses", async () => {
     const executablePath = createFakeExecutable();
     const transport = new FakeTransport([{ userAgent: "Codex/Test" }]);

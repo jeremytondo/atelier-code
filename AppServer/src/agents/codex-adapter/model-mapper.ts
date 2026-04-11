@@ -6,6 +6,7 @@ import type {
 } from "@/agents/codex-adapter/protocol";
 import type {
   AgentModelSummary,
+  AgentThread,
   AgentThreadExecutionStatus,
   AgentThreadSummary,
   AgentTurnStatus,
@@ -54,11 +55,18 @@ export const mapCodexThreadStatus = (status: CodexThreadStatus): AgentThreadExec
 export const mapCodexThreadSummary = (
   thread: CodexThread,
   options: { archived?: boolean } = {},
-): AgentThreadSummary =>
+): AgentThreadSummary => mapAgentThreadSummary(mapCodexThread(thread, options));
+
+export const mapCodexThread = (
+  thread: CodexThread,
+  options: { archived?: boolean } = {},
+): AgentThread =>
   Object.freeze({
     id: thread.id,
     preview: thread.preview,
+    createdAt: new Date(Math.max(0, thread.createdAt) * 1_000).toISOString(),
     updatedAt: new Date(Math.max(0, thread.updatedAt) * 1_000).toISOString(),
+    workspacePath: thread.cwd,
     name: thread.name,
     archived: options.archived ?? false,
     status: mapCodexThreadStatus(thread.status),
@@ -86,6 +94,16 @@ export const mapCodexTurnSummary = (turn: CodexTurn): AgentTurnSummary =>
   Object.freeze({
     id: turn.id,
     status: mapCodexTurnStatus(turn),
+  });
+
+const mapAgentThreadSummary = (thread: AgentThread): AgentThreadSummary =>
+  Object.freeze({
+    id: thread.id,
+    preview: thread.preview,
+    updatedAt: thread.updatedAt,
+    name: thread.name,
+    archived: thread.archived,
+    status: thread.status,
   });
 
 const assertNever = (value: never): never => {

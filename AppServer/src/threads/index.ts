@@ -1,4 +1,4 @@
-import { createLifecyclePlaceholder, type LifecycleComponent } from "@/core/shared";
-
-export const createThreadsFeaturePlaceholder = (): LifecycleComponent =>
-  createLifecyclePlaceholder("feature.threads");
+export * from "@/threads/schemas";
+export * from "@/threads/service";
+export * from "@/threads/store";
+export * from "@/threads/thread.handlers";

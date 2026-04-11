@@ -10,7 +10,7 @@ import { createAppProtocolRuntime, createAppTransportComponent } from "@/app/pro
 import { createApprovalsFeaturePlaceholder } from "@/approvals";
 import { getErrorMessage, type LifecycleComponent } from "@/core/shared";
 import { createStoreBootstrap } from "@/core/store";
-import { createThreadsFeaturePlaceholder } from "@/threads";
+import { createSqliteThreadsStore, createThreadsFeature } from "@/threads";
 import { createTurnsFeaturePlaceholder } from "@/turns";
 import { createSqliteWorkspacesStore, createWorkspacesFeature } from "@/workspaces";
 
@@ -322,6 +322,13 @@ const createDefaultComponents = (
     ],
     registerMethod: appProtocolRuntime.registerMethod,
   });
+  const threadsFeature = createThreadsFeature({
+    logger: logger.withContext({ component: "feature.threads" }),
+    registerMethod: appProtocolRuntime.registerMethod,
+    registry: agentsFeature.registry,
+    store: createSqliteThreadsStore(storeBootstrap.getDatabase),
+    getOpenedWorkspace: workspacesFeature.getOpenedWorkspace,
+  });
   const transportComponent = createAppTransportComponent({
     config,
     logger,
@@ -338,7 +345,7 @@ const createDefaultComponents = (
     storeBootstrap.lifecycle,
     agentsFeature.lifecycle,
     workspacesFeature.lifecycle,
-    createThreadsFeaturePlaceholder(),
+    threadsFeature.lifecycle,
     createTurnsFeaturePlaceholder(),
     createApprovalsFeaturePlaceholder(),
     transportComponent,

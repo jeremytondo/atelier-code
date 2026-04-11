@@ -154,13 +154,16 @@ const createFakeSession = (
       };
     },
     listModels: async () => ({ ok: true, data: { models: [], nextCursor: null } }),
+    listThreads: async () => ({ ok: true, data: { threads: [], nextCursor: null } }),
     startThread: async () => ({
       ok: true,
       data: {
         thread: {
           id: "thread-1",
           preview: "",
+          createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
+          workspacePath: "/tmp/project",
           name: null,
           archived: false,
           status: { type: "idle" },
@@ -173,7 +176,9 @@ const createFakeSession = (
         thread: {
           id: "thread-1",
           preview: "",
+          createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
+          workspacePath: "/tmp/project",
           name: null,
           archived: false,
           status: { type: "idle" },
@@ -186,7 +191,9 @@ const createFakeSession = (
         thread: {
           id: "thread-1",
           preview: "",
+          createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
+          workspacePath: "/tmp/project",
           name: null,
           archived: false,
           status: { type: "idle" },
@@ -199,7 +206,9 @@ const createFakeSession = (
         thread: {
           id: "thread-1",
           preview: "",
+          createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
+          workspacePath: "/tmp/project",
           name: null,
           archived: false,
           status: { type: "idle" },
