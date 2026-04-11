@@ -1,4 +1,5 @@
 import { type Static, Type } from "@sinclair/typebox";
+import { ModelReasoningEffortSchema } from "@/agents/schemas";
 
 export const ThreadExecutionStatusSchema = Type.Union([
   Type.Object(
@@ -38,6 +39,8 @@ export const ThreadSchema = Type.Object(
     updatedAt: Type.String({ minLength: 1 }),
     name: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
     archived: Type.Boolean(),
+    model: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
+    reasoningEffort: Type.Union([ModelReasoningEffortSchema, Type.Null()]),
     status: ThreadExecutionStatusSchema,
   },
   { additionalProperties: false },
@@ -72,6 +75,15 @@ export const ThreadReadParamsSchema = Type.Object(
 );
 export type ThreadReadParams = Static<typeof ThreadReadParamsSchema>;
 
+export const ThreadStartParamsSchema = Type.Object(
+  {
+    model: Type.Optional(Type.String({ minLength: 1 })),
+    reasoningEffort: Type.Optional(ModelReasoningEffortSchema),
+  },
+  { additionalProperties: false },
+);
+export type ThreadStartParams = Static<typeof ThreadStartParamsSchema>;
+
 export const ThreadReadResultSchema = Type.Object(
   {
     thread: ThreadSchema,
@@ -79,3 +91,46 @@ export const ThreadReadResultSchema = Type.Object(
   { additionalProperties: false },
 );
 export type ThreadReadResult = Static<typeof ThreadReadResultSchema>;
+
+export const ThreadStartResultSchema = ThreadReadResultSchema;
+export type ThreadStartResult = ThreadReadResult;
+
+export const ThreadResumeParamsSchema = Type.Object(
+  {
+    threadId: Type.String({ minLength: 1 }),
+    model: Type.Optional(Type.String({ minLength: 1 })),
+    reasoningEffort: Type.Optional(ModelReasoningEffortSchema),
+  },
+  { additionalProperties: false },
+);
+export type ThreadResumeParams = Static<typeof ThreadResumeParamsSchema>;
+
+export const ThreadResumeResultSchema = ThreadReadResultSchema;
+export type ThreadResumeResult = ThreadReadResult;
+
+export const ThreadStartedNotificationParamsSchema = Type.Object(
+  {
+    thread: ThreadSchema,
+  },
+  { additionalProperties: false },
+);
+export type ThreadStartedNotificationParams = Static<typeof ThreadStartedNotificationParamsSchema>;
+
+export const ThreadStatusChangedNotificationParamsSchema = Type.Object(
+  {
+    threadId: Type.String({ minLength: 1 }),
+    status: ThreadExecutionStatusSchema,
+  },
+  { additionalProperties: false },
+);
+export type ThreadStatusChangedNotificationParams = Static<
+  typeof ThreadStatusChangedNotificationParamsSchema
+>;
+
+export const ThreadClosedNotificationParamsSchema = Type.Object(
+  {
+    threadId: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+export type ThreadClosedNotificationParams = Static<typeof ThreadClosedNotificationParamsSchema>;

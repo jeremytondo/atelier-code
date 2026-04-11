@@ -28,6 +28,7 @@ import type {
   CodexUserInput,
 } from "@/agents/codex-adapter/protocol";
 import {
+  parseCodexConfiguredThreadResponse,
   parseCodexInitializeResponse,
   parseCodexModelListResponse,
   parseCodexThreadListResponse,
@@ -388,7 +389,7 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
     params: AgentThreadStartParams,
   ): Promise<AgentOperationResult<AgentThreadResult>> =>
     runOperation(requestId, async () => {
-      const response = parseCodexThreadResponse(
+      const response = parseCodexConfiguredThreadResponse(
         await options.transport.send({
           id: requestId,
           method: "thread/start",
@@ -398,6 +399,8 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
 
       return {
         thread: mapCodexThread(response.thread),
+        model: response.model,
+        reasoningEffort: response.reasoningEffort,
       };
     });
 
@@ -406,7 +409,7 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
     params: AgentThreadResumeParams,
   ): Promise<AgentOperationResult<AgentThreadResult>> =>
     runOperation(requestId, async () => {
-      const response = parseCodexThreadResponse(
+      const response = parseCodexConfiguredThreadResponse(
         await options.transport.send({
           id: requestId,
           method: "thread/resume",
@@ -416,6 +419,8 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
 
       return {
         thread: mapCodexThread(response.thread),
+        model: response.model,
+        reasoningEffort: response.reasoningEffort,
       };
     });
 

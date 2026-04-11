@@ -6,6 +6,7 @@ import type {
   AgentListThreadsResult,
   AgentNotification,
   AgentOperationResult,
+  AgentReasoningEffort,
   AgentRequestId,
   AgentSession,
   AgentSessionLookupError,
@@ -18,6 +19,7 @@ import type { AgentRegistry } from "@/agents/registry";
 
 export type FakeAgentSession = AgentSession &
   Readonly<{
+    emitNotification: (notification: AgentNotification) => void;
     listModelsCalls: readonly Readonly<{
       requestId: AgentRequestId;
       params: AgentListModelsParams;
@@ -25,6 +27,28 @@ export type FakeAgentSession = AgentSession &
     listThreadsCalls: readonly Readonly<{
       requestId: AgentRequestId;
       params: AgentListThreadsParams;
+    }>[];
+    startThreadCalls: readonly Readonly<{
+      requestId: AgentRequestId;
+      params: Readonly<{
+        workspacePath: string;
+        title?: string;
+        model?: string;
+        reasoningEffort?: AgentReasoningEffort;
+        approvalPolicy?: string;
+        sandbox?: unknown;
+      }>;
+    }>[];
+    resumeThreadCalls: readonly Readonly<{
+      requestId: AgentRequestId;
+      params: Readonly<{
+        threadId: string;
+        workspacePath: string;
+        model?: string;
+        reasoningEffort?: AgentReasoningEffort;
+        approvalPolicy?: string;
+        sandbox?: unknown;
+      }>;
     }>[];
     readThreadCalls: readonly Readonly<{
       requestId: AgentRequestId;
@@ -43,6 +67,28 @@ export type CreateFakeAgentSessionOptions = Readonly<{
     requestId: AgentRequestId,
     params: AgentListThreadsParams,
   ) => Promise<AgentOperationResult<AgentListThreadsResult>>;
+  startThread?: (
+    requestId: AgentRequestId,
+    params: Readonly<{
+      workspacePath: string;
+      title?: string;
+      model?: string;
+      reasoningEffort?: AgentReasoningEffort;
+      approvalPolicy?: string;
+      sandbox?: unknown;
+    }>,
+  ) => Promise<AgentOperationResult<AgentThreadResult>>;
+  resumeThread?: (
+    requestId: AgentRequestId,
+    params: Readonly<{
+      threadId: string;
+      workspacePath: string;
+      model?: string;
+      reasoningEffort?: AgentReasoningEffort;
+      approvalPolicy?: string;
+      sandbox?: unknown;
+    }>,
+  ) => Promise<AgentOperationResult<AgentThreadResult>>;
   readThread?: (
     requestId: AgentRequestId,
     params: AgentThreadReadParams,
@@ -53,6 +99,7 @@ export const createFakeAgentSession = (
   options: CreateFakeAgentSessionOptions = {},
 ): FakeAgentSession => {
   let state = options.state ?? "ready";
+  const listeners = new Set<(notification: AgentNotification) => void>();
   const listModelsCalls: Array<
     Readonly<{
       requestId: AgentRequestId;
@@ -63,6 +110,32 @@ export const createFakeAgentSession = (
     Readonly<{
       requestId: AgentRequestId;
       params: AgentListThreadsParams;
+    }>
+  > = [];
+  const startThreadCalls: Array<
+    Readonly<{
+      requestId: AgentRequestId;
+      params: Readonly<{
+        workspacePath: string;
+        title?: string;
+        model?: string;
+        reasoningEffort?: AgentReasoningEffort;
+        approvalPolicy?: string;
+        sandbox?: unknown;
+      }>;
+    }>
+  > = [];
+  const resumeThreadCalls: Array<
+    Readonly<{
+      requestId: AgentRequestId;
+      params: Readonly<{
+        threadId: string;
+        workspacePath: string;
+        model?: string;
+        reasoningEffort?: AgentReasoningEffort;
+        approvalPolicy?: string;
+        sandbox?: unknown;
+      }>;
     }>
   > = [];
   const readThreadCalls: Array<
@@ -76,7 +149,13 @@ export const createFakeAgentSession = (
     agentId: options.agentId ?? "codex",
     provider: "codex",
     getState: () => state,
-    subscribe: (_listener: (notification: AgentNotification) => void) => () => {},
+    subscribe: (listener: (notification: AgentNotification) => void) => {
+      listeners.add(listener);
+
+      return () => {
+        listeners.delete(listener);
+      };
+    },
     listModels: async (requestId, params) => {
       listModelsCalls.push(
         Object.freeze({
@@ -113,11 +192,48 @@ export const createFakeAgentSession = (
         }
       );
     },
-    startThread: async () => {
-      throw new Error("startThread should not be called in this test.");
+    startThread: async (requestId, params) => {
+      startThreadCalls.push(
+        Object.freeze({
+          requestId,
+          params,
+        }),
+      );
+
+      return (
+        (await options.startThread?.(requestId, params)) ?? {
+          ok: true,
+          data: {
+            thread: createTestAgentThread({
+              workspacePath: params.workspacePath,
+            }),
+            model: params.model ?? "gpt-5.4",
+            reasoningEffort: params.reasoningEffort ?? "medium",
+          },
+        }
+      );
     },
-    resumeThread: async () => {
-      throw new Error("resumeThread should not be called in this test.");
+    resumeThread: async (requestId, params) => {
+      resumeThreadCalls.push(
+        Object.freeze({
+          requestId,
+          params,
+        }),
+      );
+
+      return (
+        (await options.resumeThread?.(requestId, params)) ?? {
+          ok: true,
+          data: {
+            thread: createTestAgentThread({
+              id: params.threadId,
+              workspacePath: params.workspacePath,
+            }),
+            model: params.model ?? "gpt-5.4",
+            reasoningEffort: params.reasoningEffort ?? "medium",
+          },
+        }
+      );
     },
     readThread: async (requestId, params) => {
       readThreadCalls.push(
@@ -154,8 +270,15 @@ export const createFakeAgentSession = (
     disconnect: async () => {
       state = "disconnected";
     },
+    emitNotification: (notification) => {
+      for (const listener of listeners) {
+        listener(notification);
+      }
+    },
     listModelsCalls,
     listThreadsCalls,
+    startThreadCalls,
+    resumeThreadCalls,
     readThreadCalls,
   };
 };

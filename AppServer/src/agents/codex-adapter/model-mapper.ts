@@ -64,8 +64,8 @@ export const mapCodexThread = (
   Object.freeze({
     id: thread.id,
     preview: thread.preview,
-    createdAt: new Date(Math.max(0, thread.createdAt) * 1_000).toISOString(),
-    updatedAt: new Date(Math.max(0, thread.updatedAt) * 1_000).toISOString(),
+    createdAt: mapUnixTimestampToIso(thread.createdAt, "createdAt"),
+    updatedAt: mapUnixTimestampToIso(thread.updatedAt, "updatedAt"),
     workspacePath: thread.cwd,
     name: thread.name,
     archived: options.archived ?? false,
@@ -108,4 +108,12 @@ const mapAgentThreadSummary = (thread: AgentThread): AgentThreadSummary =>
 
 const assertNever = (value: never): never => {
   throw new Error(`Unhandled Codex mapping variant: ${JSON.stringify(value)}`);
+};
+
+const mapUnixTimestampToIso = (value: number, fieldName: "createdAt" | "updatedAt"): string => {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`Codex thread ${fieldName} must be a non-negative unix timestamp.`);
+  }
+
+  return new Date(value * 1_000).toISOString();
 };

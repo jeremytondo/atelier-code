@@ -6,7 +6,6 @@ import { APP_SERVER_CONFIG_PATH_ENV } from "@/app/config";
 import { createLogger } from "@/app/logger";
 import {
   createAppServer,
-  createConfiguredAppServer,
   type ShutdownSignal,
   type SignalHandler,
   type SignalRegistrar,
@@ -62,7 +61,7 @@ describe("createAppServer", () => {
 
   test("starts even when the configured codex executable is unavailable", async () => {
     const port = await getAvailablePort();
-    const server = createConfiguredAppServer({
+    const server = await createAppServer({
       config: Object.freeze({
         ...createTestConfig(port),
         agents: {
@@ -84,7 +83,7 @@ describe("createAppServer", () => {
     await server.stop("test-stop");
   });
 
-  test("loads config in the high-level constructor while the configured constructor avoids config I/O", async () => {
+  test("loads config when needed and skips config I/O when config is provided", async () => {
     let readCount = 0;
 
     const bootstrappedServer = await createAppServer({
@@ -106,7 +105,7 @@ describe("createAppServer", () => {
       signalRegistrar: createSignalRegistrar(),
     });
 
-    const configuredServer = createConfiguredAppServer({
+    const configuredServer = await createAppServer({
       config: Object.freeze({
         configPath: "/tmp/appserver.config.json",
         port: 7444,
@@ -130,7 +129,7 @@ describe("createAppServer", () => {
 
 describe("AppServer lifecycle", () => {
   test("stops cleanly", async () => {
-    const server = createConfiguredAppServer({
+    const server = await createAppServer({
       config: createTestConfig(),
       logger: createSilentLogger(),
       signalRegistrar: createSignalRegistrar(),
@@ -144,7 +143,7 @@ describe("AppServer lifecycle", () => {
 
   test("makes stop idempotent", async () => {
     let stopCount = 0;
-    const server = createConfiguredAppServer({
+    const server = await createAppServer({
       config: createTestConfig(),
       logger: createSilentLogger(),
       signalRegistrar: createSignalRegistrar(),
@@ -169,7 +168,7 @@ describe("AppServer lifecycle", () => {
   test("routes shutdown signals through the server lifecycle", async () => {
     let stopReason: string | undefined;
     const signalRegistrar = createSignalRegistrar();
-    const server = createConfiguredAppServer({
+    const server = await createAppServer({
       config: createTestConfig(),
       logger: createSilentLogger(),
       signalRegistrar,
@@ -195,7 +194,7 @@ describe("AppServer lifecycle", () => {
   test("finishes shutdown when stop is requested during startup", async () => {
     const events: string[] = [];
     const slowStart = createDeferredPromise<void>();
-    const server = createConfiguredAppServer({
+    const server = await createAppServer({
       config: createTestConfig(),
       logger: createSilentLogger(),
       signalRegistrar: createSignalRegistrar(),
@@ -237,7 +236,7 @@ describe("AppServer lifecycle", () => {
 
   test("reaches a terminal state when component stop fails", async () => {
     const signalRegistrar = createSignalRegistrar();
-    const server = createConfiguredAppServer({
+    const server = await createAppServer({
       config: createTestConfig(),
       logger: createSilentLogger(),
       signalRegistrar,
@@ -261,7 +260,7 @@ describe("AppServer lifecycle", () => {
 
   test("rolls back started components when startup fails partway through", async () => {
     const events: string[] = [];
-    const server = createConfiguredAppServer({
+    const server = await createAppServer({
       config: createTestConfig(),
       logger: createSilentLogger(),
       signalRegistrar: createSignalRegistrar(),
@@ -295,7 +294,7 @@ describe("AppServer lifecycle", () => {
   });
 
   test("resolves waitForStop after shutdown", async () => {
-    const server = createConfiguredAppServer({
+    const server = await createAppServer({
       config: createTestConfig(),
       logger: createSilentLogger(),
       signalRegistrar: createSignalRegistrar(),

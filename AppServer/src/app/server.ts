@@ -32,8 +32,7 @@ export type AppServer = Readonly<{
   waitForStop: () => Promise<void>;
 }>;
 
-export type CreateConfiguredAppServerOptions = Readonly<{
-  config: AppServerConfig;
+type CreateAppServerSharedOptions = Readonly<{
   logger?: Logger;
   now?: () => string;
   writeLog?: LogWriter;
@@ -41,20 +40,29 @@ export type CreateConfiguredAppServerOptions = Readonly<{
   signalRegistrar?: SignalRegistrar;
 }>;
 
-export type CreateAppServerOptions = Readonly<
-  LoadAppServerConfigOptions & {
-    now?: () => string;
-    writeLog?: LogWriter;
-    components?: readonly LifecycleComponent[];
-    signalRegistrar?: SignalRegistrar;
+type CreateAppServerWithResolvedConfigOptions = Readonly<
+  CreateAppServerSharedOptions & {
+    config: AppServerConfig;
   }
 >;
 
-export const createAppServer = async (options: CreateAppServerOptions = {}): Promise<AppServer> => {
-  const config = await loadAppServerConfig(options);
+type CreateAppServerWithConfigLoadOptions = Readonly<
+  CreateAppServerSharedOptions &
+    LoadAppServerConfigOptions & {
+      config?: undefined;
+    }
+>;
 
-  return createConfiguredAppServer({
+export type CreateAppServerOptions =
+  | CreateAppServerWithResolvedConfigOptions
+  | CreateAppServerWithConfigLoadOptions;
+
+export const createAppServer = async (options: CreateAppServerOptions = {}): Promise<AppServer> => {
+  const config = hasResolvedConfig(options) ? options.config : await loadAppServerConfig(options);
+
+  return buildAppServer({
     config,
+    logger: options.logger,
     now: options.now,
     writeLog: options.writeLog,
     components: options.components,
@@ -62,7 +70,11 @@ export const createAppServer = async (options: CreateAppServerOptions = {}): Pro
   });
 };
 
-export const createConfiguredAppServer = (options: CreateConfiguredAppServerOptions): AppServer => {
+const hasResolvedConfig = (
+  options: CreateAppServerOptions,
+): options is CreateAppServerWithResolvedConfigOptions => options.config !== undefined;
+
+const buildAppServer = (options: CreateAppServerWithResolvedConfigOptions): AppServer => {
   const logger =
     options.logger ??
     createLogger({
@@ -307,10 +319,18 @@ const createDefaultComponents = (
   const appProtocolRuntime = createAppProtocolRuntime({
     logger,
   });
+  let threadsModule: ReturnType<typeof createThreadsModule> | undefined;
   const workspacesModule = createWorkspacesModule({
     logger: logger.withContext({ component: "module.workspaces" }),
     registerMethod: appProtocolRuntime.registerMethod,
     store: createSqliteWorkspacesStore(storeBootstrap.getDatabase),
+    onWorkspaceOpened: ({ connectionId, previousWorkspace, workspace }) => {
+      threadsModule?.handleWorkspaceOpened({
+        connectionId,
+        previousWorkspace,
+        workspace,
+      });
+    },
   });
   const agentsModule = createAgentsModule({
     config: config.agents,
@@ -322,19 +342,22 @@ const createDefaultComponents = (
     ],
     registerMethod: appProtocolRuntime.registerMethod,
   });
-  const threadsModule = createThreadsModule({
+  threadsModule = createThreadsModule({
     logger: logger.withContext({ component: "module.threads" }),
     registerMethod: appProtocolRuntime.registerMethod,
+    sendNotification: appProtocolRuntime.sendNotification,
     registry: agentsModule.registry,
     store: createSqliteThreadsStore(storeBootstrap.getDatabase),
     getOpenedWorkspace: workspacesModule.getOpenedWorkspace,
   });
+  const finalizedThreadsModule = threadsModule;
   const transportComponent = createAppTransportComponent({
     config,
     logger,
     protocol: appProtocolRuntime,
     onConnectionClosed: [
       ({ connectionId }) => {
+        finalizedThreadsModule.handleConnectionClosed(connectionId);
         workspacesModule.handleConnectionClosed(connectionId);
       },
     ],
@@ -345,7 +368,7 @@ const createDefaultComponents = (
     storeBootstrap.lifecycle,
     agentsModule.lifecycle,
     workspacesModule.lifecycle,
-    threadsModule.lifecycle,
+    finalizedThreadsModule.lifecycle,
     createTurnsModulePlaceholder(),
     createApprovalsModulePlaceholder(),
     transportComponent,

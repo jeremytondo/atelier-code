@@ -19,6 +19,13 @@ export type CreateWorkspacesModuleOptions = Readonly<
   {
     logger: Logger;
     registerMethod: ProtocolDispatcher["registerMethod"];
+    onWorkspaceOpened?: (
+      input: Readonly<{
+        connectionId: string;
+        previousWorkspace: Workspace | undefined;
+        workspace: Workspace;
+      }>,
+    ) => void;
   } & CreateWorkspacesServiceOptions
 >;
 
@@ -43,7 +50,13 @@ export const createWorkspacesModule = (
         return workspaceResult;
       }
 
+      const previousWorkspace = openedWorkspacesByConnectionId.get(connectionId);
       openedWorkspacesByConnectionId.set(connectionId, workspaceResult.data);
+      options.onWorkspaceOpened?.({
+        connectionId,
+        previousWorkspace,
+        workspace: workspaceResult.data,
+      });
 
       options.logger.info("Workspace opened", {
         connectionId,

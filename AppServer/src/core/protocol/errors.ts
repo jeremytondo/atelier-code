@@ -19,12 +19,17 @@ export const ATELIER_PROVIDER_ERROR = -33005;
 export const ATELIER_WORKSPACE_NOT_OPENED_ERROR = -33006;
 export const ATELIER_THREAD_READ_INCLUDE_TURNS_UNSUPPORTED_ERROR = -33007;
 export const ATELIER_THREAD_WORKSPACE_MISMATCH_ERROR = -33008;
+export const ATELIER_INVALID_PROVIDER_PAYLOAD_ERROR = -33009;
+
+const PROTOCOL_METHOD_ERROR_BRAND = Symbol("ProtocolMethodError");
 
 export type ProtocolMethodError = Readonly<{
   code: number;
   message: string;
   data?: ProtocolErrorData;
-}>;
+}> & {
+  readonly [PROTOCOL_METHOD_ERROR_BRAND]: true;
+};
 
 export const createProtocolMethodError = (
   code: number,
@@ -32,14 +37,14 @@ export const createProtocolMethodError = (
   data?: ProtocolErrorData,
 ): ProtocolMethodError =>
   Object.freeze(
-    data === undefined
-      ? { code, message }
-      : {
-          code,
-          message,
-          data,
-        },
+    brandProtocolMethodError(data === undefined ? { code, message } : { code, message, data }),
   );
+
+export const isProtocolMethodError = (error: unknown): error is ProtocolMethodError =>
+  typeof error === "object" &&
+  error !== null &&
+  PROTOCOL_METHOD_ERROR_BRAND in error &&
+  (error as { [PROTOCOL_METHOD_ERROR_BRAND]?: unknown })[PROTOCOL_METHOD_ERROR_BRAND] === true;
 
 export const createParseError = (): ProtocolMethodError =>
   createProtocolMethodError(JSON_RPC_PARSE_ERROR, "Parse error");
@@ -162,3 +167,34 @@ export const createThreadWorkspaceMismatchResult = (
   threadWorkspacePath: string,
 ): Result<never, ProtocolMethodError> =>
   err(createThreadWorkspaceMismatchError(threadId, openedWorkspacePath, threadWorkspacePath));
+
+export const createInvalidProviderPayloadError = (
+  input: Readonly<{
+    agentId: string;
+    provider: string;
+    operation: string;
+    providerMessage: string;
+  }>,
+): ProtocolMethodError =>
+  createProtocolMethodError(
+    ATELIER_INVALID_PROVIDER_PAYLOAD_ERROR,
+    "Provider returned an invalid payload",
+    Object.freeze({
+      code: "INVALID_PROVIDER_PAYLOAD",
+      agentId: input.agentId,
+      provider: input.provider,
+      operation: input.operation,
+      providerMessage: input.providerMessage,
+    }),
+  );
+
+const brandProtocolMethodError = <T extends { code: number; message: string }>(
+  error: T,
+): T & { readonly [PROTOCOL_METHOD_ERROR_BRAND]: true } => {
+  Object.defineProperty(error, PROTOCOL_METHOD_ERROR_BRAND, {
+    value: true,
+    enumerable: false,
+  });
+
+  return error as T & { readonly [PROTOCOL_METHOD_ERROR_BRAND]: true };
+};

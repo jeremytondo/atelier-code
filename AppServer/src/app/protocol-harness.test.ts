@@ -11,9 +11,9 @@ import {
   createAppProtocolRuntime,
   createAppTransportComponent,
 } from "@/app/protocol";
-import { type AppServer, createConfiguredAppServer, type SignalRegistrar } from "@/app/server";
+import { type AppServer, createAppServer, type SignalRegistrar } from "@/app/server";
 import { createApprovalsModulePlaceholder } from "@/approvals";
-import { createStoreBootstrap } from "@/core/store";
+import { type AppDatabase, createStoreBootstrap } from "@/core/store";
 import {
   createFakeAgentAdapter,
   createFakeAgentSession,
@@ -21,7 +21,7 @@ import {
   createTestAgentThread,
 } from "@/test-support/agents";
 import { getAvailablePort } from "@/test-support/network";
-import { createSqliteThreadsStore, createThreadsModule } from "@/threads";
+import { createSqliteThreadsStore, createThreadsModule, type ThreadsStore } from "@/threads";
 import { createTurnsModulePlaceholder } from "@/turns";
 import { createSqliteWorkspacesStore, createWorkspacesModule } from "@/workspaces";
 
@@ -130,7 +130,7 @@ describe("App Server protocol harness", () => {
     try {
       client.sendJson({
         id: "req-unknown",
-        method: "thread/start",
+        method: "thread/unknown",
         params: {},
       });
 
@@ -734,6 +734,372 @@ describe("App Server protocol harness", () => {
     }
   });
 
+  test("starts a thread, returns resolved defaults, and emits thread/started", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    const session = createFakeAgentSession({
+      startThread: async () => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: "thread-started",
+            workspacePath: canonicalWorkspacePath,
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-start",
+        method: "thread/start",
+        params: {},
+      });
+
+      const messages = [await client.nextMessage(), await client.nextMessage()];
+      expect(messages).toContainEqual({
+        id: "req-thread-start",
+        result: {
+          thread: {
+            id: "thread-started",
+            preview: "Thread preview",
+            createdAt: "2026-04-10T10:00:00.000Z",
+            updatedAt: "2026-04-10T11:00:00.000Z",
+            name: null,
+            archived: false,
+            model: "gpt-5.4",
+            reasoningEffort: "medium",
+            status: {
+              type: "idle",
+            },
+          },
+        },
+      });
+      expect(messages).toContainEqual({
+        method: "thread/started",
+        params: {
+          thread: {
+            id: "thread-started",
+            preview: "Thread preview",
+            createdAt: "2026-04-10T10:00:00.000Z",
+            updatedAt: "2026-04-10T11:00:00.000Z",
+            name: null,
+            archived: false,
+            model: "gpt-5.4",
+            reasoningEffort: "medium",
+            status: {
+              type: "idle",
+            },
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("thread/start still succeeds when bookkeeping writes fail and keeps loaded-thread forwarding", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    const session = createFakeAgentSession({
+      startThread: async () => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: "thread-best-effort",
+            workspacePath: canonicalWorkspacePath,
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+      threadsStoreFactory: (getDatabase) =>
+        createFailingUpsertThreadsStore(createSqliteThreadsStore(getDatabase)),
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-start",
+        method: "thread/start",
+        params: {},
+      });
+
+      const messages = [await client.nextMessage(), await client.nextMessage()];
+      expect(messages).toContainEqual({
+        id: "req-thread-start",
+        result: {
+          thread: expect.objectContaining({
+            id: "thread-best-effort",
+            model: "gpt-5.4",
+            reasoningEffort: "medium",
+          }),
+        },
+      });
+      expect(messages).toContainEqual({
+        method: "thread/started",
+        params: {
+          thread: expect.objectContaining({
+            id: "thread-best-effort",
+          }),
+        },
+      });
+
+      session.emitNotification(
+        createThreadStatusChangedNotification({
+          threadId: "thread-best-effort",
+          status: { type: "active", activeFlags: ["running"] },
+        }),
+      );
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-best-effort",
+          status: {
+            type: "active",
+            activeFlags: ["running"],
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("thread/read does not subscribe the connection to live thread notifications", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    const session = createFakeAgentSession({
+      readThread: async () => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: "thread-read-only",
+            workspacePath: canonicalWorkspacePath,
+          }),
+        },
+      }),
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-read",
+        method: "thread/read",
+        params: {
+          threadId: "thread-read-only",
+          includeTurns: false,
+        },
+      });
+      await client.nextMessage();
+
+      session.emitNotification(
+        createThreadStatusChangedNotification({
+          threadId: "thread-read-only",
+          status: { type: "active", activeFlags: ["running"] },
+        }),
+      );
+
+      await expect(client.nextMessage(150)).rejects.toThrow("Timed out waiting for message");
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("fans out loaded-thread status notifications only to subscribed connections and cleans up on close", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    const session = createFakeAgentSession({
+      resumeThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: canonicalWorkspacePath,
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const clientA = await connectProtocolClient(harness.port);
+    const clientB = await connectProtocolClient(harness.port);
+    const bystander = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(clientA);
+      await initializeClient(clientB);
+      await initializeClient(bystander);
+      await openWorkspaceClient(clientA, workspacePath);
+      await openWorkspaceClient(clientB, workspacePath);
+      await openWorkspaceClient(bystander, workspacePath);
+
+      clientA.sendJson({
+        id: "req-thread-resume-a",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+      clientB.sendJson({
+        id: "req-thread-resume-b",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+
+      await clientA.nextMessage();
+      await clientB.nextMessage();
+
+      session.emitNotification(
+        createThreadStatusChangedNotification({
+          threadId: "thread-live",
+          status: { type: "active", activeFlags: ["running"] },
+        }),
+      );
+
+      await expect(clientA.nextMessage()).resolves.toEqual({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-live",
+          status: {
+            type: "active",
+            activeFlags: ["running"],
+          },
+        },
+      });
+      await expect(clientB.nextMessage()).resolves.toEqual({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-live",
+          status: {
+            type: "active",
+            activeFlags: ["running"],
+          },
+        },
+      });
+      await expect(bystander.nextMessage(150)).rejects.toThrow("Timed out waiting for message");
+
+      await clientA.close();
+      session.emitNotification(
+        createThreadStatusChangedNotification({
+          threadId: "thread-live",
+          status: { type: "idle" },
+        }),
+      );
+
+      await expect(clientB.nextMessage()).resolves.toEqual({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-live",
+          status: {
+            type: "idle",
+          },
+        },
+      });
+      await expect(bystander.nextMessage(150)).rejects.toThrow("Timed out waiting for message");
+    } finally {
+      await clientB.close();
+      await bystander.close();
+    }
+  });
+
+  test("clears loaded-thread subscriptions when the connection switches workspaces", async () => {
+    const firstWorkspacePath = await createWorkspaceDirectory();
+    const secondWorkspacePath = await createWorkspaceDirectory();
+    const canonicalFirstWorkspacePath = await realpath(firstWorkspacePath);
+    const session = createFakeAgentSession({
+      resumeThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: canonicalFirstWorkspacePath,
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, firstWorkspacePath);
+
+      client.sendJson({
+        id: "req-thread-resume",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+      await client.nextMessage();
+
+      await openWorkspaceClient(client, secondWorkspacePath);
+
+      session.emitNotification(
+        createThreadStatusChangedNotification({
+          threadId: "thread-live",
+          status: { type: "active", activeFlags: ["running"] },
+        }),
+      );
+
+      await expect(client.nextMessage(150)).rejects.toThrow("Timed out waiting for message");
+    } finally {
+      await client.close();
+    }
+  });
+
   test("lists threads after initialize and workspace/open", async () => {
     const workspacePath = await createWorkspaceDirectory();
     const canonicalWorkspacePath = await realpath(workspacePath);
@@ -787,6 +1153,8 @@ describe("App Server protocol harness", () => {
               updatedAt: "2026-04-10T11:00:00.000Z",
               name: "Thread browsing",
               archived: false,
+              model: null,
+              reasoningEffort: null,
               status: {
                 type: "active",
                 activeFlags: ["running"],
@@ -794,6 +1162,67 @@ describe("App Server protocol harness", () => {
             },
           ],
           nextCursor: "cursor-2",
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("thread/list still succeeds when bookkeeping writes fail", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeProtocolAgentAdapter({
+          listThreadsResult: {
+            ok: true,
+            data: {
+              threads: [
+                createTestAgentThread({
+                  id: "thread-best-effort",
+                  workspacePath: canonicalWorkspacePath,
+                }),
+              ],
+              nextCursor: null,
+            },
+          },
+        }),
+      ],
+      threadsStoreFactory: (getDatabase) =>
+        createFailingUpsertThreadsStore(createSqliteThreadsStore(getDatabase)),
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-list",
+        method: "thread/list",
+        params: {},
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-thread-list",
+        result: {
+          threads: [
+            {
+              id: "thread-best-effort",
+              preview: "Thread preview",
+              createdAt: "2026-04-10T10:00:00.000Z",
+              updatedAt: "2026-04-10T11:00:00.000Z",
+              name: null,
+              archived: false,
+              model: null,
+              reasoningEffort: null,
+              status: {
+                type: "idle",
+              },
+            },
+          ],
+          nextCursor: null,
         },
       });
     } finally {
@@ -931,6 +1360,8 @@ describe("App Server protocol harness", () => {
               updatedAt: "2026-04-10T11:00:00.000Z",
               name: null,
               archived: true,
+              model: null,
+              reasoningEffort: null,
               status: {
                 type: "idle",
               },
@@ -990,6 +1421,8 @@ describe("App Server protocol harness", () => {
             updatedAt: "2026-04-10T11:00:00.000Z",
             name: "Readable thread",
             archived: false,
+            model: null,
+            reasoningEffort: null,
             status: {
               type: "systemError",
               message: "Provider disconnected",
@@ -1148,6 +1581,54 @@ describe("App Server protocol harness", () => {
     }
   });
 
+  test("maps malformed thread/list provider payloads to a stable protocol error", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeProtocolAgentAdapter({
+          listThreadsResult: {
+            ok: false,
+            error: {
+              type: "invalidProviderMessage",
+              agentId: "codex",
+              provider: "codex",
+              message: "Malformed thread list payload.",
+            },
+          },
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-list",
+        method: "thread/list",
+        params: {},
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-thread-list",
+        error: {
+          code: -33009,
+          message: "Provider returned an invalid payload",
+          data: {
+            code: "INVALID_PROVIDER_PAYLOAD",
+            agentId: "codex",
+            provider: "codex",
+            operation: "thread/list",
+            providerMessage: "Malformed thread list payload.",
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
   test("returns a workspace mismatch error when thread/read crosses workspace boundaries", async () => {
     const workspacePath = await createWorkspaceDirectory();
     const harness = await createProtocolHarness({
@@ -1209,6 +1690,7 @@ type ProtocolTestClient = Readonly<{
 const createProtocolHarness = async (
   options: Readonly<{
     agentAdapters?: readonly AgentAdapter[];
+    threadsStoreFactory?: (getDatabase: () => AppDatabase) => ThreadsStore;
   }> = {},
 ): Promise<Readonly<{ port: number }>> => {
   const port = await getAvailablePort();
@@ -1231,10 +1713,18 @@ const createProtocolHarness = async (
     config,
     logger: logger.withContext({ component: "core.store" }),
   });
+  let threadsModule: ReturnType<typeof createThreadsModule> | undefined;
   const workspacesModule = createWorkspacesModule({
     logger: logger.withContext({ component: "module.workspaces" }),
     registerMethod: appProtocolRuntime.registerMethod,
     store: createSqliteWorkspacesStore(storeBootstrap.getDatabase),
+    onWorkspaceOpened: ({ connectionId, previousWorkspace, workspace }) => {
+      threadsModule?.handleWorkspaceOpened({
+        connectionId,
+        previousWorkspace,
+        workspace,
+      });
+    },
   });
   const agentsModule = createAgentsModule({
     config: config.agents,
@@ -1246,24 +1736,29 @@ const createProtocolHarness = async (
     ],
     registerMethod: appProtocolRuntime.registerMethod,
   });
-  const threadsModule = createThreadsModule({
+  threadsModule = createThreadsModule({
     logger: logger.withContext({ component: "module.threads" }),
     registerMethod: appProtocolRuntime.registerMethod,
+    sendNotification: appProtocolRuntime.sendNotification,
     registry: agentsModule.registry,
-    store: createSqliteThreadsStore(storeBootstrap.getDatabase),
+    store:
+      options.threadsStoreFactory?.(storeBootstrap.getDatabase) ??
+      createSqliteThreadsStore(storeBootstrap.getDatabase),
     getOpenedWorkspace: workspacesModule.getOpenedWorkspace,
   });
+  const finalizedThreadsModule = threadsModule;
   const transportComponent = createAppTransportComponent({
     config,
     logger,
     protocol: appProtocolRuntime,
     onConnectionClosed: [
       ({ connectionId }) => {
+        finalizedThreadsModule.handleConnectionClosed(connectionId);
         workspacesModule.handleConnectionClosed(connectionId);
       },
     ],
   });
-  const server = createConfiguredAppServer({
+  const server = await createAppServer({
     config,
     logger,
     signalRegistrar: createSignalRegistrar(),
@@ -1272,7 +1767,7 @@ const createProtocolHarness = async (
       storeBootstrap.lifecycle,
       agentsModule.lifecycle,
       workspacesModule.lifecycle,
-      threadsModule.lifecycle,
+      finalizedThreadsModule.lifecycle,
       createTurnsModulePlaceholder(),
       createApprovalsModulePlaceholder(),
       transportComponent,
@@ -1294,6 +1789,15 @@ const createTestAgentsConfig = () => ({
     },
   ],
 });
+
+const createFailingUpsertThreadsStore = (store: ThreadsStore): ThreadsStore =>
+  Object.freeze({
+    getWorkspaceThreadLink: store.getWorkspaceThreadLink,
+    listWorkspaceThreadLinks: store.listWorkspaceThreadLinks,
+    upsertWorkspaceThreadLinks: async () => {
+      throw new Error("bookkeeping write failed");
+    },
+  });
 
 const createWorkspaceDirectory = async (): Promise<string> => {
   const rootDirectory = await createTemporaryDirectory("atelier-appserver-workspace-");
@@ -1578,6 +2082,27 @@ const createFakeProtocolAgentAdapter = (options: {
         },
     }),
   });
+
+const createThreadStatusChangedNotification = (input: {
+  threadId: string;
+  status: Readonly<{ type: "idle" }> | Readonly<{ type: "active"; activeFlags: readonly string[] }>;
+}) => ({
+  agentId: "codex",
+  provider: "codex" as const,
+  receivedAt: "2026-04-10T12:00:00.000Z",
+  rawMethod: "thread/status/changed",
+  threadId: input.threadId,
+  type: "thread" as const,
+  event: "statusChanged" as const,
+  thread: {
+    id: input.threadId,
+    preview: "",
+    updatedAt: "2026-04-10T12:00:00.000Z",
+    name: null,
+    archived: false,
+    status: input.status,
+  },
+});
 
 const toMessageText = (data: unknown): string => {
   if (typeof data === "string") {

@@ -21,6 +21,7 @@ export type AppProtocolRuntime = Readonly<{
   openConnection: ProtocolEngine["openConnection"];
   closeConnection: ProtocolEngine["closeConnection"];
   handleIncomingText: ProtocolEngine["handleIncomingText"];
+  sendNotification: ProtocolEngine["sendNotification"];
 }>;
 
 export const runConnectionClosedHandlers = async (
@@ -81,6 +82,7 @@ export const createAppProtocolRuntime = (options: { logger: Logger }): AppProtoc
     openConnection: protocol.openConnection,
     closeConnection: protocol.closeConnection,
     handleIncomingText: protocol.handleIncomingText,
+    sendNotification: protocol.sendNotification,
   });
 };
 

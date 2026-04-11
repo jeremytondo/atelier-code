@@ -108,6 +108,15 @@ const CodexThreadResponseSchema = Type.Object(
   { additionalProperties: true },
 );
 
+const CodexConfiguredThreadResponseSchema = Type.Object(
+  {
+    thread: CodexThreadSchema,
+    model: Type.String(),
+    reasoningEffort: Type.Union([CodexReasoningEffortSchema, Type.Null()]),
+  },
+  { additionalProperties: true },
+);
+
 const CodexTurnSchema = Type.Object(
   {
     id: Type.String(),
@@ -211,6 +220,7 @@ export type CodexModelListResponse = Static<typeof CodexModelListResponseSchema>
 export type CodexThreadStatus = Static<typeof CodexThreadStatusSchema>;
 export type CodexThread = Static<typeof CodexThreadSchema>;
 export type CodexThreadListResponse = Static<typeof CodexThreadListResponseSchema>;
+export type CodexConfiguredThreadResponse = Static<typeof CodexConfiguredThreadResponseSchema>;
 export type CodexTurn = Static<typeof CodexTurnSchema>;
 export type CodexInitializeResponse = Static<typeof CodexInitializeResponseSchema>;
 export type CodexTurnPlanUpdatedNotification = Static<
@@ -338,6 +348,15 @@ export const parseCodexThreadListResponse = (candidate: unknown): CodexThreadLis
 
 export const parseCodexThreadResponse = (candidate: unknown): { thread: CodexThread } =>
   validateCodexPayload(CodexThreadResponseSchema, candidate, "thread response");
+
+export const parseCodexConfiguredThreadResponse = (
+  candidate: unknown,
+): CodexConfiguredThreadResponse =>
+  validateCodexPayload(
+    CodexConfiguredThreadResponseSchema,
+    candidate,
+    "configured thread response",
+  );
 
 export const parseCodexTurnResponse = (candidate: unknown): { turn: CodexTurn } =>
   validateCodexPayload(CodexTurnResponseSchema, candidate, "turn response");
