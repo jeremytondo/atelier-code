@@ -11,7 +11,7 @@ import {
   createAppProtocolRuntime,
   createAppTransportComponent,
 } from "@/app/protocol";
-import { type AppServer, createConfiguredAppServer, type SignalRegistrar } from "@/app/server";
+import { type AppServer, createAppServer, type SignalRegistrar } from "@/app/server";
 import { createApprovalsModulePlaceholder } from "@/approvals";
 import { type AppDatabase, createStoreBootstrap } from "@/core/store";
 import {
@@ -1758,7 +1758,7 @@ const createProtocolHarness = async (
       },
     ],
   });
-  const server = createConfiguredAppServer({
+  const server = await createAppServer({
     config,
     logger,
     signalRegistrar: createSignalRegistrar(),
