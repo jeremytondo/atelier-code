@@ -632,6 +632,328 @@ describe("createThreadsService", () => {
     ]);
   });
 
+  test("forks a thread after missing-link workspace validation and persists fork defaults", async () => {
+    const session = createFakeAgentSession({
+      readThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: "/tmp/project",
+            archived: true,
+          }),
+        },
+      }),
+      forkThread: async () => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: "thread-forked",
+            workspacePath: "/tmp/project",
+            name: "Forked thread",
+          }),
+          model: "gpt-5.4-mini",
+          reasoningEffort: "high",
+        },
+      }),
+    });
+    const store = createInMemoryThreadsStore();
+    const service = createThreadsService({
+      logger: createSilentLogger("error"),
+      registry: createFakeAgentRegistry(session),
+      store,
+      now: () => "2026-04-10T12:00:00.000Z",
+    });
+
+    const result = await service.forkThread("req-fork", workspace, {
+      threadId: "thread-source",
+      model: "gpt-5.4-mini",
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        thread: {
+          id: "thread-forked",
+          preview: "Thread preview",
+          createdAt: "2026-04-10T10:00:00.000Z",
+          updatedAt: "2026-04-10T11:00:00.000Z",
+          name: "Forked thread",
+          archived: false,
+          model: "gpt-5.4-mini",
+          reasoningEffort: "high",
+          status: { type: "idle" },
+        },
+      },
+    });
+    expect(session.readThreadCalls).toEqual([
+      {
+        requestId: "req-fork",
+        params: {
+          threadId: "thread-source",
+          includeTurns: false,
+        },
+      },
+    ]);
+    expect(session.forkThreadCalls).toEqual([
+      {
+        requestId: "req-fork",
+        params: {
+          threadId: "thread-source",
+          workspacePath: "/tmp/project",
+          model: "gpt-5.4-mini",
+        },
+      },
+    ]);
+    await expect(
+      store.getWorkspaceThreadLink({
+        workspaceId: "workspace-1",
+        provider: "codex",
+        threadId: "thread-forked",
+      }),
+    ).resolves.toMatchObject({
+      threadWorkspacePath: "/tmp/project",
+      archived: false,
+      model: "gpt-5.4-mini",
+      reasoningEffort: "high",
+    });
+  });
+
+  test("rejects archive when missing-link validation finds a different workspace", async () => {
+    const session = createFakeAgentSession({
+      readThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: "/tmp/other-project",
+          }),
+        },
+      }),
+    });
+    const service = createThreadsService({
+      logger: createSilentLogger("error"),
+      registry: createFakeAgentRegistry(session),
+      store: createInMemoryThreadsStore(),
+      now: () => "2026-04-10T12:00:00.000Z",
+    });
+
+    const result = await service.archiveThread("req-archive", workspace, {
+      threadId: "thread-elsewhere",
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: -33008,
+        data: {
+          code: "THREAD_WORKSPACE_MISMATCH",
+          threadId: "thread-elsewhere",
+          openedWorkspacePath: "/tmp/project",
+          threadWorkspacePath: "/tmp/other-project",
+        },
+      },
+    });
+    expect(session.archiveThreadCalls).toEqual([]);
+  });
+
+  test("archive and unarchive refresh persisted archive hints while preserving defaults", async () => {
+    const store = createInMemoryThreadsStore([
+      {
+        workspaceId: "workspace-1",
+        provider: "codex",
+        threadId: "thread-1",
+        threadWorkspacePath: "/tmp/project",
+        archived: false,
+        model: "gpt-5.4",
+        reasoningEffort: "medium",
+        firstSeenAt: "2026-04-10T09:30:00.000Z",
+        lastSeenAt: "2026-04-10T09:30:00.000Z",
+      },
+    ]);
+    const session = createFakeAgentSession({
+      archiveThread: async () => ({
+        ok: true,
+        data: {},
+      }),
+      unarchiveThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: "/tmp/project",
+            archived: false,
+          }),
+        },
+      }),
+    });
+    const service = createThreadsService({
+      logger: createSilentLogger("error"),
+      registry: createFakeAgentRegistry(session),
+      store,
+      now: () => "2026-04-10T12:00:00.000Z",
+    });
+
+    await expect(
+      service.archiveThread("req-archive", workspace, {
+        threadId: "thread-1",
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      data: {},
+    });
+    await expect(
+      store.getWorkspaceThreadLink({
+        workspaceId: "workspace-1",
+        provider: "codex",
+        threadId: "thread-1",
+      }),
+    ).resolves.toMatchObject({
+      archived: true,
+      model: "gpt-5.4",
+      reasoningEffort: "medium",
+    });
+
+    const unarchiveResult = await service.unarchiveThread("req-unarchive", workspace, {
+      threadId: "thread-1",
+    });
+
+    expect(unarchiveResult).toEqual({
+      ok: true,
+      data: {
+        thread: {
+          id: "thread-1",
+          preview: "Thread preview",
+          createdAt: "2026-04-10T10:00:00.000Z",
+          updatedAt: "2026-04-10T11:00:00.000Z",
+          name: null,
+          archived: false,
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+          status: { type: "idle" },
+        },
+      },
+    });
+    await expect(
+      store.getWorkspaceThreadLink({
+        workspaceId: "workspace-1",
+        provider: "codex",
+        threadId: "thread-1",
+      }),
+    ).resolves.toMatchObject({
+      archived: false,
+      model: "gpt-5.4",
+      reasoningEffort: "medium",
+    });
+  });
+
+  test("thread/name/set establishes linkage through read fallback without local name persistence", async () => {
+    const session = createFakeAgentSession({
+      readThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: "/tmp/project",
+            name: "Old name",
+          }),
+        },
+      }),
+      setThreadName: async () => ({
+        ok: true,
+        data: {},
+      }),
+    });
+    const store = createInMemoryThreadsStore();
+    const service = createThreadsService({
+      logger: createSilentLogger("error"),
+      registry: createFakeAgentRegistry(session),
+      store,
+      now: () => "2026-04-10T12:00:00.000Z",
+    });
+
+    await expect(
+      service.setThreadName("req-name", workspace, {
+        threadId: "thread-1",
+        name: "Renamed thread",
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      data: {},
+    });
+    await expect(
+      store.getWorkspaceThreadLink({
+        workspaceId: "workspace-1",
+        provider: "codex",
+        threadId: "thread-1",
+      }),
+    ).resolves.toEqual({
+      workspaceId: "workspace-1",
+      provider: "codex",
+      threadId: "thread-1",
+      threadWorkspacePath: "/tmp/project",
+      archived: false,
+      model: null,
+      reasoningEffort: null,
+      firstSeenAt: "2026-04-10T12:00:00.000Z",
+      lastSeenAt: "2026-04-10T12:00:00.000Z",
+    });
+  });
+
+  test("thread/fork still succeeds when linkage writes fail", async () => {
+    const { logger, records } = createCapturingLogger();
+    const session = createFakeAgentSession({
+      readThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: "/tmp/project",
+          }),
+        },
+      }),
+      forkThread: async () => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: "thread-forked",
+            workspacePath: "/tmp/project",
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+    });
+    const service = createThreadsService({
+      logger,
+      registry: createFakeAgentRegistry(session),
+      store: createFailingUpsertStore(createInMemoryThreadsStore()),
+      now: () => "2026-04-10T12:00:00.000Z",
+    });
+
+    await expect(
+      service.forkThread("req-fork", workspace, {
+        threadId: "thread-source",
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        thread: {
+          id: "thread-forked",
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      },
+    });
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        message: "Failed to persist thread linkage metadata",
+        operation: "thread/fork",
+      }),
+    );
+  });
+
   test("warns when provider defaults differ from Atelier-resolved defaults without changing behavior", async () => {
     const { logger, records } = createCapturingLogger();
     const session = createFakeAgentSession({

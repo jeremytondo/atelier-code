@@ -442,6 +442,202 @@ describe("createCodexAgentSession", () => {
     });
   });
 
+  test("maps thread mutations through the Codex transport contract", async () => {
+    const executablePath = createFakeExecutable();
+    const transport = new FakeTransport([
+      { userAgent: "Codex/Test" },
+      {
+        thread: {
+          id: "thread-forked",
+          preview: "Forked thread",
+          ephemeral: false,
+          modelProvider: "openai",
+          createdAt: 1_744_290_000,
+          updatedAt: 1_744_293_600,
+          status: {
+            type: "idle",
+          },
+          path: null,
+          cwd: "/tmp/project",
+          cliVersion: "0.114.0",
+          source: "app-server",
+          agentNickname: null,
+          agentRole: null,
+          gitInfo: null,
+          name: "Forked thread",
+          turns: [],
+        },
+        model: "gpt-5.4-mini",
+        modelProvider: "openai",
+        serviceTier: null,
+        cwd: "/tmp/project",
+        approvalPolicy: "never",
+        sandbox: {
+          mode: "workspace-write",
+          network_access: false,
+          exclude_tmpdir_env_var: false,
+          exclude_slash_tmp: false,
+        },
+        reasoningEffort: "high",
+      },
+      {},
+      {
+        thread: {
+          id: "thread-1",
+          preview: "Archived thread",
+          ephemeral: false,
+          modelProvider: "openai",
+          createdAt: 1_744_280_000,
+          updatedAt: 1_744_283_600,
+          status: {
+            type: "idle",
+          },
+          path: null,
+          cwd: "/tmp/project",
+          cliVersion: "0.114.0",
+          source: "app-server",
+          agentNickname: null,
+          agentRole: null,
+          gitInfo: null,
+          name: "Archived thread",
+          turns: [],
+        },
+      },
+      {},
+    ]);
+    const sessionResult = await createCodexAgentSession({
+      agentId: "codex",
+      config: {
+        id: "codex",
+        provider: "codex",
+      },
+      logger: createSilentLogger(),
+      transport,
+      environmentResolver: new BaseEnvironmentResolver({
+        inheritedEnvironment: {
+          ATELIERCODE_CODEX_PATH: executablePath,
+          PATH: path.dirname(executablePath),
+          HOME: "/Users/tester",
+          SHELL: "/bin/zsh",
+        },
+      }),
+    });
+
+    expect(sessionResult.ok).toBe(true);
+    if (!sessionResult.ok) {
+      throw new Error("Expected the Codex session to be created.");
+    }
+
+    const forkResult = await sessionResult.data.forkThread("req-thread-fork", {
+      threadId: "thread-source",
+      workspacePath: "/tmp/project",
+      model: "gpt-5.4-mini",
+    });
+    const archiveResult = await sessionResult.data.archiveThread("req-thread-archive", {
+      threadId: "thread-1",
+    });
+    const unarchiveResult = await sessionResult.data.unarchiveThread("req-thread-unarchive", {
+      threadId: "thread-1",
+    });
+    const setNameResult = await sessionResult.data.setThreadName("req-thread-name", {
+      threadId: "thread-1",
+      name: "Renamed thread",
+    });
+
+    expect(transport.sent).toEqual([
+      {
+        id: "atelier-appserver-initialize",
+        method: "initialize",
+        params: {
+          clientInfo: {
+            name: "AtelierCode App Server",
+            title: null,
+            version: "0.1.0",
+          },
+          capabilities: {
+            experimentalApi: true,
+          },
+        },
+      },
+      {
+        id: "req-thread-fork",
+        method: "thread/fork",
+        params: {
+          threadId: "thread-source",
+          cwd: "/tmp/project",
+          model: "gpt-5.4-mini",
+          persistExtendedHistory: true,
+        },
+      },
+      {
+        id: "req-thread-archive",
+        method: "thread/archive",
+        params: {
+          threadId: "thread-1",
+        },
+      },
+      {
+        id: "req-thread-unarchive",
+        method: "thread/unarchive",
+        params: {
+          threadId: "thread-1",
+        },
+      },
+      {
+        id: "req-thread-name",
+        method: "thread/name/set",
+        params: {
+          threadId: "thread-1",
+          name: "Renamed thread",
+        },
+      },
+    ]);
+    expect(forkResult).toEqual({
+      ok: true,
+      data: {
+        thread: {
+          id: "thread-forked",
+          preview: "Forked thread",
+          createdAt: "2025-04-10T13:00:00.000Z",
+          updatedAt: "2025-04-10T14:00:00.000Z",
+          workspacePath: "/tmp/project",
+          name: "Forked thread",
+          archived: false,
+          status: {
+            type: "idle",
+          },
+        },
+        model: "gpt-5.4-mini",
+        reasoningEffort: "high",
+      },
+    });
+    expect(archiveResult).toEqual({
+      ok: true,
+      data: {},
+    });
+    expect(unarchiveResult).toEqual({
+      ok: true,
+      data: {
+        thread: {
+          id: "thread-1",
+          preview: "Archived thread",
+          createdAt: "2025-04-10T10:13:20.000Z",
+          updatedAt: "2025-04-10T11:13:20.000Z",
+          workspacePath: "/tmp/project",
+          name: "Archived thread",
+          archived: false,
+          status: {
+            type: "idle",
+          },
+        },
+      },
+    });
+    expect(setNameResult).toEqual({
+      ok: true,
+      data: {},
+    });
+  });
+
   test("translates approval requests and resolves them through provider responses", async () => {
     const executablePath = createFakeExecutable();
     const transport = new FakeTransport([{ userAgent: "Codex/Test" }]);

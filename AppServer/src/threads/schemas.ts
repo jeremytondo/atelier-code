@@ -108,6 +108,52 @@ export type ThreadResumeParams = Static<typeof ThreadResumeParamsSchema>;
 export const ThreadResumeResultSchema = ThreadReadResultSchema;
 export type ThreadResumeResult = ThreadReadResult;
 
+export const ThreadForkParamsSchema = Type.Object(
+  {
+    threadId: Type.String({ minLength: 1 }),
+    model: Type.Optional(Type.String({ minLength: 1 })),
+  },
+  { additionalProperties: false },
+);
+export type ThreadForkParams = Static<typeof ThreadForkParamsSchema>;
+
+export const ThreadForkResultSchema = ThreadReadResultSchema;
+export type ThreadForkResult = ThreadReadResult;
+
+export const ThreadArchiveParamsSchema = Type.Object(
+  {
+    threadId: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+export type ThreadArchiveParams = Static<typeof ThreadArchiveParamsSchema>;
+
+export const ThreadArchiveResultSchema = Type.Object({}, { additionalProperties: false });
+export type ThreadArchiveResult = Static<typeof ThreadArchiveResultSchema>;
+
+export const ThreadUnarchiveParamsSchema = Type.Object(
+  {
+    threadId: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+export type ThreadUnarchiveParams = Static<typeof ThreadUnarchiveParamsSchema>;
+
+export const ThreadUnarchiveResultSchema = ThreadReadResultSchema;
+export type ThreadUnarchiveResult = ThreadReadResult;
+
+export const ThreadSetNameParamsSchema = Type.Object(
+  {
+    threadId: Type.String({ minLength: 1 }),
+    name: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+export type ThreadSetNameParams = Static<typeof ThreadSetNameParamsSchema>;
+
+export const ThreadSetNameResultSchema = Type.Object({}, { additionalProperties: false });
+export type ThreadSetNameResult = Static<typeof ThreadSetNameResultSchema>;
+
 export const ThreadStartedNotificationParamsSchema = Type.Object(
   {
     thread: ThreadSchema,
@@ -134,3 +180,34 @@ export const ThreadClosedNotificationParamsSchema = Type.Object(
   { additionalProperties: false },
 );
 export type ThreadClosedNotificationParams = Static<typeof ThreadClosedNotificationParamsSchema>;
+
+export const ThreadArchivedNotificationParamsSchema = Type.Object(
+  {
+    threadId: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+export type ThreadArchivedNotificationParams = Static<
+  typeof ThreadArchivedNotificationParamsSchema
+>;
+
+export const ThreadUnarchivedNotificationParamsSchema = Type.Object(
+  {
+    threadId: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+export type ThreadUnarchivedNotificationParams = Static<
+  typeof ThreadUnarchivedNotificationParamsSchema
+>;
+
+export const ThreadNameUpdatedNotificationParamsSchema = Type.Object(
+  {
+    threadId: Type.String({ minLength: 1 }),
+    threadName: Type.Optional(Type.Union([Type.String({ minLength: 1 }), Type.Null()])),
+  },
+  { additionalProperties: false },
+);
+export type ThreadNameUpdatedNotificationParams = Static<
+  typeof ThreadNameUpdatedNotificationParamsSchema
+>;

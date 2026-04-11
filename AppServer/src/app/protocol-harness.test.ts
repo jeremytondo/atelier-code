@@ -940,6 +940,95 @@ describe("App Server protocol harness", () => {
     }
   });
 
+  test("forks a thread, returns configured thread data, and subscribes the forked thread", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    const session = createFakeAgentSession({
+      readThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: canonicalWorkspacePath,
+          }),
+        },
+      }),
+      forkThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: "thread-forked",
+            workspacePath: canonicalWorkspacePath,
+            name: "Forked thread",
+          }),
+          model: params.model ?? "gpt-5.4-mini",
+          reasoningEffort: "high",
+        },
+      }),
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-fork",
+        method: "thread/fork",
+        params: {
+          threadId: "thread-source",
+          model: "gpt-5.4-mini",
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-thread-fork",
+        result: {
+          thread: {
+            id: "thread-forked",
+            preview: "Thread preview",
+            createdAt: "2026-04-10T10:00:00.000Z",
+            updatedAt: "2026-04-10T11:00:00.000Z",
+            name: "Forked thread",
+            archived: false,
+            model: "gpt-5.4-mini",
+            reasoningEffort: "high",
+            status: {
+              type: "idle",
+            },
+          },
+        },
+      });
+
+      session.emitNotification(
+        createThreadStatusChangedNotification({
+          threadId: "thread-forked",
+          status: { type: "active", activeFlags: ["running"] },
+        }),
+      );
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-forked",
+          status: {
+            type: "active",
+            activeFlags: ["running"],
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
   test("fans out loaded-thread status notifications only to subscribed connections and cleans up on close", async () => {
     const workspacePath = await createWorkspaceDirectory();
     const canonicalWorkspacePath = await realpath(workspacePath);
@@ -1046,6 +1135,108 @@ describe("App Server protocol harness", () => {
     }
   });
 
+  test("fans out loaded-thread mutation notifications only to subscribed connections", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    const session = createFakeAgentSession({
+      resumeThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: canonicalWorkspacePath,
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const clientA = await connectProtocolClient(harness.port);
+    const clientB = await connectProtocolClient(harness.port);
+    const bystander = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(clientA);
+      await initializeClient(clientB);
+      await initializeClient(bystander);
+      await openWorkspaceClient(clientA, workspacePath);
+      await openWorkspaceClient(clientB, workspacePath);
+      await openWorkspaceClient(bystander, workspacePath);
+
+      clientA.sendJson({
+        id: "req-thread-resume-a",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+      clientB.sendJson({
+        id: "req-thread-resume-b",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+
+      await clientA.nextMessage();
+      await clientB.nextMessage();
+
+      session.emitNotification(
+        createThreadArchivedNotification({
+          threadId: "thread-live",
+        }),
+      );
+
+      await expect(clientA.nextMessage()).resolves.toEqual({
+        method: "thread/archived",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+      await expect(clientB.nextMessage()).resolves.toEqual({
+        method: "thread/archived",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+      await expect(bystander.nextMessage(150)).rejects.toThrow("Timed out waiting for message");
+
+      session.emitNotification(
+        createThreadNameUpdatedNotification({
+          threadId: "thread-live",
+          threadName: "Renamed thread",
+        }),
+      );
+
+      await expect(clientA.nextMessage()).resolves.toEqual({
+        method: "thread/name/updated",
+        params: {
+          threadId: "thread-live",
+          threadName: "Renamed thread",
+        },
+      });
+      await expect(clientB.nextMessage()).resolves.toEqual({
+        method: "thread/name/updated",
+        params: {
+          threadId: "thread-live",
+          threadName: "Renamed thread",
+        },
+      });
+      await expect(bystander.nextMessage(150)).rejects.toThrow("Timed out waiting for message");
+    } finally {
+      await clientA.close();
+      await clientB.close();
+      await bystander.close();
+    }
+  });
+
   test("clears loaded-thread subscriptions when the connection switches workspaces", async () => {
     const firstWorkspacePath = await createWorkspaceDirectory();
     const secondWorkspacePath = await createWorkspaceDirectory();
@@ -1095,6 +1286,157 @@ describe("App Server protocol harness", () => {
       );
 
       await expect(client.nextMessage(150)).rejects.toThrow("Timed out waiting for message");
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("keeps thread/read archive projections consistent after archive and unarchive mutations", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    let archived = false;
+    const session = createFakeAgentSession({
+      readThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: canonicalWorkspacePath,
+            archived,
+            name: archived ? "Archived thread" : "Live thread",
+          }),
+        },
+      }),
+      archiveThread: async () => {
+        archived = true;
+        return {
+          ok: true,
+          data: {},
+        };
+      },
+      unarchiveThread: async (_requestId, params) => {
+        archived = false;
+        return {
+          ok: true,
+          data: {
+            thread: createTestAgentThread({
+              id: params.threadId,
+              workspacePath: canonicalWorkspacePath,
+              archived: false,
+              name: "Live thread",
+            }),
+          },
+        };
+      },
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-archive",
+        method: "thread/archive",
+        params: {
+          threadId: "thread-1",
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-thread-archive",
+        result: {},
+      });
+
+      client.sendJson({
+        id: "req-thread-read-archived",
+        method: "thread/read",
+        params: {
+          threadId: "thread-1",
+          includeTurns: false,
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-thread-read-archived",
+        result: {
+          thread: {
+            id: "thread-1",
+            preview: "Thread preview",
+            createdAt: "2026-04-10T10:00:00.000Z",
+            updatedAt: "2026-04-10T11:00:00.000Z",
+            name: "Archived thread",
+            archived: true,
+            model: null,
+            reasoningEffort: null,
+            status: {
+              type: "idle",
+            },
+          },
+        },
+      });
+
+      client.sendJson({
+        id: "req-thread-unarchive",
+        method: "thread/unarchive",
+        params: {
+          threadId: "thread-1",
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-thread-unarchive",
+        result: {
+          thread: {
+            id: "thread-1",
+            preview: "Thread preview",
+            createdAt: "2026-04-10T10:00:00.000Z",
+            updatedAt: "2026-04-10T11:00:00.000Z",
+            name: "Live thread",
+            archived: false,
+            model: null,
+            reasoningEffort: null,
+            status: {
+              type: "idle",
+            },
+          },
+        },
+      });
+
+      client.sendJson({
+        id: "req-thread-read-live",
+        method: "thread/read",
+        params: {
+          threadId: "thread-1",
+          includeTurns: false,
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-thread-read-live",
+        result: {
+          thread: {
+            id: "thread-1",
+            preview: "Thread preview",
+            createdAt: "2026-04-10T10:00:00.000Z",
+            updatedAt: "2026-04-10T11:00:00.000Z",
+            name: "Live thread",
+            archived: false,
+            model: null,
+            reasoningEffort: null,
+            status: {
+              type: "idle",
+            },
+          },
+        },
+      });
     } finally {
       await client.close();
     }
@@ -1485,6 +1827,66 @@ describe("App Server protocol harness", () => {
 
       await expect(client.nextMessage()).resolves.toEqual({
         id: "req-thread-read",
+        error: {
+          code: -32602,
+          message: "Invalid params",
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("rejects thread/archive before workspace/open", async () => {
+    const harness = await createProtocolHarness();
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+
+      client.sendJson({
+        id: "req-thread-archive",
+        method: "thread/archive",
+        params: {
+          threadId: "thread-1",
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-thread-archive",
+        error: {
+          code: -33006,
+          message: "Workspace not opened",
+          data: {
+            code: "WORKSPACE_NOT_OPENED",
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("maps malformed thread/name/set params to invalid params", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const harness = await createProtocolHarness();
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-name",
+        method: "thread/name/set",
+        params: {
+          threadId: "thread-1",
+          name: "",
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-thread-name",
         error: {
           code: -32602,
           message: "Invalid params",
@@ -2101,6 +2503,46 @@ const createThreadStatusChangedNotification = (input: {
     name: null,
     archived: false,
     status: input.status,
+  },
+});
+
+const createThreadArchivedNotification = (input: { threadId: string }) => ({
+  agentId: "codex",
+  provider: "codex" as const,
+  receivedAt: "2026-04-10T12:00:00.000Z",
+  rawMethod: "thread/archived",
+  threadId: input.threadId,
+  type: "thread" as const,
+  event: "archived" as const,
+  thread: {
+    id: input.threadId,
+    preview: "",
+    updatedAt: "2026-04-10T12:00:00.000Z",
+    name: null,
+    archived: true,
+    status: { type: "notLoaded" } as const,
+  },
+});
+
+const createThreadNameUpdatedNotification = (input: {
+  threadId: string;
+  threadName: string | null;
+}) => ({
+  agentId: "codex",
+  provider: "codex" as const,
+  receivedAt: "2026-04-10T12:00:00.000Z",
+  rawMethod: "thread/name/updated",
+  threadId: input.threadId,
+  type: "thread" as const,
+  event: "nameUpdated" as const,
+  threadName: input.threadName,
+  thread: {
+    id: input.threadId,
+    preview: "",
+    updatedAt: "2026-04-10T12:00:00.000Z",
+    name: input.threadName,
+    archived: false,
+    status: { type: "notLoaded" } as const,
   },
 });
 

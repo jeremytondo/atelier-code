@@ -4,6 +4,7 @@ import type {
   AgentReasoningEffort,
   AgentRemoteError,
   AgentRequestId,
+  AgentSession,
   AgentSessionUnavailableError,
   AgentThread,
 } from "@/agents/contracts";
@@ -18,21 +19,37 @@ import {
 import { assertNever, err, getErrorMessage, ok, type Result } from "@/core/shared";
 import type {
   Thread,
+  ThreadArchiveParams,
+  ThreadArchiveResult,
   ThreadExecutionStatus,
+  ThreadForkParams,
+  ThreadForkResult,
   ThreadListParams,
   ThreadListResult,
   ThreadReadParams,
   ThreadReadResult,
   ThreadResumeParams,
   ThreadResumeResult,
+  ThreadSetNameParams,
+  ThreadSetNameResult,
   ThreadStartParams,
   ThreadStartResult,
+  ThreadUnarchiveParams,
+  ThreadUnarchiveResult,
 } from "@/threads/schemas";
 import type { ThreadsStore, WorkspaceThreadLink } from "@/threads/store";
 import { normalizeWorkspacePath, type WorkspacePathNormalizer } from "@/workspaces/path";
 import type { Workspace } from "@/workspaces/schemas";
 
-type ThreadOperation = "thread/list" | "thread/start" | "thread/resume" | "thread/read";
+type ThreadOperation =
+  | "thread/list"
+  | "thread/start"
+  | "thread/resume"
+  | "thread/read"
+  | "thread/fork"
+  | "thread/archive"
+  | "thread/unarchive"
+  | "thread/name/set";
 
 export type InvalidProviderPayloadError = Readonly<{
   type: "invalidProviderPayload";
@@ -70,6 +87,26 @@ export type ThreadsService = Readonly<{
     workspace: Workspace,
     params: ThreadReadParams,
   ) => Promise<Result<ThreadReadResult, ThreadsServiceError>>;
+  forkThread: (
+    requestId: AgentRequestId,
+    workspace: Workspace,
+    params: ThreadForkParams,
+  ) => Promise<Result<ThreadForkResult, ThreadsServiceError>>;
+  archiveThread: (
+    requestId: AgentRequestId,
+    workspace: Workspace,
+    params: ThreadArchiveParams,
+  ) => Promise<Result<ThreadArchiveResult, ThreadsServiceError>>;
+  unarchiveThread: (
+    requestId: AgentRequestId,
+    workspace: Workspace,
+    params: ThreadUnarchiveParams,
+  ) => Promise<Result<ThreadUnarchiveResult, ThreadsServiceError>>;
+  setThreadName: (
+    requestId: AgentRequestId,
+    workspace: Workspace,
+    params: ThreadSetNameParams,
+  ) => Promise<Result<ThreadSetNameResult, ThreadsServiceError>>;
 }>;
 
 export type CreateThreadsServiceOptions = Readonly<{
@@ -396,7 +433,400 @@ export const createThreadsService = (options: CreateThreadsServiceOptions): Thre
         thread: mapPublicThread(readResult.data.thread, getThreadDefaults(existingLink)),
       });
     },
+    forkThread: async (requestId, workspace, params) => {
+      const sessionResult = await options.registry.getSession();
+
+      if (!sessionResult.ok) {
+        if (sessionResult.error.type === "sessionUnavailable") {
+          return err(sessionResult.error);
+        }
+
+        throw new Error(sessionResult.error.message);
+      }
+
+      const normalizedWorkspacePath = await normalizePath(workspace.workspacePath);
+      const validationResult = await validateThreadWorkspaceForMutation(options, {
+        requestId,
+        operation: "thread/fork",
+        workspace,
+        threadId: params.threadId,
+        session: sessionResult.data,
+        provider: sessionResult.data.provider,
+        normalizedWorkspacePath,
+        normalizePath,
+        seenAt: now(),
+      });
+
+      if (!validationResult.ok) {
+        return validationResult;
+      }
+
+      const forkResult = await sessionResult.data.forkThread(requestId, {
+        threadId: params.threadId,
+        workspacePath: normalizedWorkspacePath,
+        ...(params.model ? { model: params.model } : {}),
+      });
+
+      if (!forkResult.ok) {
+        switch (forkResult.error.type) {
+          case "sessionUnavailable":
+          case "remoteError":
+            return err(forkResult.error);
+          case "invalidProviderMessage":
+            return err(createInvalidProviderPayloadServiceError("thread/fork", forkResult.error));
+          default:
+            return assertNever(forkResult.error, "Unhandled thread/fork error");
+        }
+      }
+
+      if (
+        !(await threadBelongsToWorkspace(
+          forkResult.data.thread,
+          normalizedWorkspacePath,
+          normalizePath,
+        ))
+      ) {
+        return createThreadWorkspaceMismatchResult(
+          forkResult.data.thread.id,
+          workspace.workspacePath,
+          forkResult.data.thread.workspacePath,
+        );
+      }
+
+      const defaults = resolveThreadDefaults(forkResult.data, params);
+      warnOnThreadDefaultsMismatch(options.logger, {
+        operation: "thread/fork",
+        workspace,
+        threadId: forkResult.data.thread.id,
+        providerModel: forkResult.data.model,
+        providerReasoningEffort: forkResult.data.reasoningEffort,
+        defaults,
+      });
+      await persistThreadLinksBestEffort(options, {
+        operation: "thread/fork",
+        workspace,
+        provider: sessionResult.data.provider,
+        seenAt: now(),
+        links: [
+          Object.freeze({
+            threadId: forkResult.data.thread.id,
+            threadWorkspacePath: forkResult.data.thread.workspacePath,
+            archived: forkResult.data.thread.archived,
+            model: defaults.model,
+            reasoningEffort: defaults.reasoningEffort,
+          }),
+        ],
+      });
+
+      return ok({
+        thread: mapPublicThread(forkResult.data.thread, defaults),
+      });
+    },
+    archiveThread: async (requestId, workspace, params) => {
+      const sessionResult = await options.registry.getSession();
+
+      if (!sessionResult.ok) {
+        if (sessionResult.error.type === "sessionUnavailable") {
+          return err(sessionResult.error);
+        }
+
+        throw new Error(sessionResult.error.message);
+      }
+
+      const normalizedWorkspacePath = await normalizePath(workspace.workspacePath);
+      const validationResult = await validateThreadWorkspaceForMutation(options, {
+        requestId,
+        operation: "thread/archive",
+        workspace,
+        threadId: params.threadId,
+        session: sessionResult.data,
+        provider: sessionResult.data.provider,
+        normalizedWorkspacePath,
+        normalizePath,
+        seenAt: now(),
+      });
+
+      if (!validationResult.ok) {
+        return validationResult;
+      }
+
+      const archiveResult = await sessionResult.data.archiveThread(requestId, {
+        threadId: params.threadId,
+      });
+
+      if (!archiveResult.ok) {
+        switch (archiveResult.error.type) {
+          case "sessionUnavailable":
+          case "remoteError":
+            return err(archiveResult.error);
+          case "invalidProviderMessage":
+            return err(
+              createInvalidProviderPayloadServiceError("thread/archive", archiveResult.error),
+            );
+          default:
+            return assertNever(archiveResult.error, "Unhandled thread/archive error");
+        }
+      }
+
+      await persistThreadLinksBestEffort(options, {
+        operation: "thread/archive",
+        workspace,
+        provider: sessionResult.data.provider,
+        seenAt: now(),
+        links: [
+          Object.freeze({
+            threadId: params.threadId,
+            threadWorkspacePath: validationResult.data.threadWorkspacePath,
+            archived: true,
+          }),
+        ],
+      });
+
+      return ok({});
+    },
+    unarchiveThread: async (requestId, workspace, params) => {
+      const sessionResult = await options.registry.getSession();
+
+      if (!sessionResult.ok) {
+        if (sessionResult.error.type === "sessionUnavailable") {
+          return err(sessionResult.error);
+        }
+
+        throw new Error(sessionResult.error.message);
+      }
+
+      const normalizedWorkspacePath = await normalizePath(workspace.workspacePath);
+      const validationResult = await validateThreadWorkspaceForMutation(options, {
+        requestId,
+        operation: "thread/unarchive",
+        workspace,
+        threadId: params.threadId,
+        session: sessionResult.data,
+        provider: sessionResult.data.provider,
+        normalizedWorkspacePath,
+        normalizePath,
+        seenAt: now(),
+      });
+
+      if (!validationResult.ok) {
+        return validationResult;
+      }
+
+      const unarchiveResult = await sessionResult.data.unarchiveThread(requestId, {
+        threadId: params.threadId,
+      });
+
+      if (!unarchiveResult.ok) {
+        switch (unarchiveResult.error.type) {
+          case "sessionUnavailable":
+          case "remoteError":
+            return err(unarchiveResult.error);
+          case "invalidProviderMessage":
+            return err(
+              createInvalidProviderPayloadServiceError("thread/unarchive", unarchiveResult.error),
+            );
+          default:
+            return assertNever(unarchiveResult.error, "Unhandled thread/unarchive error");
+        }
+      }
+
+      if (
+        !(await threadBelongsToWorkspace(
+          unarchiveResult.data.thread,
+          normalizedWorkspacePath,
+          normalizePath,
+        ))
+      ) {
+        return createThreadWorkspaceMismatchResult(
+          unarchiveResult.data.thread.id,
+          workspace.workspacePath,
+          unarchiveResult.data.thread.workspacePath,
+        );
+      }
+
+      await persistThreadLinksBestEffort(options, {
+        operation: "thread/unarchive",
+        workspace,
+        provider: sessionResult.data.provider,
+        seenAt: now(),
+        links: [
+          Object.freeze({
+            threadId: unarchiveResult.data.thread.id,
+            threadWorkspacePath: unarchiveResult.data.thread.workspacePath,
+            archived: false,
+          }),
+        ],
+      });
+
+      return ok({
+        thread: mapPublicThread(unarchiveResult.data.thread, validationResult.data.defaults),
+      });
+    },
+    setThreadName: async (requestId, workspace, params) => {
+      const sessionResult = await options.registry.getSession();
+
+      if (!sessionResult.ok) {
+        if (sessionResult.error.type === "sessionUnavailable") {
+          return err(sessionResult.error);
+        }
+
+        throw new Error(sessionResult.error.message);
+      }
+
+      const normalizedWorkspacePath = await normalizePath(workspace.workspacePath);
+      const validationResult = await validateThreadWorkspaceForMutation(options, {
+        requestId,
+        operation: "thread/name/set",
+        workspace,
+        threadId: params.threadId,
+        session: sessionResult.data,
+        provider: sessionResult.data.provider,
+        normalizedWorkspacePath,
+        normalizePath,
+        seenAt: now(),
+      });
+
+      if (!validationResult.ok) {
+        return validationResult;
+      }
+
+      const setNameResult = await sessionResult.data.setThreadName(requestId, {
+        threadId: params.threadId,
+        name: params.name,
+      });
+
+      if (!setNameResult.ok) {
+        switch (setNameResult.error.type) {
+          case "sessionUnavailable":
+          case "remoteError":
+            return err(setNameResult.error);
+          case "invalidProviderMessage":
+            return err(
+              createInvalidProviderPayloadServiceError("thread/name/set", setNameResult.error),
+            );
+          default:
+            return assertNever(setNameResult.error, "Unhandled thread/name/set error");
+        }
+      }
+
+      await persistThreadLinksBestEffort(options, {
+        operation: "thread/name/set",
+        workspace,
+        provider: sessionResult.data.provider,
+        seenAt: now(),
+        links: [
+          Object.freeze({
+            threadId: params.threadId,
+            threadWorkspacePath: validationResult.data.threadWorkspacePath,
+            archived: validationResult.data.archived,
+          }),
+        ],
+      });
+
+      return ok({});
+    },
   });
+};
+
+type ValidatedMutationThread = Readonly<{
+  threadWorkspacePath: string;
+  archived: boolean;
+  defaults: ThreadDefaults;
+}>;
+
+const validateThreadWorkspaceForMutation = async (
+  options: CreateThreadsServiceOptions,
+  input: Readonly<{
+    requestId: AgentRequestId;
+    operation: ThreadOperation;
+    workspace: Workspace;
+    threadId: string;
+    session: AgentSession;
+    provider: AgentProvider;
+    normalizedWorkspacePath: string;
+    normalizePath: WorkspacePathNormalizer;
+    seenAt: string;
+  }>,
+): Promise<Result<ValidatedMutationThread, ThreadsServiceError>> => {
+  const existingLink = await options.store.getWorkspaceThreadLink({
+    workspaceId: input.workspace.id,
+    provider: input.provider,
+    threadId: input.threadId,
+  });
+
+  if (existingLink !== undefined) {
+    if (
+      (await input.normalizePath(existingLink.threadWorkspacePath)) !==
+      input.normalizedWorkspacePath
+    ) {
+      return createThreadWorkspaceMismatchResult(
+        existingLink.threadId,
+        input.workspace.workspacePath,
+        existingLink.threadWorkspacePath,
+      );
+    }
+
+    return ok(
+      Object.freeze({
+        threadWorkspacePath: existingLink.threadWorkspacePath,
+        archived: existingLink.archived,
+        defaults: getThreadDefaults(existingLink),
+      }),
+    );
+  }
+
+  const readResult = await input.session.readThread(input.requestId, {
+    threadId: input.threadId,
+    includeTurns: false,
+  });
+
+  if (!readResult.ok) {
+    switch (readResult.error.type) {
+      case "sessionUnavailable":
+      case "remoteError":
+        return err(readResult.error);
+      case "invalidProviderMessage":
+        return err(createInvalidProviderPayloadServiceError(input.operation, readResult.error));
+      default:
+        return assertNever(readResult.error, `Unhandled ${input.operation} validation error`);
+    }
+  }
+
+  if (
+    !(await threadBelongsToWorkspace(
+      readResult.data.thread,
+      input.normalizedWorkspacePath,
+      input.normalizePath,
+    ))
+  ) {
+    return createThreadWorkspaceMismatchResult(
+      readResult.data.thread.id,
+      input.workspace.workspacePath,
+      readResult.data.thread.workspacePath,
+    );
+  }
+
+  await persistThreadLinksBestEffort(options, {
+    operation: input.operation,
+    workspace: input.workspace,
+    provider: input.provider,
+    seenAt: input.seenAt,
+    links: [
+      Object.freeze({
+        threadId: readResult.data.thread.id,
+        threadWorkspacePath: readResult.data.thread.workspacePath,
+        archived: readResult.data.thread.archived,
+      }),
+    ],
+  });
+
+  return ok(
+    Object.freeze({
+      threadWorkspacePath: readResult.data.thread.workspacePath,
+      archived: readResult.data.thread.archived,
+      defaults: getThreadDefaults(undefined),
+    }),
+  );
 };
 
 const resolveThreadDefaults = (

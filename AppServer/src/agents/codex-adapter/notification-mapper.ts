@@ -100,6 +100,29 @@ export const mapCodexTransportNotification = (
             },
           ]
         : [buildMalformedMessage(base, "thread/unarchived")];
+    case "thread/name/updated":
+      return params &&
+        typeof params.threadId === "string" &&
+        (params.threadName === undefined ||
+          typeof params.threadName === "string" ||
+          params.threadName === null)
+        ? [
+            {
+              ...base,
+              type: "thread",
+              event: "nameUpdated",
+              threadId: params.threadId,
+              ...(params.threadName !== undefined ? { threadName: params.threadName } : {}),
+              thread: buildPartialThreadSummary(
+                params.threadId,
+                receivedAt,
+                false,
+                { type: "notLoaded" },
+                params.threadName ?? null,
+              ),
+            },
+          ]
+        : [buildMalformedMessage(base, "thread/name/updated")];
     case "thread/closed":
       return params && typeof params.threadId === "string"
         ? [
@@ -406,12 +429,13 @@ const buildPartialThreadSummary = (
   updatedAt: string,
   archived: boolean,
   status: AgentThreadSummary["status"],
+  name: string | null = null,
 ): AgentThreadSummary =>
   Object.freeze({
     id: threadId,
     preview: "",
     updatedAt,
-    name: null,
+    name,
     archived,
     status,
   });

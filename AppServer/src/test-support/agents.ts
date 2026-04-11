@@ -12,8 +12,13 @@ import type {
   AgentSessionLookupError,
   AgentSessionState,
   AgentThread,
+  AgentThreadArchiveParams,
+  AgentThreadForkParams,
+  AgentThreadMutationResult,
   AgentThreadReadParams,
   AgentThreadResult,
+  AgentThreadSetNameParams,
+  AgentThreadUnarchiveParams,
 } from "@/agents/contracts";
 import type { AgentRegistry } from "@/agents/registry";
 
@@ -54,6 +59,22 @@ export type FakeAgentSession = AgentSession &
       requestId: AgentRequestId;
       params: AgentThreadReadParams;
     }>[];
+    forkThreadCalls: readonly Readonly<{
+      requestId: AgentRequestId;
+      params: AgentThreadForkParams;
+    }>[];
+    archiveThreadCalls: readonly Readonly<{
+      requestId: AgentRequestId;
+      params: AgentThreadArchiveParams;
+    }>[];
+    unarchiveThreadCalls: readonly Readonly<{
+      requestId: AgentRequestId;
+      params: AgentThreadUnarchiveParams;
+    }>[];
+    setThreadNameCalls: readonly Readonly<{
+      requestId: AgentRequestId;
+      params: AgentThreadSetNameParams;
+    }>[];
   }>;
 
 export type CreateFakeAgentSessionOptions = Readonly<{
@@ -93,6 +114,22 @@ export type CreateFakeAgentSessionOptions = Readonly<{
     requestId: AgentRequestId,
     params: AgentThreadReadParams,
   ) => Promise<AgentOperationResult<AgentThreadResult>>;
+  forkThread?: (
+    requestId: AgentRequestId,
+    params: AgentThreadForkParams,
+  ) => Promise<AgentOperationResult<AgentThreadResult>>;
+  archiveThread?: (
+    requestId: AgentRequestId,
+    params: AgentThreadArchiveParams,
+  ) => Promise<AgentOperationResult<AgentThreadMutationResult>>;
+  unarchiveThread?: (
+    requestId: AgentRequestId,
+    params: AgentThreadUnarchiveParams,
+  ) => Promise<AgentOperationResult<AgentThreadResult>>;
+  setThreadName?: (
+    requestId: AgentRequestId,
+    params: AgentThreadSetNameParams,
+  ) => Promise<AgentOperationResult<AgentThreadMutationResult>>;
 }>;
 
 export const createFakeAgentSession = (
@@ -142,6 +179,30 @@ export const createFakeAgentSession = (
     Readonly<{
       requestId: AgentRequestId;
       params: AgentThreadReadParams;
+    }>
+  > = [];
+  const forkThreadCalls: Array<
+    Readonly<{
+      requestId: AgentRequestId;
+      params: AgentThreadForkParams;
+    }>
+  > = [];
+  const archiveThreadCalls: Array<
+    Readonly<{
+      requestId: AgentRequestId;
+      params: AgentThreadArchiveParams;
+    }>
+  > = [];
+  const unarchiveThreadCalls: Array<
+    Readonly<{
+      requestId: AgentRequestId;
+      params: AgentThreadUnarchiveParams;
+    }>
+  > = [];
+  const setThreadNameCalls: Array<
+    Readonly<{
+      requestId: AgentRequestId;
+      params: AgentThreadSetNameParams;
     }>
   > = [];
 
@@ -252,8 +313,76 @@ export const createFakeAgentSession = (
         }
       );
     },
-    forkThread: async () => {
-      throw new Error("forkThread should not be called in this test.");
+    forkThread: async (requestId, params) => {
+      forkThreadCalls.push(
+        Object.freeze({
+          requestId,
+          params,
+        }),
+      );
+
+      return (
+        (await options.forkThread?.(requestId, params)) ?? {
+          ok: true,
+          data: {
+            thread: createTestAgentThread({
+              id: `fork-${params.threadId}`,
+              workspacePath: params.workspacePath,
+            }),
+            model: params.model ?? "gpt-5.4",
+            reasoningEffort: "medium",
+          },
+        }
+      );
+    },
+    archiveThread: async (requestId, params) => {
+      archiveThreadCalls.push(
+        Object.freeze({
+          requestId,
+          params,
+        }),
+      );
+
+      return (
+        (await options.archiveThread?.(requestId, params)) ?? {
+          ok: true,
+          data: {},
+        }
+      );
+    },
+    unarchiveThread: async (requestId, params) => {
+      unarchiveThreadCalls.push(
+        Object.freeze({
+          requestId,
+          params,
+        }),
+      );
+
+      return (
+        (await options.unarchiveThread?.(requestId, params)) ?? {
+          ok: true,
+          data: {
+            thread: createTestAgentThread({
+              id: params.threadId,
+            }),
+          },
+        }
+      );
+    },
+    setThreadName: async (requestId, params) => {
+      setThreadNameCalls.push(
+        Object.freeze({
+          requestId,
+          params,
+        }),
+      );
+
+      return (
+        (await options.setThreadName?.(requestId, params)) ?? {
+          ok: true,
+          data: {},
+        }
+      );
     },
     startTurn: async () => {
       throw new Error("startTurn should not be called in this test.");
@@ -280,6 +409,10 @@ export const createFakeAgentSession = (
     startThreadCalls,
     resumeThreadCalls,
     readThreadCalls,
+    forkThreadCalls,
+    archiveThreadCalls,
+    unarchiveThreadCalls,
+    setThreadNameCalls,
   };
 };
 
