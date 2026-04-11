@@ -1,6 +1,6 @@
 import { and, asc, eq } from "drizzle-orm";
 import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
-import type { AgentProvider } from "@/agents/contracts";
+import type { AgentProvider, AgentReasoningEffort } from "@/agents/contracts";
 import type { AppDatabase } from "@/core/store";
 
 export const workspaceThreadsTable = sqliteTable(
@@ -11,6 +11,8 @@ export const workspaceThreadsTable = sqliteTable(
     threadId: text("thread_id").notNull(),
     threadWorkspacePath: text("thread_workspace_path").notNull(),
     archived: integer("archived", { mode: "boolean" }).notNull(),
+    model: text("model"),
+    reasoningEffort: text("reasoning_effort"),
     firstSeenAt: text("first_seen_at").notNull(),
     lastSeenAt: text("last_seen_at").notNull(),
   },
@@ -31,6 +33,8 @@ export type WorkspaceThreadLink = Readonly<{
   threadId: string;
   threadWorkspacePath: string;
   archived: boolean;
+  model: string | null;
+  reasoningEffort: AgentReasoningEffort | null;
   firstSeenAt: string;
   lastSeenAt: string;
 }>;
@@ -45,6 +49,8 @@ export type WorkspaceThreadLinkRecord = Readonly<{
   threadId: string;
   threadWorkspacePath: string;
   archived: boolean;
+  model?: string | null;
+  reasoningEffort?: AgentReasoningEffort | null;
 }>;
 
 export type UpsertWorkspaceThreadLinksInput = Readonly<{
@@ -162,6 +168,11 @@ export const createInMemoryThreadsStore = (
             threadId: link.threadId,
             threadWorkspacePath: link.threadWorkspacePath,
             archived: link.archived,
+            model: link.model !== undefined ? link.model : (existing?.model ?? null),
+            reasoningEffort:
+              link.reasoningEffort !== undefined
+                ? link.reasoningEffort
+                : (existing?.reasoningEffort ?? null),
             firstSeenAt: existing?.firstSeenAt ?? input.seenAt,
             lastSeenAt: input.seenAt,
           }),
@@ -184,6 +195,8 @@ const insertWorkspaceThreadLink = (
       threadId: link.threadId,
       threadWorkspacePath: link.threadWorkspacePath,
       archived: link.archived,
+      model: link.model ?? null,
+      reasoningEffort: link.reasoningEffort ?? null,
       firstSeenAt: input.seenAt,
       lastSeenAt: input.seenAt,
     })
@@ -201,6 +214,8 @@ const updateWorkspaceThreadLink = (
     .set({
       threadWorkspacePath: link.threadWorkspacePath,
       archived: link.archived,
+      ...(link.model !== undefined ? { model: link.model } : {}),
+      ...(link.reasoningEffort !== undefined ? { reasoningEffort: link.reasoningEffort } : {}),
       firstSeenAt,
       lastSeenAt: input.seenAt,
     })
@@ -221,6 +236,8 @@ const mapWorkspaceThreadRow = (row: WorkspaceThreadRow): WorkspaceThreadLink =>
     threadId: row.threadId,
     threadWorkspacePath: row.threadWorkspacePath,
     archived: row.archived,
+    model: row.model,
+    reasoningEffort: (row.reasoningEffort as AgentReasoningEffort | null) ?? null,
     firstSeenAt: row.firstSeenAt,
     lastSeenAt: row.lastSeenAt,
   });

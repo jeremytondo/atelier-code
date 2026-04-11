@@ -315,6 +315,8 @@ export type AgentThreadForkParams = Readonly<{
 
 export type AgentThreadResult = Readonly<{
   thread: AgentThread;
+  model?: string;
+  reasoningEffort?: AgentReasoningEffort | null;
 }>;
 
 export type AgentTurnStartParams = Readonly<{

@@ -1,32 +1,49 @@
+import type { AgentNotification, AgentSession, AgentSessionLookupError } from "@/agents/contracts";
 import { createAgentSessionUnavailableError, createProviderError } from "@/agents/protocol-errors";
 import type { AgentRegistry } from "@/agents/registry";
 import { createAgentRequestId } from "@/agents/request-id";
 import type { Logger } from "@/app/logger";
-import type { ProtocolDispatcher } from "@/core/protocol";
+import type { ProtocolDispatcher, ProtocolEngine, ProtocolNotification } from "@/core/protocol";
 import {
   createSessionNotInitializedResult,
   createWorkspaceNotOpenedResult,
   type ProtocolMethodError,
 } from "@/core/protocol/errors";
-import { assertNever, type LifecycleComponent, ok } from "@/core/shared";
+import { assertNever, err, type LifecycleComponent, ok, type Result } from "@/core/shared";
+import { createLoadedThreadRegistry } from "@/threads/loaded-thread-registry";
 import {
   ThreadListParamsSchema,
   ThreadListResultSchema,
   type ThreadReadParams,
   ThreadReadParamsSchema,
   ThreadReadResultSchema,
+  type ThreadResumeParams,
+  ThreadResumeParamsSchema,
+  ThreadResumeResultSchema,
+  type ThreadStartParams,
+  ThreadStartParamsSchema,
+  ThreadStartResultSchema,
 } from "@/threads/schemas";
-import { createThreadsService } from "@/threads/service";
+import { createThreadsService, type ThreadsServiceError } from "@/threads/service";
 import type { ThreadsStore } from "@/threads/store";
 import type { Workspace } from "@/workspaces/schemas";
 
 export type ThreadsModule = Readonly<{
   lifecycle: LifecycleComponent;
+  handleConnectionClosed: (connectionId: string) => void;
+  handleWorkspaceOpened: (
+    input: Readonly<{
+      connectionId: string;
+      previousWorkspace: Workspace | undefined;
+      workspace: Workspace;
+    }>,
+  ) => void;
 }>;
 
 export type CreateThreadsModuleOptions = Readonly<{
   logger: Logger;
   registerMethod: ProtocolDispatcher["registerMethod"];
+  sendNotification: ProtocolEngine["sendNotification"];
   registry: AgentRegistry;
   store: ThreadsStore;
   getOpenedWorkspace: (connectionId: string) => Workspace | undefined;
@@ -40,6 +57,111 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
     store: options.store,
     now: options.now,
   });
+  const loadedThreads = createLoadedThreadRegistry();
+  let subscribedSession: AgentSession | undefined;
+  let unsubscribeFromSession: (() => void) | undefined;
+
+  const resetSessionSubscription = (): void => {
+    unsubscribeFromSession?.();
+    unsubscribeFromSession = undefined;
+    subscribedSession = undefined;
+  };
+
+  const sendThreadNotification = async (
+    connectionId: string,
+    notification: ProtocolNotification,
+  ): Promise<void> => {
+    await options.sendNotification({
+      connectionId,
+      notification,
+    });
+  };
+
+  const fanOutThreadNotification = async (
+    threadId: string,
+    notification: ProtocolNotification,
+    clearThreadAfterSend = false,
+  ): Promise<void> => {
+    const connectionIds = loadedThreads.listSubscribers(threadId);
+    if (connectionIds.length === 0) {
+      if (clearThreadAfterSend) {
+        loadedThreads.clearThread(threadId);
+      }
+      return;
+    }
+
+    await Promise.all(
+      connectionIds.map((connectionId) => sendThreadNotification(connectionId, notification)),
+    );
+
+    if (clearThreadAfterSend) {
+      loadedThreads.clearThread(threadId);
+    }
+  };
+
+  const forwardAgentNotification = async (notification: AgentNotification): Promise<void> => {
+    if (notification.type === "disconnect") {
+      loadedThreads.clearAll();
+      resetSessionSubscription();
+      return;
+    }
+
+    if (notification.type !== "thread" || notification.threadId === undefined) {
+      return;
+    }
+
+    switch (notification.event) {
+      case "statusChanged":
+        await fanOutThreadNotification(notification.threadId, {
+          method: "thread/status/changed",
+          params: {
+            threadId: notification.threadId,
+            status: notification.thread.status,
+          },
+        });
+        return;
+      case "closed":
+        await fanOutThreadNotification(
+          notification.threadId,
+          {
+            method: "thread/closed",
+            params: {
+              threadId: notification.threadId,
+            },
+          },
+          true,
+        );
+        return;
+      case "started":
+      case "archived":
+      case "unarchived":
+        return;
+      default:
+        return;
+    }
+  };
+
+  const ensureSessionNotificationBinding = async (): Promise<
+    Result<void, AgentSessionLookupError>
+  > => {
+    const sessionResult = await options.registry.getSession();
+
+    if (!sessionResult.ok) {
+      return err(sessionResult.error);
+    }
+
+    if (subscribedSession === sessionResult.data) {
+      return ok(undefined);
+    }
+
+    resetSessionSubscription();
+    subscribedSession = sessionResult.data;
+    unsubscribeFromSession = sessionResult.data.subscribe((notification) => {
+      void forwardAgentNotification(notification);
+    });
+
+    return ok(undefined);
+  };
 
   options.registerMethod({
     method: "thread/list",
@@ -62,30 +184,101 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
         requestId,
       });
       const result = await service.listThreads(agentRequestId, workspace, params);
+      return mapThreadServiceResult(result, "thread/list");
+    },
+  });
+
+  options.registerMethod({
+    method: "thread/start",
+    paramsSchema: ThreadStartParamsSchema,
+    resultSchema: ThreadStartResultSchema,
+    handler: async ({ connectionId, params, requestId, session }) => {
+      if (!session.isInitialized()) {
+        return createSessionNotInitializedResult();
+      }
+
+      const workspace = options.getOpenedWorkspace(connectionId);
+
+      if (workspace === undefined) {
+        return createWorkspaceNotOpenedResult();
+      }
+
+      const bindResult = await ensureSessionNotificationBinding();
+      if (!bindResult.ok) {
+        return mapSessionLookupError(bindResult.error);
+      }
+
+      const agentRequestId = createAgentRequestId({
+        connectionId,
+        method: "thread/start",
+        requestId,
+      });
+      const result = await service.startThread(
+        agentRequestId,
+        workspace,
+        normalizeThreadStartParams(params),
+      );
 
       if (!result.ok) {
-        if (isProtocolMethodError(result.error)) {
-          return {
-            ok: false,
-            error: result.error,
-          };
-        }
-
-        switch (result.error.type) {
-          case "sessionUnavailable":
-            return {
-              ok: false,
-              error: createAgentSessionUnavailableError(result.error),
-            };
-          case "remoteError":
-            return {
-              ok: false,
-              error: createProviderError(result.error),
-            };
-          default:
-            return assertNever(result.error, "Unhandled thread/list protocol error");
-        }
+        return mapThreadServiceResult(result, "thread/start");
       }
+
+      loadedThreads.markLoaded({
+        connectionId,
+        workspaceId: workspace.id,
+        threadId: result.data.thread.id,
+      });
+      void sendThreadNotification(connectionId, {
+        method: "thread/started",
+        params: {
+          thread: result.data.thread,
+        },
+      });
+
+      return ok(result.data);
+    },
+  });
+
+  options.registerMethod({
+    method: "thread/resume",
+    paramsSchema: ThreadResumeParamsSchema,
+    resultSchema: ThreadResumeResultSchema,
+    handler: async ({ connectionId, params, requestId, session }) => {
+      if (!session.isInitialized()) {
+        return createSessionNotInitializedResult();
+      }
+
+      const workspace = options.getOpenedWorkspace(connectionId);
+
+      if (workspace === undefined) {
+        return createWorkspaceNotOpenedResult();
+      }
+
+      const bindResult = await ensureSessionNotificationBinding();
+      if (!bindResult.ok) {
+        return mapSessionLookupError(bindResult.error);
+      }
+
+      const agentRequestId = createAgentRequestId({
+        connectionId,
+        method: "thread/resume",
+        requestId,
+      });
+      const result = await service.resumeThread(
+        agentRequestId,
+        workspace,
+        normalizeThreadResumeParams(params),
+      );
+
+      if (!result.ok) {
+        return mapThreadServiceResult(result, "thread/resume");
+      }
+
+      loadedThreads.markLoaded({
+        connectionId,
+        workspaceId: workspace.id,
+        threadId: result.data.thread.id,
+      });
 
       return ok(result.data);
     },
@@ -116,32 +309,7 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
         workspace,
         normalizeThreadReadParams(params),
       );
-
-      if (!result.ok) {
-        if (isProtocolMethodError(result.error)) {
-          return {
-            ok: false,
-            error: result.error,
-          };
-        }
-
-        switch (result.error.type) {
-          case "sessionUnavailable":
-            return {
-              ok: false,
-              error: createAgentSessionUnavailableError(result.error),
-            };
-          case "remoteError":
-            return {
-              ok: false,
-              error: createProviderError(result.error),
-            };
-          default:
-            return assertNever(result.error, "Unhandled thread/read protocol error");
-        }
-      }
-
-      return ok(result.data);
+      return mapThreadServiceResult(result, "thread/read");
     },
   });
 
@@ -152,17 +320,89 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
         options.logger.info("Threads module ready");
       },
       stop: async (reason: string) => {
+        loadedThreads.clearAll();
+        resetSessionSubscription();
         options.logger.info("Threads module stopped", { reason });
       },
     }),
+    handleConnectionClosed: (connectionId) => {
+      loadedThreads.clearConnection(connectionId);
+    },
+    handleWorkspaceOpened: ({ connectionId, previousWorkspace, workspace }) => {
+      if (previousWorkspace?.id === workspace.id) {
+        return;
+      }
+
+      loadedThreads.clearConnection(connectionId);
+    },
   });
 };
+
+const normalizeThreadStartParams = (params: ThreadStartParams): ThreadStartParams =>
+  Object.freeze({
+    ...(params.model ? { model: params.model } : {}),
+    ...(params.reasoningEffort ? { reasoningEffort: params.reasoningEffort } : {}),
+  });
+
+const normalizeThreadResumeParams = (params: ThreadResumeParams): ThreadResumeParams =>
+  Object.freeze({
+    threadId: params.threadId,
+    ...(params.model ? { model: params.model } : {}),
+    ...(params.reasoningEffort ? { reasoningEffort: params.reasoningEffort } : {}),
+  });
 
 const normalizeThreadReadParams = (params: ThreadReadParams): ThreadReadParams =>
   Object.freeze({
     threadId: params.threadId,
     includeTurns: params.includeTurns ?? false,
   });
+
+const mapThreadServiceResult = <TResult>(
+  result: Result<TResult, ThreadsServiceError>,
+  method: string,
+): Result<TResult, ProtocolMethodError> => {
+  if (result.ok) {
+    return ok(result.data);
+  }
+
+  if (isProtocolMethodError(result.error)) {
+    return {
+      ok: false,
+      error: result.error,
+    };
+  }
+
+  switch (result.error.type) {
+    case "sessionUnavailable":
+      return {
+        ok: false,
+        error: createAgentSessionUnavailableError(result.error),
+      };
+    case "remoteError":
+      return {
+        ok: false,
+        error: createProviderError(result.error),
+      };
+    default:
+      return assertNever(result.error, `Unhandled ${method} protocol error`);
+  }
+};
+
+const mapSessionLookupError = (
+  error: AgentSessionLookupError,
+): Result<never, ProtocolMethodError> => {
+  switch (error.type) {
+    case "sessionUnavailable":
+      return {
+        ok: false,
+        error: createAgentSessionUnavailableError(error),
+      };
+    case "agentNotFound":
+      throw new Error(error.message);
+    default:
+      return assertNever(error, "Unhandled agent session lookup error");
+  }
+};
 
 const isProtocolMethodError = (error: unknown): error is ProtocolMethodError =>
   typeof error === "object" &&

@@ -307,10 +307,18 @@ const createDefaultComponents = (
   const appProtocolRuntime = createAppProtocolRuntime({
     logger,
   });
+  let threadsModule: ReturnType<typeof createThreadsModule> | undefined;
   const workspacesModule = createWorkspacesModule({
     logger: logger.withContext({ component: "module.workspaces" }),
     registerMethod: appProtocolRuntime.registerMethod,
     store: createSqliteWorkspacesStore(storeBootstrap.getDatabase),
+    onWorkspaceOpened: ({ connectionId, previousWorkspace, workspace }) => {
+      threadsModule?.handleWorkspaceOpened({
+        connectionId,
+        previousWorkspace,
+        workspace,
+      });
+    },
   });
   const agentsModule = createAgentsModule({
     config: config.agents,
@@ -322,19 +330,22 @@ const createDefaultComponents = (
     ],
     registerMethod: appProtocolRuntime.registerMethod,
   });
-  const threadsModule = createThreadsModule({
+  threadsModule = createThreadsModule({
     logger: logger.withContext({ component: "module.threads" }),
     registerMethod: appProtocolRuntime.registerMethod,
+    sendNotification: appProtocolRuntime.sendNotification,
     registry: agentsModule.registry,
     store: createSqliteThreadsStore(storeBootstrap.getDatabase),
     getOpenedWorkspace: workspacesModule.getOpenedWorkspace,
   });
+  const finalizedThreadsModule = threadsModule;
   const transportComponent = createAppTransportComponent({
     config,
     logger,
     protocol: appProtocolRuntime,
     onConnectionClosed: [
       ({ connectionId }) => {
+        finalizedThreadsModule.handleConnectionClosed(connectionId);
         workspacesModule.handleConnectionClosed(connectionId);
       },
     ],
@@ -345,7 +356,7 @@ const createDefaultComponents = (
     storeBootstrap.lifecycle,
     agentsModule.lifecycle,
     workspacesModule.lifecycle,
-    threadsModule.lifecycle,
+    finalizedThreadsModule.lifecycle,
     createTurnsModulePlaceholder(),
     createApprovalsModulePlaceholder(),
     transportComponent,

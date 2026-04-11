@@ -1,3 +1,4 @@
+export * from "@/threads/loaded-thread-registry";
 export * from "@/threads/schemas";
 export * from "@/threads/service";
 export * from "@/threads/store";
