@@ -7,9 +7,17 @@ import type { ProtocolDispatcher, ProtocolEngine, ProtocolNotification } from "@
 import {
   createSessionNotInitializedResult,
   createWorkspaceNotOpenedResult,
+  isProtocolMethodError,
   type ProtocolMethodError,
 } from "@/core/protocol/errors";
-import { assertNever, err, type LifecycleComponent, ok, type Result } from "@/core/shared";
+import {
+  assertNever,
+  err,
+  getErrorMessage,
+  type LifecycleComponent,
+  ok,
+  type Result,
+} from "@/core/shared";
 import { createLoadedThreadRegistry } from "@/threads/loaded-thread-registry";
 import {
   ThreadListParamsSchema,
@@ -24,7 +32,11 @@ import {
   ThreadStartParamsSchema,
   ThreadStartResultSchema,
 } from "@/threads/schemas";
-import { createThreadsService, type ThreadsServiceError } from "@/threads/service";
+import {
+  createThreadsService,
+  mapInvalidProviderPayloadToProtocolError,
+  type ThreadsServiceError,
+} from "@/threads/service";
 import type { ThreadsStore } from "@/threads/store";
 import type { Workspace } from "@/workspaces/schemas";
 
@@ -69,12 +81,22 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
 
   const sendThreadNotification = async (
     connectionId: string,
+    threadId: string | undefined,
     notification: ProtocolNotification,
   ): Promise<void> => {
-    await options.sendNotification({
-      connectionId,
-      notification,
-    });
+    try {
+      await options.sendNotification({
+        connectionId,
+        notification,
+      });
+    } catch (error) {
+      options.logger.warn("Failed to send thread notification", {
+        connectionId,
+        threadId: threadId ?? null,
+        method: notification.method,
+        error: getErrorMessage(error),
+      });
+    }
   };
 
   const fanOutThreadNotification = async (
@@ -91,7 +113,9 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
     }
 
     await Promise.all(
-      connectionIds.map((connectionId) => sendThreadNotification(connectionId, notification)),
+      connectionIds.map((connectionId) =>
+        sendThreadNotification(connectionId, threadId, notification),
+      ),
     );
 
     if (clearThreadAfterSend) {
@@ -184,7 +208,7 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
         requestId,
       });
       const result = await service.listThreads(agentRequestId, workspace, params);
-      return mapThreadServiceResult(result, "thread/list");
+      return mapThreadResult(result, "thread/list");
     },
   });
 
@@ -205,7 +229,7 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
 
       const bindResult = await ensureSessionNotificationBinding();
       if (!bindResult.ok) {
-        return mapSessionLookupError(bindResult.error);
+        return err(mapThreadError(bindResult.error, "thread/start"));
       }
 
       const agentRequestId = createAgentRequestId({
@@ -220,7 +244,7 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
       );
 
       if (!result.ok) {
-        return mapThreadServiceResult(result, "thread/start");
+        return mapThreadResult(result, "thread/start");
       }
 
       loadedThreads.markLoaded({
@@ -228,7 +252,7 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
         workspaceId: workspace.id,
         threadId: result.data.thread.id,
       });
-      void sendThreadNotification(connectionId, {
+      void sendThreadNotification(connectionId, result.data.thread.id, {
         method: "thread/started",
         params: {
           thread: result.data.thread,
@@ -256,7 +280,7 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
 
       const bindResult = await ensureSessionNotificationBinding();
       if (!bindResult.ok) {
-        return mapSessionLookupError(bindResult.error);
+        return err(mapThreadError(bindResult.error, "thread/resume"));
       }
 
       const agentRequestId = createAgentRequestId({
@@ -271,7 +295,7 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
       );
 
       if (!result.ok) {
-        return mapThreadServiceResult(result, "thread/resume");
+        return mapThreadResult(result, "thread/resume");
       }
 
       loadedThreads.markLoaded({
@@ -309,7 +333,7 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
         workspace,
         normalizeThreadReadParams(params),
       );
-      return mapThreadServiceResult(result, "thread/read");
+      return mapThreadResult(result, "thread/read");
     },
   });
 
@@ -357,56 +381,35 @@ const normalizeThreadReadParams = (params: ThreadReadParams): ThreadReadParams =
     includeTurns: params.includeTurns ?? false,
   });
 
-const mapThreadServiceResult = <TResult>(
-  result: Result<TResult, ThreadsServiceError>,
+const mapThreadResult = <TResult>(
+  result: Result<TResult, AgentSessionLookupError | ThreadsServiceError>,
   method: string,
 ): Result<TResult, ProtocolMethodError> => {
   if (result.ok) {
     return ok(result.data);
   }
 
-  if (isProtocolMethodError(result.error)) {
-    return {
-      ok: false,
-      error: result.error,
-    };
-  }
-
-  switch (result.error.type) {
-    case "sessionUnavailable":
-      return {
-        ok: false,
-        error: createAgentSessionUnavailableError(result.error),
-      };
-    case "remoteError":
-      return {
-        ok: false,
-        error: createProviderError(result.error),
-      };
-    default:
-      return assertNever(result.error, `Unhandled ${method} protocol error`);
-  }
+  return err(mapThreadError(result.error, method));
 };
 
-const mapSessionLookupError = (
-  error: AgentSessionLookupError,
-): Result<never, ProtocolMethodError> => {
+const mapThreadError = (
+  error: AgentSessionLookupError | ThreadsServiceError,
+  method: string,
+): ProtocolMethodError => {
+  if (isProtocolMethodError(error)) {
+    return error;
+  }
+
   switch (error.type) {
     case "sessionUnavailable":
-      return {
-        ok: false,
-        error: createAgentSessionUnavailableError(error),
-      };
+      return createAgentSessionUnavailableError(error);
+    case "remoteError":
+      return createProviderError(error);
+    case "invalidProviderPayload":
+      return mapInvalidProviderPayloadToProtocolError(error);
     case "agentNotFound":
       throw new Error(error.message);
     default:
-      return assertNever(error, "Unhandled agent session lookup error");
+      return assertNever(error, `Unhandled ${method} protocol error`);
   }
 };
-
-const isProtocolMethodError = (error: unknown): error is ProtocolMethodError =>
-  typeof error === "object" &&
-  error !== null &&
-  !("type" in error) &&
-  "code" in error &&
-  typeof (error as { code: unknown }).code === "number";

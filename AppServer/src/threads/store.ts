@@ -1,6 +1,9 @@
+import { Type } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 import { and, asc, eq } from "drizzle-orm";
 import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 import type { AgentProvider, AgentReasoningEffort } from "@/agents/contracts";
+import { ModelReasoningEffortSchema } from "@/agents/schemas";
 import type { AppDatabase } from "@/core/store";
 
 export const workspaceThreadsTable = sqliteTable(
@@ -77,6 +80,9 @@ export type ThreadsStore = Readonly<{
 
 type AppDatabaseProvider = () => AppDatabase;
 
+const AgentProviderSchema = Type.Literal("codex");
+const NullableReasoningEffortSchema = Type.Union([ModelReasoningEffortSchema, Type.Null()]);
+
 export const createSqliteThreadsStore = (getDatabase: AppDatabaseProvider): ThreadsStore => {
   const getWorkspaceThreadLink: ThreadsStore["getWorkspaceThreadLink"] = async (lookup) => {
     const database = getDatabase();
@@ -114,20 +120,19 @@ export const createSqliteThreadsStore = (getDatabase: AppDatabaseProvider): Thre
 
   const upsertWorkspaceThreadLinks: ThreadsStore["upsertWorkspaceThreadLinks"] = async (input) => {
     const database = getDatabase();
+    const sqliteHandle = database.$client;
 
-    for (const link of input.links) {
-      const existing = await getWorkspaceThreadLink({
-        workspaceId: input.workspaceId,
-        provider: input.provider,
-        threadId: link.threadId,
-      });
+    sqliteHandle.exec("BEGIN");
 
-      if (existing === undefined) {
-        insertWorkspaceThreadLink(database, input, link);
-        continue;
+    try {
+      for (const link of input.links) {
+        upsertWorkspaceThreadLink(database, input, link);
       }
 
-      updateWorkspaceThreadLink(database, input, link, existing.firstSeenAt);
+      sqliteHandle.exec("COMMIT");
+    } catch (error) {
+      sqliteHandle.exec("ROLLBACK");
+      throw error;
     }
   };
 
@@ -152,15 +157,17 @@ export const createInMemoryThreadsStore = (
         .filter((link) => link.workspaceId === workspaceId && link.provider === provider)
         .sort((left, right) => left.threadId.localeCompare(right.threadId)),
     upsertWorkspaceThreadLinks: async (input) => {
+      const nextLinksByKey = new Map(linksByKey);
+
       for (const link of input.links) {
         const key = toWorkspaceThreadKey({
           workspaceId: input.workspaceId,
           provider: input.provider,
           threadId: link.threadId,
         });
-        const existing = linksByKey.get(key);
+        const existing = nextLinksByKey.get(key);
 
-        linksByKey.set(
+        nextLinksByKey.set(
           key,
           Object.freeze({
             workspaceId: input.workspaceId,
@@ -178,11 +185,17 @@ export const createInMemoryThreadsStore = (
           }),
         );
       }
+
+      linksByKey.clear();
+
+      for (const [key, link] of nextLinksByKey) {
+        linksByKey.set(key, link);
+      }
     },
   });
 };
 
-const insertWorkspaceThreadLink = (
+const upsertWorkspaceThreadLink = (
   database: AppDatabase,
   input: UpsertWorkspaceThreadLinksInput,
   link: WorkspaceThreadLinkRecord,
@@ -195,52 +208,49 @@ const insertWorkspaceThreadLink = (
       threadId: link.threadId,
       threadWorkspacePath: link.threadWorkspacePath,
       archived: link.archived,
-      model: link.model ?? null,
-      reasoningEffort: link.reasoningEffort ?? null,
+      ...(link.model !== undefined ? { model: link.model } : {}),
+      ...(link.reasoningEffort !== undefined ? { reasoningEffort: link.reasoningEffort } : {}),
       firstSeenAt: input.seenAt,
       lastSeenAt: input.seenAt,
     })
-    .run();
-};
-
-const updateWorkspaceThreadLink = (
-  database: AppDatabase,
-  input: UpsertWorkspaceThreadLinksInput,
-  link: WorkspaceThreadLinkRecord,
-  firstSeenAt: string,
-): void => {
-  database
-    .update(workspaceThreadsTable)
-    .set({
-      threadWorkspacePath: link.threadWorkspacePath,
-      archived: link.archived,
-      ...(link.model !== undefined ? { model: link.model } : {}),
-      ...(link.reasoningEffort !== undefined ? { reasoningEffort: link.reasoningEffort } : {}),
-      firstSeenAt,
-      lastSeenAt: input.seenAt,
+    .onConflictDoUpdate({
+      target: [
+        workspaceThreadsTable.workspaceId,
+        workspaceThreadsTable.provider,
+        workspaceThreadsTable.threadId,
+      ],
+      set: {
+        threadWorkspacePath: link.threadWorkspacePath,
+        archived: link.archived,
+        ...(link.model !== undefined ? { model: link.model } : {}),
+        ...(link.reasoningEffort !== undefined ? { reasoningEffort: link.reasoningEffort } : {}),
+        lastSeenAt: input.seenAt,
+      },
     })
-    .where(
-      and(
-        eq(workspaceThreadsTable.workspaceId, input.workspaceId),
-        eq(workspaceThreadsTable.provider, input.provider),
-        eq(workspaceThreadsTable.threadId, link.threadId),
-      ),
-    )
     .run();
 };
 
-const mapWorkspaceThreadRow = (row: WorkspaceThreadRow): WorkspaceThreadLink =>
-  Object.freeze({
+export const mapWorkspaceThreadRow = (row: WorkspaceThreadRow): WorkspaceThreadLink => {
+  if (!Value.Check(AgentProviderSchema, row.provider)) {
+    throw new Error(`Invalid workspace thread provider: ${String(row.provider)}`);
+  }
+
+  if (!Value.Check(NullableReasoningEffortSchema, row.reasoningEffort)) {
+    throw new Error(`Invalid workspace thread reasoning effort: ${String(row.reasoningEffort)}`);
+  }
+
+  return Object.freeze({
     workspaceId: row.workspaceId,
     provider: row.provider as AgentProvider,
     threadId: row.threadId,
     threadWorkspacePath: row.threadWorkspacePath,
     archived: row.archived,
     model: row.model,
-    reasoningEffort: (row.reasoningEffort as AgentReasoningEffort | null) ?? null,
+    reasoningEffort: row.reasoningEffort,
     firstSeenAt: row.firstSeenAt,
     lastSeenAt: row.lastSeenAt,
   });
+};
 
 const toWorkspaceThreadKey = (lookup: WorkspaceThreadLinkLookup): string =>
   `${lookup.workspaceId}:${lookup.provider}:${lookup.threadId}`;

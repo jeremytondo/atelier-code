@@ -3,7 +3,11 @@ import { describe, expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 import { type AppDatabase, DEFAULT_MIGRATIONS_FOLDER } from "@/core/store";
-import { createInMemoryThreadsStore, createSqliteThreadsStore } from "@/threads/store";
+import {
+  createInMemoryThreadsStore,
+  createSqliteThreadsStore,
+  mapWorkspaceThreadRow,
+} from "@/threads/store";
 
 describe("threads store", () => {
   const storeFactories = [
@@ -227,6 +231,70 @@ describe("threads store", () => {
       ]);
     });
   }
+
+  test("sqlite upserts are applied transactionally", async () => {
+    const database = createMigratedInMemoryDatabase();
+    const store = createSqliteThreadsStore(() => database);
+
+    await expect(
+      store.upsertWorkspaceThreadLinks({
+        workspaceId: "workspace-1",
+        provider: "codex",
+        seenAt: "2026-04-10T10:00:00.000Z",
+        links: [
+          {
+            threadId: "thread-ok",
+            threadWorkspacePath: "/tmp/project",
+            archived: false,
+          },
+          {
+            threadId: "thread-bad",
+            threadWorkspacePath: null as never,
+            archived: false,
+          },
+        ],
+      }),
+    ).rejects.toThrow();
+
+    await expect(
+      store.listWorkspaceThreadLinks({
+        workspaceId: "workspace-1",
+        provider: "codex",
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  test("rejects invalid persisted provider values deterministically", () => {
+    expect(() =>
+      mapWorkspaceThreadRow({
+        workspaceId: "workspace-1",
+        provider: "other" as never,
+        threadId: "thread-1",
+        threadWorkspacePath: "/tmp/project",
+        archived: false,
+        model: null,
+        reasoningEffort: null,
+        firstSeenAt: "2026-04-10T10:00:00.000Z",
+        lastSeenAt: "2026-04-10T10:00:00.000Z",
+      }),
+    ).toThrow("Invalid workspace thread provider: other");
+  });
+
+  test("rejects invalid persisted reasoning effort values deterministically", () => {
+    expect(() =>
+      mapWorkspaceThreadRow({
+        workspaceId: "workspace-1",
+        provider: "codex",
+        threadId: "thread-1",
+        threadWorkspacePath: "/tmp/project",
+        archived: false,
+        model: null,
+        reasoningEffort: "turbo" as never,
+        firstSeenAt: "2026-04-10T10:00:00.000Z",
+        lastSeenAt: "2026-04-10T10:00:00.000Z",
+      }),
+    ).toThrow("Invalid workspace thread reasoning effort: turbo");
+  });
 });
 
 const createMigratedInMemoryDatabase = (): AppDatabase => {

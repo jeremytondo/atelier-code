@@ -13,7 +13,7 @@ import {
 } from "@/app/protocol";
 import { type AppServer, createConfiguredAppServer, type SignalRegistrar } from "@/app/server";
 import { createApprovalsModulePlaceholder } from "@/approvals";
-import { createStoreBootstrap } from "@/core/store";
+import { type AppDatabase, createStoreBootstrap } from "@/core/store";
 import {
   createFakeAgentAdapter,
   createFakeAgentSession,
@@ -21,7 +21,7 @@ import {
   createTestAgentThread,
 } from "@/test-support/agents";
 import { getAvailablePort } from "@/test-support/network";
-import { createSqliteThreadsStore, createThreadsModule } from "@/threads";
+import { createSqliteThreadsStore, createThreadsModule, type ThreadsStore } from "@/threads";
 import { createTurnsModulePlaceholder } from "@/turns";
 import { createSqliteWorkspacesStore, createWorkspacesModule } from "@/workspaces";
 
@@ -811,6 +811,85 @@ describe("App Server protocol harness", () => {
     }
   });
 
+  test("thread/start still succeeds when bookkeeping writes fail and keeps loaded-thread forwarding", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    const session = createFakeAgentSession({
+      startThread: async () => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: "thread-best-effort",
+            workspacePath: canonicalWorkspacePath,
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+      threadsStoreFactory: (getDatabase) =>
+        createFailingUpsertThreadsStore(createSqliteThreadsStore(getDatabase)),
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-start",
+        method: "thread/start",
+        params: {},
+      });
+
+      const messages = [await client.nextMessage(), await client.nextMessage()];
+      expect(messages).toContainEqual({
+        id: "req-thread-start",
+        result: {
+          thread: expect.objectContaining({
+            id: "thread-best-effort",
+            model: "gpt-5.4",
+            reasoningEffort: "medium",
+          }),
+        },
+      });
+      expect(messages).toContainEqual({
+        method: "thread/started",
+        params: {
+          thread: expect.objectContaining({
+            id: "thread-best-effort",
+          }),
+        },
+      });
+
+      session.emitNotification(
+        createThreadStatusChangedNotification({
+          threadId: "thread-best-effort",
+          status: { type: "active", activeFlags: ["running"] },
+        }),
+      );
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-best-effort",
+          status: {
+            type: "active",
+            activeFlags: ["running"],
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
   test("thread/read does not subscribe the connection to live thread notifications", async () => {
     const workspacePath = await createWorkspaceDirectory();
     const canonicalWorkspacePath = await realpath(workspacePath);
@@ -1083,6 +1162,67 @@ describe("App Server protocol harness", () => {
             },
           ],
           nextCursor: "cursor-2",
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("thread/list still succeeds when bookkeeping writes fail", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeProtocolAgentAdapter({
+          listThreadsResult: {
+            ok: true,
+            data: {
+              threads: [
+                createTestAgentThread({
+                  id: "thread-best-effort",
+                  workspacePath: canonicalWorkspacePath,
+                }),
+              ],
+              nextCursor: null,
+            },
+          },
+        }),
+      ],
+      threadsStoreFactory: (getDatabase) =>
+        createFailingUpsertThreadsStore(createSqliteThreadsStore(getDatabase)),
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-list",
+        method: "thread/list",
+        params: {},
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-thread-list",
+        result: {
+          threads: [
+            {
+              id: "thread-best-effort",
+              preview: "Thread preview",
+              createdAt: "2026-04-10T10:00:00.000Z",
+              updatedAt: "2026-04-10T11:00:00.000Z",
+              name: null,
+              archived: false,
+              model: null,
+              reasoningEffort: null,
+              status: {
+                type: "idle",
+              },
+            },
+          ],
+          nextCursor: null,
         },
       });
     } finally {
@@ -1441,6 +1581,54 @@ describe("App Server protocol harness", () => {
     }
   });
 
+  test("maps malformed thread/list provider payloads to a stable protocol error", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeProtocolAgentAdapter({
+          listThreadsResult: {
+            ok: false,
+            error: {
+              type: "invalidProviderMessage",
+              agentId: "codex",
+              provider: "codex",
+              message: "Malformed thread list payload.",
+            },
+          },
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-list",
+        method: "thread/list",
+        params: {},
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-thread-list",
+        error: {
+          code: -33009,
+          message: "Provider returned an invalid payload",
+          data: {
+            code: "INVALID_PROVIDER_PAYLOAD",
+            agentId: "codex",
+            provider: "codex",
+            operation: "thread/list",
+            providerMessage: "Malformed thread list payload.",
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
   test("returns a workspace mismatch error when thread/read crosses workspace boundaries", async () => {
     const workspacePath = await createWorkspaceDirectory();
     const harness = await createProtocolHarness({
@@ -1502,6 +1690,7 @@ type ProtocolTestClient = Readonly<{
 const createProtocolHarness = async (
   options: Readonly<{
     agentAdapters?: readonly AgentAdapter[];
+    threadsStoreFactory?: (getDatabase: () => AppDatabase) => ThreadsStore;
   }> = {},
 ): Promise<Readonly<{ port: number }>> => {
   const port = await getAvailablePort();
@@ -1552,7 +1741,9 @@ const createProtocolHarness = async (
     registerMethod: appProtocolRuntime.registerMethod,
     sendNotification: appProtocolRuntime.sendNotification,
     registry: agentsModule.registry,
-    store: createSqliteThreadsStore(storeBootstrap.getDatabase),
+    store:
+      options.threadsStoreFactory?.(storeBootstrap.getDatabase) ??
+      createSqliteThreadsStore(storeBootstrap.getDatabase),
     getOpenedWorkspace: workspacesModule.getOpenedWorkspace,
   });
   const finalizedThreadsModule = threadsModule;
@@ -1598,6 +1789,15 @@ const createTestAgentsConfig = () => ({
     },
   ],
 });
+
+const createFailingUpsertThreadsStore = (store: ThreadsStore): ThreadsStore =>
+  Object.freeze({
+    getWorkspaceThreadLink: store.getWorkspaceThreadLink,
+    listWorkspaceThreadLinks: store.listWorkspaceThreadLinks,
+    upsertWorkspaceThreadLinks: async () => {
+      throw new Error("bookkeeping write failed");
+    },
+  });
 
 const createWorkspaceDirectory = async (): Promise<string> => {
   const rootDirectory = await createTemporaryDirectory("atelier-appserver-workspace-");

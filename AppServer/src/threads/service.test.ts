@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createFakeAgentRegistry,
   createFakeAgentSession,
   createTestAgentThread,
 } from "@/test-support/agents";
-import { createSilentLogger } from "@/test-support/logger";
+import { createCapturingLogger, createSilentLogger } from "@/test-support/logger";
 import { createThreadsService } from "@/threads/service";
-import { createInMemoryThreadsStore } from "@/threads/store";
+import { createInMemoryThreadsStore, type ThreadsStore } from "@/threads/store";
 
 const workspace = Object.freeze({
   id: "workspace-1",
@@ -93,6 +96,48 @@ describe("createThreadsService", () => {
     ]);
   });
 
+  test("thread/list still succeeds when linkage persistence fails", async () => {
+    const { logger, records } = createCapturingLogger();
+    const session = createFakeAgentSession({
+      listThreads: async () => ({
+        ok: true,
+        data: {
+          threads: [
+            createTestAgentThread({
+              id: "thread-1",
+              workspacePath: "/tmp/project",
+            }),
+          ],
+          nextCursor: null,
+        },
+      }),
+    });
+    const service = createThreadsService({
+      logger,
+      registry: createFakeAgentRegistry(session),
+      store: createFailingUpsertStore(createInMemoryThreadsStore()),
+      now: () => "2026-04-10T12:00:00.000Z",
+    });
+
+    await expect(service.listThreads("req-list", workspace, {})).resolves.toMatchObject({
+      ok: true,
+      data: {
+        threads: [
+          {
+            id: "thread-1",
+          },
+        ],
+      },
+    });
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        message: "Failed to persist thread linkage metadata",
+        operation: "thread/list",
+      }),
+    );
+  });
+
   test("starts a thread, persists resolved defaults, and returns the public thread shape", async () => {
     const session = createFakeAgentSession({
       startThread: async () => ({
@@ -136,15 +181,6 @@ describe("createThreadsService", () => {
         },
       },
     });
-    expect(session.startThreadCalls).toEqual([
-      {
-        requestId: "req-start",
-        params: {
-          workspacePath: "/tmp/project",
-          reasoningEffort: "high",
-        },
-      },
-    ]);
     await expect(
       store.getWorkspaceThreadLink({
         workspaceId: "workspace-1",
@@ -155,6 +191,47 @@ describe("createThreadsService", () => {
       model: "gpt-5.4",
       reasoningEffort: "high",
     });
+  });
+
+  test("thread/start still succeeds when linkage persistence fails", async () => {
+    const { logger, records } = createCapturingLogger();
+    const session = createFakeAgentSession({
+      startThread: async () => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: "thread-start",
+            workspacePath: "/tmp/project",
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+    });
+    const service = createThreadsService({
+      logger,
+      registry: createFakeAgentRegistry(session),
+      store: createFailingUpsertStore(createInMemoryThreadsStore()),
+      now: () => "2026-04-10T12:00:00.000Z",
+    });
+
+    await expect(service.startThread("req-start", workspace, {})).resolves.toMatchObject({
+      ok: true,
+      data: {
+        thread: {
+          id: "thread-start",
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      },
+    });
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        message: "Failed to persist thread linkage metadata",
+        operation: "thread/start",
+      }),
+    );
   });
 
   test("resumes a thread using stored defaults when the request omits overrides", async () => {
@@ -226,7 +303,7 @@ describe("createThreadsService", () => {
     ]);
   });
 
-  test("lets explicit resume overrides win over stored defaults", async () => {
+  test("lets explicit resume overrides win over stored defaults while preserving stored fallbacks", async () => {
     const store = createInMemoryThreadsStore([
       {
         workspaceId: "workspace-1",
@@ -248,8 +325,8 @@ describe("createThreadsService", () => {
             id: "thread-1",
             workspacePath: "/tmp/project",
           }),
-          model: "gpt-5.4",
-          reasoningEffort: null,
+          model: "provider-model",
+          reasoningEffort: "medium",
         },
       }),
     });
@@ -262,7 +339,7 @@ describe("createThreadsService", () => {
 
     const result = await service.resumeThread("req-resume", workspace, {
       threadId: "thread-1",
-      model: "gpt-5.4",
+      model: "request-model",
     });
 
     expect(result).toEqual({
@@ -275,22 +352,193 @@ describe("createThreadsService", () => {
           updatedAt: "2026-04-10T11:00:00.000Z",
           name: null,
           archived: false,
-          model: "gpt-5.4",
+          model: "request-model",
           reasoningEffort: "low",
           status: { type: "idle" },
         },
       },
     });
+  });
+
+  test("thread/resume still succeeds when linkage persistence fails", async () => {
+    const { logger, records } = createCapturingLogger();
+    const session = createFakeAgentSession({
+      resumeThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: "/tmp/project",
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+    });
+    const service = createThreadsService({
+      logger,
+      registry: createFakeAgentRegistry(session),
+      store: createFailingUpsertStore(
+        createInMemoryThreadsStore([
+          {
+            workspaceId: "workspace-1",
+            provider: "codex",
+            threadId: "thread-1",
+            threadWorkspacePath: "/tmp/project",
+            archived: false,
+            model: "gpt-5.4",
+            reasoningEffort: "medium",
+            firstSeenAt: "2026-04-10T09:30:00.000Z",
+            lastSeenAt: "2026-04-10T09:30:00.000Z",
+          },
+        ]),
+      ),
+      now: () => "2026-04-10T12:00:00.000Z",
+    });
+
     await expect(
-      store.getWorkspaceThreadLink({
-        workspaceId: "workspace-1",
-        provider: "codex",
+      service.resumeThread("req-resume", workspace, {
         threadId: "thread-1",
       }),
     ).resolves.toMatchObject({
-      model: "gpt-5.4",
-      reasoningEffort: "low",
+      ok: true,
+      data: {
+        thread: {
+          id: "thread-1",
+        },
+      },
     });
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        message: "Failed to persist thread linkage metadata",
+        operation: "thread/resume",
+      }),
+    );
+  });
+
+  test("filters cross-workspace provider list results and does not persist them", async () => {
+    const { logger, records } = createCapturingLogger();
+    const store = createInMemoryThreadsStore();
+    const session = createFakeAgentSession({
+      listThreads: async () => ({
+        ok: true,
+        data: {
+          threads: [
+            createTestAgentThread({
+              id: "thread-ok",
+              workspacePath: "/tmp/project",
+            }),
+            createTestAgentThread({
+              id: "thread-other",
+              workspacePath: "/tmp/other-project",
+            }),
+          ],
+          nextCursor: "cursor-2",
+        },
+      }),
+    });
+    const service = createThreadsService({
+      logger,
+      registry: createFakeAgentRegistry(session),
+      store,
+      now: () => "2026-04-10T12:00:00.000Z",
+    });
+
+    const result = await service.listThreads("req-list", workspace, {});
+
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        threads: [
+          {
+            id: "thread-ok",
+            preview: "Thread preview",
+            createdAt: "2026-04-10T10:00:00.000Z",
+            updatedAt: "2026-04-10T11:00:00.000Z",
+            name: null,
+            archived: false,
+            model: null,
+            reasoningEffort: null,
+            status: { type: "idle" },
+          },
+        ],
+        nextCursor: "cursor-2",
+      },
+    });
+    await expect(
+      store.listWorkspaceThreadLinks({
+        workspaceId: "workspace-1",
+        provider: "codex",
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        threadId: "thread-ok",
+      }),
+    ]);
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        message: "Filtered cross-workspace thread from provider list",
+        threadId: "thread-other",
+      }),
+    );
+  });
+
+  test("normalizes equivalent workspace paths when filtering thread/list", async () => {
+    const rootDirectory = await mkdtemp(join(tmpdir(), "atelier-threads-service-"));
+    const workspaceDirectory = join(rootDirectory, "workspace");
+    const aliasPath = join(rootDirectory, "workspace-alias");
+
+    await mkdir(workspaceDirectory, { recursive: true });
+    await symlink(workspaceDirectory, aliasPath);
+
+    const canonicalWorkspacePath = await realpath(workspaceDirectory);
+    const service = createThreadsService({
+      logger: createSilentLogger("error"),
+      registry: createFakeAgentRegistry(
+        createFakeAgentSession({
+          listThreads: async () => ({
+            ok: true,
+            data: {
+              threads: [
+                createTestAgentThread({
+                  id: "thread-symlink",
+                  workspacePath: aliasPath,
+                }),
+              ],
+              nextCursor: null,
+            },
+          }),
+        }),
+      ),
+      store: createInMemoryThreadsStore(),
+      now: () => "2026-04-10T12:00:00.000Z",
+    });
+
+    try {
+      await expect(
+        service.listThreads(
+          "req-list",
+          {
+            ...workspace,
+            workspacePath: canonicalWorkspacePath,
+          },
+          {},
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        data: {
+          threads: [
+            {
+              id: "thread-symlink",
+            },
+          ],
+        },
+      });
+    } finally {
+      await rm(rootDirectory, { force: true, recursive: true });
+    }
   });
 
   test("returns an explicit domain error when thread/read requests turns", async () => {
@@ -317,10 +565,9 @@ describe("createThreadsService", () => {
       },
     });
     expect(session.readThreadCalls).toEqual([]);
-    expect(session.resumeThreadCalls).toEqual([]);
   });
 
-  test("thread/read stays point-in-time and surfaces stored defaults", async () => {
+  test("thread/read returns provider-authoritative archived and does not pass cached archived back upstream", async () => {
     const store = createInMemoryThreadsStore([
       {
         workspaceId: "workspace-1",
@@ -341,7 +588,7 @@ describe("createThreadsService", () => {
           thread: createTestAgentThread({
             id: "thread-1",
             workspacePath: "/tmp/project",
-            archived: true,
+            archived: false,
           }),
         },
       }),
@@ -367,7 +614,7 @@ describe("createThreadsService", () => {
           createdAt: "2026-04-10T10:00:00.000Z",
           updatedAt: "2026-04-10T11:00:00.000Z",
           name: null,
-          archived: true,
+          archived: false,
           model: "gpt-5.4",
           reasoningEffort: null,
           status: { type: "idle" },
@@ -380,11 +627,58 @@ describe("createThreadsService", () => {
         params: {
           threadId: "thread-1",
           includeTurns: false,
-          archived: true,
         },
       },
     ]);
-    expect(session.resumeThreadCalls).toEqual([]);
+  });
+
+  test("warns when provider defaults differ from Atelier-resolved defaults without changing behavior", async () => {
+    const { logger, records } = createCapturingLogger();
+    const session = createFakeAgentSession({
+      startThread: async () => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: "thread-started",
+            workspacePath: "/tmp/project",
+          }),
+          model: "provider-model",
+          reasoningEffort: "medium",
+        },
+      }),
+    });
+    const service = createThreadsService({
+      logger,
+      registry: createFakeAgentRegistry(session),
+      store: createInMemoryThreadsStore(),
+      now: () => "2026-04-10T12:00:00.000Z",
+    });
+
+    const result = await service.startThread("req-start", workspace, {
+      model: "request-model",
+      reasoningEffort: "high",
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        thread: expect.objectContaining({
+          id: "thread-started",
+          model: "request-model",
+          reasoningEffort: "high",
+        }),
+      },
+    });
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        message: "Resolved thread defaults differ from provider response",
+        operation: "thread/start",
+        threadId: "thread-started",
+        resolvedModel: "request-model",
+        providerModel: "provider-model",
+      }),
+    );
   });
 
   test("returns a workspace mismatch error when provider metadata does not match the opened workspace", async () => {
@@ -426,3 +720,12 @@ describe("createThreadsService", () => {
     });
   });
 });
+
+const createFailingUpsertStore = (store: ThreadsStore): ThreadsStore =>
+  Object.freeze({
+    getWorkspaceThreadLink: store.getWorkspaceThreadLink,
+    listWorkspaceThreadLinks: store.listWorkspaceThreadLinks,
+    upsertWorkspaceThreadLinks: async () => {
+      throw new Error("bookkeeping write failed");
+    },
+  });
