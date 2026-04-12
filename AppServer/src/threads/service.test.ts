@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  type CreateFakeAgentSessionOptions,
   createFakeAgentRegistry,
   createFakeAgentSession,
   createTestAgentThread,
@@ -900,6 +901,84 @@ describe("createThreadsService", () => {
     });
   });
 
+  test("surfaces provider session-unavailable errors for thread mutations", async () => {
+    const error = Object.freeze({
+      type: "sessionUnavailable" as const,
+      agentId: "codex",
+      provider: "codex" as const,
+      code: "disconnected" as const,
+      message: "Agent session disconnected.",
+    });
+    const service = createMutationTestService({
+      forkThread: async () => ({ ok: false, error }),
+      archiveThread: async () => ({ ok: false, error }),
+      unarchiveThread: async () => ({ ok: false, error }),
+      setThreadName: async () => ({ ok: false, error }),
+    });
+
+    for (const invocation of mutationMethodInvocations) {
+      await expect(invocation.call(service)).resolves.toEqual({
+        ok: false,
+        error,
+      });
+    }
+  });
+
+  test("surfaces provider remote errors for thread mutations", async () => {
+    const error = Object.freeze({
+      type: "remoteError" as const,
+      agentId: "codex",
+      provider: "codex" as const,
+      requestId: "req-remote",
+      code: 500,
+      message: "Provider mutation failed.",
+      data: { reason: "upstream exploded" },
+    });
+    const service = createMutationTestService({
+      forkThread: async () => ({ ok: false, error }),
+      archiveThread: async () => ({ ok: false, error }),
+      unarchiveThread: async () => ({ ok: false, error }),
+      setThreadName: async () => ({ ok: false, error }),
+    });
+
+    for (const invocation of mutationMethodInvocations) {
+      await expect(invocation.call(service)).resolves.toEqual({
+        ok: false,
+        error,
+      });
+    }
+  });
+
+  test("maps invalid provider payloads for thread mutations to stable service errors", async () => {
+    const error = Object.freeze({
+      type: "invalidProviderMessage" as const,
+      agentId: "codex",
+      provider: "codex" as const,
+      message: "Malformed provider payload.",
+      detail: { field: "thread" },
+    });
+    const service = createMutationTestService({
+      forkThread: async () => ({ ok: false, error }),
+      archiveThread: async () => ({ ok: false, error }),
+      unarchiveThread: async () => ({ ok: false, error }),
+      setThreadName: async () => ({ ok: false, error }),
+    });
+
+    for (const invocation of mutationMethodInvocations) {
+      await expect(invocation.call(service)).resolves.toEqual({
+        ok: false,
+        error: {
+          type: "invalidProviderPayload",
+          agentId: "codex",
+          provider: "codex",
+          operation: invocation.operation,
+          message: "Malformed provider payload.",
+          detail: { field: "thread" },
+        },
+      });
+    }
+  });
+
   test("thread/fork still succeeds when linkage writes fail", async () => {
     const { logger, records } = createCapturingLogger();
     const session = createFakeAgentSession({
@@ -1050,4 +1129,66 @@ const createFailingUpsertStore = (store: ThreadsStore): ThreadsStore =>
     upsertWorkspaceThreadLinks: async () => {
       throw new Error("bookkeeping write failed");
     },
+  });
+
+type TestThreadsService = ReturnType<typeof createThreadsService>;
+
+const mutationMethodInvocations: readonly Readonly<{
+  operation: "thread/fork" | "thread/archive" | "thread/unarchive" | "thread/name/set";
+  call: (service: TestThreadsService) => Promise<unknown>;
+}>[] = Object.freeze([
+  Object.freeze({
+    operation: "thread/fork" as const,
+    call: (service: TestThreadsService) =>
+      service.forkThread("req-fork", workspace, {
+        threadId: "thread-1",
+      }),
+  }),
+  Object.freeze({
+    operation: "thread/archive" as const,
+    call: (service: TestThreadsService) =>
+      service.archiveThread("req-archive", workspace, {
+        threadId: "thread-1",
+      }),
+  }),
+  Object.freeze({
+    operation: "thread/unarchive" as const,
+    call: (service: TestThreadsService) =>
+      service.unarchiveThread("req-unarchive", workspace, {
+        threadId: "thread-1",
+      }),
+  }),
+  Object.freeze({
+    operation: "thread/name/set" as const,
+    call: (service: TestThreadsService) =>
+      service.setThreadName("req-name", workspace, {
+        threadId: "thread-1",
+        name: "Renamed thread",
+      }),
+  }),
+]);
+
+const createMutationTestService = (
+  sessionOptions: Pick<
+    CreateFakeAgentSessionOptions,
+    "forkThread" | "archiveThread" | "unarchiveThread" | "setThreadName"
+  >,
+): TestThreadsService =>
+  createThreadsService({
+    logger: createSilentLogger("error"),
+    registry: createFakeAgentRegistry(createFakeAgentSession(sessionOptions)),
+    store: createInMemoryThreadsStore([
+      {
+        workspaceId: "workspace-1",
+        provider: "codex",
+        threadId: "thread-1",
+        threadWorkspacePath: "/tmp/project",
+        archived: false,
+        model: "gpt-5.4",
+        reasoningEffort: "medium",
+        firstSeenAt: "2026-04-10T09:30:00.000Z",
+        lastSeenAt: "2026-04-10T09:30:00.000Z",
+      },
+    ]),
+    now: () => "2026-04-10T12:00:00.000Z",
   });

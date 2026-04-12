@@ -91,6 +91,9 @@ export const validateThreadWorkspaceForMutation = async (
     );
   }
 
+  // When local linkage is missing, refresh provider-authoritative metadata for
+  // the target thread. For `thread/fork`, this validates the parent thread; the
+  // caller decides which parent metadata should carry into the fork response.
   const readResult = await input.session.readThread(input.requestId, {
     threadId: input.threadId,
     includeTurns: false,
@@ -147,6 +150,10 @@ export const validateThreadWorkspaceForMutation = async (
   );
 };
 
+// Provider mutations remain authoritative even if local metadata persistence
+// fails. We log and repair the cached linkage opportunistically on later
+// thread/list or thread/read validation passes instead of turning a successful
+// provider mutation into an App Server error.
 export const persistThreadLinksBestEffort = async (
   input: Readonly<{
     logger: Logger;
