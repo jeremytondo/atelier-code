@@ -357,9 +357,41 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
         });
         return;
       }
+      case "plan": {
+        if (notification.threadId === undefined || notification.turnId === undefined) {
+          return;
+        }
+
+        await fanOutThreadNotification(notification.threadId, {
+          method: "turn/plan/updated",
+          params: {
+            threadId: notification.threadId,
+            turnId: notification.turnId,
+            ...(notification.explanation !== undefined
+              ? { explanation: notification.explanation }
+              : {}),
+            steps: [...notification.steps],
+          },
+        });
+        return;
+      }
+      case "diff": {
+        if (notification.threadId === undefined || notification.turnId === undefined) {
+          return;
+        }
+
+        await fanOutThreadNotification(notification.threadId, {
+          method: "turn/diff/updated",
+          params: {
+            threadId: notification.threadId,
+            turnId: notification.turnId,
+            diff: notification.diff,
+            summary: [...notification.summary],
+          },
+        });
+        return;
+      }
       case "approval":
-      case "plan":
-      case "diff":
       case "error":
         return;
       default:
@@ -436,11 +468,7 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
       return;
     }
 
-    const item = Object.freeze({
-      id: notification.item.id,
-      kind: notification.item.kind,
-      rawItem: notification.item.rawItem,
-    });
+    const item = notification.item;
 
     if (notification.event === "started") {
       const wasRecorded = activeTurns.recordItemStarted({
