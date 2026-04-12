@@ -20,6 +20,8 @@ export const ATELIER_WORKSPACE_NOT_OPENED_ERROR = -33006;
 export const ATELIER_THREAD_READ_INCLUDE_TURNS_UNSUPPORTED_ERROR = -33007;
 export const ATELIER_THREAD_WORKSPACE_MISMATCH_ERROR = -33008;
 export const ATELIER_INVALID_PROVIDER_PAYLOAD_ERROR = -33009;
+export const ATELIER_THREAD_NOT_LOADED_ERROR = -33010;
+export const ATELIER_ACTIVE_TURN_ALREADY_EXISTS_ERROR = -33011;
 
 const PROTOCOL_METHOD_ERROR_BRAND = Symbol("ProtocolMethodError");
 
@@ -187,6 +189,40 @@ export const createInvalidProviderPayloadError = (
       providerMessage: input.providerMessage,
     }),
   );
+
+export const createThreadNotLoadedForConnectionError = (threadId: string): ProtocolMethodError =>
+  createProtocolMethodError(
+    ATELIER_THREAD_NOT_LOADED_ERROR,
+    "Thread is not loaded for this connection",
+    Object.freeze({
+      code: "THREAD_NOT_LOADED",
+      threadId,
+    }),
+  );
+
+export const createThreadNotLoadedForConnectionResult = (
+  threadId: string,
+): Result<never, ProtocolMethodError> => err(createThreadNotLoadedForConnectionError(threadId));
+
+export const createActiveTurnAlreadyExistsError = (
+  threadId: string,
+  activeTurnId?: string,
+): ProtocolMethodError =>
+  createProtocolMethodError(
+    ATELIER_ACTIVE_TURN_ALREADY_EXISTS_ERROR,
+    "Thread already has an active turn",
+    Object.freeze({
+      code: "TURN_ALREADY_ACTIVE",
+      threadId,
+      ...(activeTurnId ? { activeTurnId } : {}),
+    }),
+  );
+
+export const createActiveTurnAlreadyExistsResult = (
+  threadId: string,
+  activeTurnId?: string,
+): Result<never, ProtocolMethodError> =>
+  err(createActiveTurnAlreadyExistsError(threadId, activeTurnId));
 
 const brandProtocolMethodError = <T extends { code: number; message: string }>(
   error: T,

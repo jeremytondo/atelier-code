@@ -6,6 +6,7 @@ export type LoadedThreadRegistry = Readonly<{
       threadId: string;
     }>,
   ) => void;
+  isLoaded: (input: Readonly<{ connectionId: string; threadId: string }>) => boolean;
   listSubscribers: (threadId: string) => readonly string[];
   clearThread: (threadId: string) => readonly string[];
   clearConnection: (connectionId: string) => readonly string[];
@@ -52,6 +53,8 @@ export const createLoadedThreadRegistry = (): LoadedThreadRegistry => {
       connectionIds.add(connectionId);
       connectionIdsByThreadId.set(threadId, connectionIds);
     },
+    isLoaded: ({ connectionId, threadId }) =>
+      threadIdsByConnectionId.get(connectionId)?.has(threadId) ?? false,
     listSubscribers: (threadId) => [
       ...(connectionIdsByThreadId.get(threadId) ?? new Set<string>()),
     ],

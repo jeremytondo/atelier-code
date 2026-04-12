@@ -1,8 +1,16 @@
+import { Value } from "@sinclair/typebox/value";
 import {
   mapCodexThreadStatus,
   mapCodexThreadSummary,
   mapCodexTurnSummary,
 } from "@/agents/codex-adapter/model-mapper";
+import {
+  CodexAgentMessageDeltaNotificationSchema,
+  CodexCommandExecutionOutputDeltaNotificationSchema,
+  CodexMcpToolCallProgressNotificationSchema,
+  CodexReasoningSummaryTextDeltaNotificationSchema,
+  CodexReasoningTextDeltaNotificationSchema,
+} from "@/agents/codex-adapter/protocol";
 import type {
   CodexTransportDisconnectInfo,
   CodexTransportNotification,
@@ -193,25 +201,73 @@ export const mapCodexTransportNotification = (
             },
           ]
         : [buildMalformedMessage(base, notification.method)];
-    case "item/reasoning/summaryTextDelta":
-    case "item/reasoning/textDelta":
-      return params &&
-        typeof params.threadId === "string" &&
-        typeof params.turnId === "string" &&
-        typeof params.itemId === "string" &&
-        typeof params.delta === "string"
+    case "item/agentMessage/delta":
+      return params && Value.Check(CodexAgentMessageDeltaNotificationSchema, params)
         ? [
             {
               ...base,
-              type: "reasoning",
-              event:
-                notification.method === "item/reasoning/summaryTextDelta"
-                  ? "summaryTextDelta"
-                  : "textDelta",
+              type: "message",
+              event: "textDelta",
               threadId: params.threadId,
               turnId: params.turnId,
               itemId: params.itemId,
               delta: params.delta,
+            },
+          ]
+        : [buildMalformedMessage(base, notification.method)];
+    case "item/reasoning/summaryTextDelta":
+      return params && Value.Check(CodexReasoningSummaryTextDeltaNotificationSchema, params)
+        ? [
+            {
+              ...base,
+              type: "reasoning",
+              event: "summaryTextDelta",
+              threadId: params.threadId,
+              turnId: params.turnId,
+              itemId: params.itemId,
+              delta: params.delta,
+            },
+          ]
+        : [buildMalformedMessage(base, notification.method)];
+    case "item/reasoning/textDelta":
+      return params && Value.Check(CodexReasoningTextDeltaNotificationSchema, params)
+        ? [
+            {
+              ...base,
+              type: "reasoning",
+              event: "textDelta",
+              threadId: params.threadId,
+              turnId: params.turnId,
+              itemId: params.itemId,
+              delta: params.delta,
+            },
+          ]
+        : [buildMalformedMessage(base, notification.method)];
+    case "item/commandExecution/outputDelta":
+      return params && Value.Check(CodexCommandExecutionOutputDeltaNotificationSchema, params)
+        ? [
+            {
+              ...base,
+              type: "command",
+              event: "outputDelta",
+              threadId: params.threadId,
+              turnId: params.turnId,
+              itemId: params.itemId,
+              delta: params.delta,
+            },
+          ]
+        : [buildMalformedMessage(base, notification.method)];
+    case "item/mcpToolCall/progress":
+      return params && Value.Check(CodexMcpToolCallProgressNotificationSchema, params)
+        ? [
+            {
+              ...base,
+              type: "tool",
+              event: "progress",
+              threadId: params.threadId,
+              turnId: params.turnId,
+              itemId: params.itemId,
+              message: params.message,
             },
           ]
         : [buildMalformedMessage(base, notification.method)];
