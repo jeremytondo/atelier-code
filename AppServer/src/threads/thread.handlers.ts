@@ -20,6 +20,10 @@ import {
 } from "@/core/shared";
 import { createLoadedThreadRegistry } from "@/threads/loaded-thread-registry";
 import {
+  ThreadArchiveParamsSchema,
+  ThreadArchiveResultSchema,
+  ThreadForkParamsSchema,
+  ThreadForkResultSchema,
   ThreadListParamsSchema,
   ThreadListResultSchema,
   type ThreadReadParams,
@@ -28,9 +32,13 @@ import {
   type ThreadResumeParams,
   ThreadResumeParamsSchema,
   ThreadResumeResultSchema,
+  ThreadSetNameParamsSchema,
+  ThreadSetNameResultSchema,
   type ThreadStartParams,
   ThreadStartParamsSchema,
   ThreadStartResultSchema,
+  ThreadUnarchiveParamsSchema,
+  ThreadUnarchiveResultSchema,
 } from "@/threads/schemas";
 import {
   createThreadsService,
@@ -157,8 +165,33 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
         );
         return;
       case "started":
+        return;
       case "archived":
+        await fanOutThreadNotification(notification.threadId, {
+          method: "thread/archived",
+          params: {
+            threadId: notification.threadId,
+          },
+        });
+        return;
       case "unarchived":
+        await fanOutThreadNotification(notification.threadId, {
+          method: "thread/unarchived",
+          params: {
+            threadId: notification.threadId,
+          },
+        });
+        return;
+      case "nameUpdated":
+        await fanOutThreadNotification(notification.threadId, {
+          method: "thread/name/updated",
+          params: {
+            threadId: notification.threadId,
+            ...(notification.threadName !== undefined
+              ? { threadName: notification.threadName }
+              : {}),
+          },
+        });
         return;
       default:
         return;
@@ -309,6 +342,47 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
   });
 
   options.registerMethod({
+    method: "thread/fork",
+    paramsSchema: ThreadForkParamsSchema,
+    resultSchema: ThreadForkResultSchema,
+    handler: async ({ connectionId, params, requestId, session }) => {
+      if (!session.isInitialized()) {
+        return createSessionNotInitializedResult();
+      }
+
+      const workspace = options.getOpenedWorkspace(connectionId);
+
+      if (workspace === undefined) {
+        return createWorkspaceNotOpenedResult();
+      }
+
+      const bindResult = await ensureSessionNotificationBinding();
+      if (!bindResult.ok) {
+        return err(mapThreadError(bindResult.error, "thread/fork"));
+      }
+
+      const agentRequestId = createAgentRequestId({
+        connectionId,
+        method: "thread/fork",
+        requestId,
+      });
+      const result = await service.forkThread(agentRequestId, workspace, params);
+
+      if (!result.ok) {
+        return mapThreadResult(result, "thread/fork");
+      }
+
+      loadedThreads.markLoaded({
+        connectionId,
+        workspaceId: workspace.id,
+        threadId: result.data.thread.id,
+      });
+
+      return ok(result.data);
+    },
+  });
+
+  options.registerMethod({
     method: "thread/read",
     paramsSchema: ThreadReadParamsSchema,
     resultSchema: ThreadReadResultSchema,
@@ -334,6 +408,81 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
         normalizeThreadReadParams(params),
       );
       return mapThreadResult(result, "thread/read");
+    },
+  });
+
+  options.registerMethod({
+    method: "thread/archive",
+    paramsSchema: ThreadArchiveParamsSchema,
+    resultSchema: ThreadArchiveResultSchema,
+    handler: async ({ connectionId, params, requestId, session }) => {
+      if (!session.isInitialized()) {
+        return createSessionNotInitializedResult();
+      }
+
+      const workspace = options.getOpenedWorkspace(connectionId);
+
+      if (workspace === undefined) {
+        return createWorkspaceNotOpenedResult();
+      }
+
+      const agentRequestId = createAgentRequestId({
+        connectionId,
+        method: "thread/archive",
+        requestId,
+      });
+      const result = await service.archiveThread(agentRequestId, workspace, params);
+      return mapThreadResult(result, "thread/archive");
+    },
+  });
+
+  options.registerMethod({
+    method: "thread/unarchive",
+    paramsSchema: ThreadUnarchiveParamsSchema,
+    resultSchema: ThreadUnarchiveResultSchema,
+    handler: async ({ connectionId, params, requestId, session }) => {
+      if (!session.isInitialized()) {
+        return createSessionNotInitializedResult();
+      }
+
+      const workspace = options.getOpenedWorkspace(connectionId);
+
+      if (workspace === undefined) {
+        return createWorkspaceNotOpenedResult();
+      }
+
+      const agentRequestId = createAgentRequestId({
+        connectionId,
+        method: "thread/unarchive",
+        requestId,
+      });
+      const result = await service.unarchiveThread(agentRequestId, workspace, params);
+      return mapThreadResult(result, "thread/unarchive");
+    },
+  });
+
+  options.registerMethod({
+    method: "thread/name/set",
+    paramsSchema: ThreadSetNameParamsSchema,
+    resultSchema: ThreadSetNameResultSchema,
+    handler: async ({ connectionId, params, requestId, session }) => {
+      if (!session.isInitialized()) {
+        return createSessionNotInitializedResult();
+      }
+
+      const workspace = options.getOpenedWorkspace(connectionId);
+
+      if (workspace === undefined) {
+        return createWorkspaceNotOpenedResult();
+      }
+
+      const agentRequestId = createAgentRequestId({
+        connectionId,
+        method: "thread/name/set",
+        requestId,
+      });
+      const result = await service.setThreadName(agentRequestId, workspace, params);
+      return mapThreadResult(result, "thread/name/set");
     },
   });
 

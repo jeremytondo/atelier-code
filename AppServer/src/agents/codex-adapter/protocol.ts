@@ -108,6 +108,8 @@ const CodexThreadResponseSchema = Type.Object(
   { additionalProperties: true },
 );
 
+const CodexEmptyResponseSchema = Type.Object({}, { additionalProperties: true });
+
 const CodexConfiguredThreadResponseSchema = Type.Object(
   {
     thread: CodexThreadSchema,
@@ -295,7 +297,22 @@ export type CodexThreadReadParams = Readonly<{
 
 export type CodexThreadForkParams = Readonly<{
   threadId: string;
+  cwd?: string;
+  model?: string;
   persistExtendedHistory: boolean;
+}>;
+
+export type CodexThreadArchiveParams = Readonly<{
+  threadId: string;
+}>;
+
+export type CodexThreadUnarchiveParams = Readonly<{
+  threadId: string;
+}>;
+
+export type CodexThreadSetNameParams = Readonly<{
+  threadId: string;
+  name: string;
 }>;
 
 export type CodexUserInput = Readonly<{
@@ -348,6 +365,9 @@ export const parseCodexThreadListResponse = (candidate: unknown): CodexThreadLis
 
 export const parseCodexThreadResponse = (candidate: unknown): { thread: CodexThread } =>
   validateCodexPayload(CodexThreadResponseSchema, candidate, "thread response");
+
+export const parseCodexEmptyResponse = (candidate: unknown, label: string): Record<string, never> =>
+  validateCodexPayload(CodexEmptyResponseSchema, candidate, label);
 
 export const parseCodexConfiguredThreadResponse = (
   candidate: unknown,

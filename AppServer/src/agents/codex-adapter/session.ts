@@ -17,11 +17,14 @@ import type {
   CodexInitializeParams,
   CodexMcpServerElicitationRequestResponse,
   CodexModelListParams,
+  CodexThreadArchiveParams,
   CodexThreadForkParams,
   CodexThreadListParams,
   CodexThreadReadParams,
   CodexThreadResumeParams,
+  CodexThreadSetNameParams,
   CodexThreadStartParams,
+  CodexThreadUnarchiveParams,
   CodexTurnInterruptParams,
   CodexTurnStartParams,
   CodexTurnSteerParams,
@@ -29,6 +32,7 @@ import type {
 } from "@/agents/codex-adapter/protocol";
 import {
   parseCodexConfiguredThreadResponse,
+  parseCodexEmptyResponse,
   parseCodexInitializeResponse,
   parseCodexModelListResponse,
   parseCodexThreadListResponse,
@@ -63,11 +67,15 @@ import type {
   AgentSession,
   AgentSessionLookupError,
   AgentSessionUnavailableError,
+  AgentThreadArchiveParams,
   AgentThreadForkParams,
+  AgentThreadMutationResult,
   AgentThreadReadParams,
   AgentThreadResult,
   AgentThreadResumeParams,
+  AgentThreadSetNameParams,
   AgentThreadStartParams,
+  AgentThreadUnarchiveParams,
   AgentTurnInterruptParams,
   AgentTurnResult,
   AgentTurnStartParams,
@@ -453,14 +461,53 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
     params: AgentThreadForkParams,
   ): Promise<AgentOperationResult<AgentThreadResult>> =>
     runOperation(requestId, async () => {
-      const rawParams: CodexThreadForkParams = {
+      const response = parseCodexConfiguredThreadResponse(
+        await options.transport.send({
+          id: requestId,
+          method: "thread/fork",
+          params: buildThreadForkParams(params),
+        }),
+      );
+
+      return {
+        thread: mapCodexThread(response.thread),
+        model: response.model,
+        reasoningEffort: response.reasoningEffort,
+      };
+    });
+
+  const archiveThread = async (
+    requestId: AgentRequestId,
+    params: AgentThreadArchiveParams,
+  ): Promise<AgentOperationResult<AgentThreadMutationResult>> =>
+    runOperation(requestId, async () => {
+      const rawParams: CodexThreadArchiveParams = {
         threadId: params.threadId,
-        persistExtendedHistory: true,
+      };
+      parseCodexEmptyResponse(
+        await options.transport.send({
+          id: requestId,
+          method: "thread/archive",
+          params: rawParams,
+        }),
+        "thread/archive response",
+      );
+
+      return {};
+    });
+
+  const unarchiveThread = async (
+    requestId: AgentRequestId,
+    params: AgentThreadUnarchiveParams,
+  ): Promise<AgentOperationResult<AgentThreadResult>> =>
+    runOperation(requestId, async () => {
+      const rawParams: CodexThreadUnarchiveParams = {
+        threadId: params.threadId,
       };
       const response = parseCodexThreadResponse(
         await options.transport.send({
           id: requestId,
-          method: "thread/fork",
+          method: "thread/unarchive",
           params: rawParams,
         }),
       );
@@ -468,6 +515,27 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
       return {
         thread: mapCodexThread(response.thread),
       };
+    });
+
+  const setThreadName = async (
+    requestId: AgentRequestId,
+    params: AgentThreadSetNameParams,
+  ): Promise<AgentOperationResult<AgentThreadMutationResult>> =>
+    runOperation(requestId, async () => {
+      const rawParams: CodexThreadSetNameParams = {
+        threadId: params.threadId,
+        name: params.name,
+      };
+      parseCodexEmptyResponse(
+        await options.transport.send({
+          id: requestId,
+          method: "thread/name/set",
+          params: rawParams,
+        }),
+        "thread/name/set response",
+      );
+
+      return {};
     });
 
   const startTurn = async (
@@ -590,6 +658,9 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
     resumeThread,
     readThread,
     forkThread,
+    archiveThread,
+    unarchiveThread,
+    setThreadName,
     startTurn,
     steerTurn,
     interruptTurn,
@@ -617,6 +688,13 @@ const buildThreadResumeParams = (params: AgentThreadResumeParams): CodexThreadRe
   model: params.model,
   approvalPolicy: normalizeApprovalPolicy(params.approvalPolicy),
   sandbox: undefined,
+  persistExtendedHistory: true,
+});
+
+const buildThreadForkParams = (params: AgentThreadForkParams): CodexThreadForkParams => ({
+  threadId: params.threadId,
+  cwd: params.workspacePath,
+  model: params.model,
   persistExtendedHistory: true,
 });
 

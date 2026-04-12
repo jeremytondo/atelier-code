@@ -215,6 +215,29 @@ const createFakeSession = (
         },
       },
     }),
+    archiveThread: async () => ({
+      ok: true,
+      data: {},
+    }),
+    unarchiveThread: async () => ({
+      ok: true,
+      data: {
+        thread: {
+          id: "thread-1",
+          preview: "",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          workspacePath: "/tmp/project",
+          name: null,
+          archived: false,
+          status: { type: "idle" },
+        },
+      },
+    }),
+    setThreadName: async () => ({
+      ok: true,
+      data: {},
+    }),
     startTurn: async () => ({
       ok: true,
       data: { turn: { id: "turn-1", status: { type: "inProgress" } } },

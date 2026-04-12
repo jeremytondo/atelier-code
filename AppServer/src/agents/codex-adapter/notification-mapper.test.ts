@@ -17,6 +17,116 @@ const context = {
 };
 
 describe("mapCodexTransportNotification", () => {
+  test("maps thread mutation notifications into provider-neutral thread events", () => {
+    expect(
+      mapCodexTransportNotification(
+        {
+          method: "thread/archived",
+          params: {
+            threadId: "thread-1",
+          },
+        },
+        context,
+      ),
+    ).toEqual([
+      {
+        agentId: "codex",
+        provider: "codex",
+        receivedAt: "2026-04-10T12:00:00.000Z",
+        rawMethod: "thread/archived",
+        rawPayload: {
+          threadId: "thread-1",
+        },
+        type: "thread",
+        event: "archived",
+        threadId: "thread-1",
+        thread: {
+          id: "thread-1",
+          preview: "",
+          updatedAt: "2026-04-10T12:00:00.000Z",
+          name: null,
+          archived: true,
+          status: {
+            type: "notLoaded",
+          },
+        },
+      },
+    ]);
+
+    expect(
+      mapCodexTransportNotification(
+        {
+          method: "thread/unarchived",
+          params: {
+            threadId: "thread-1",
+          },
+        },
+        context,
+      ),
+    ).toEqual([
+      {
+        agentId: "codex",
+        provider: "codex",
+        receivedAt: "2026-04-10T12:00:00.000Z",
+        rawMethod: "thread/unarchived",
+        rawPayload: {
+          threadId: "thread-1",
+        },
+        type: "thread",
+        event: "unarchived",
+        threadId: "thread-1",
+        thread: {
+          id: "thread-1",
+          preview: "",
+          updatedAt: "2026-04-10T12:00:00.000Z",
+          name: null,
+          archived: false,
+          status: {
+            type: "notLoaded",
+          },
+        },
+      },
+    ]);
+
+    expect(
+      mapCodexTransportNotification(
+        {
+          method: "thread/name/updated",
+          params: {
+            threadId: "thread-1",
+            threadName: "Renamed thread",
+          },
+        },
+        context,
+      ),
+    ).toEqual([
+      {
+        agentId: "codex",
+        provider: "codex",
+        receivedAt: "2026-04-10T12:00:00.000Z",
+        rawMethod: "thread/name/updated",
+        rawPayload: {
+          threadId: "thread-1",
+          threadName: "Renamed thread",
+        },
+        type: "thread",
+        event: "nameUpdated",
+        threadId: "thread-1",
+        threadName: "Renamed thread",
+        thread: {
+          id: "thread-1",
+          preview: "",
+          updatedAt: "2026-04-10T12:00:00.000Z",
+          name: "Renamed thread",
+          archived: false,
+          status: {
+            type: "notLoaded",
+          },
+        },
+      },
+    ]);
+  });
+
   test("maps pinned plan and diff fixtures into provider-neutral notifications", () => {
     const planFixture: CodexTurnPlanUpdatedNotification = {
       threadId: "thread-1",

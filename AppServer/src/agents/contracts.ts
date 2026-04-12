@@ -135,7 +135,8 @@ export type AgentNotificationBase = Readonly<{
 export type AgentThreadNotification = AgentNotificationBase &
   Readonly<{
     type: "thread";
-    event: "started" | "statusChanged" | "archived" | "unarchived" | "closed";
+    event: "started" | "statusChanged" | "archived" | "unarchived" | "nameUpdated" | "closed";
+    threadName?: string | null;
     thread: AgentThreadSummary;
   }>;
 
@@ -311,6 +312,21 @@ export type AgentThreadReadParams = Readonly<{
 
 export type AgentThreadForkParams = Readonly<{
   threadId: string;
+  workspacePath: string;
+  model?: string;
+}>;
+
+export type AgentThreadArchiveParams = Readonly<{
+  threadId: string;
+}>;
+
+export type AgentThreadUnarchiveParams = Readonly<{
+  threadId: string;
+}>;
+
+export type AgentThreadSetNameParams = Readonly<{
+  threadId: string;
+  name: string;
 }>;
 
 export type AgentThreadResult = Readonly<{
@@ -318,6 +334,8 @@ export type AgentThreadResult = Readonly<{
   model?: string;
   reasoningEffort?: AgentReasoningEffort | null;
 }>;
+
+export type AgentThreadMutationResult = Record<string, never>;
 
 export type AgentTurnStartParams = Readonly<{
   threadId: string;
@@ -381,6 +399,18 @@ export type AgentSession = Readonly<{
     requestId: AgentRequestId,
     params: AgentThreadForkParams,
   ) => Promise<AgentOperationResult<AgentThreadResult>>;
+  archiveThread: (
+    requestId: AgentRequestId,
+    params: AgentThreadArchiveParams,
+  ) => Promise<AgentOperationResult<AgentThreadMutationResult>>;
+  unarchiveThread: (
+    requestId: AgentRequestId,
+    params: AgentThreadUnarchiveParams,
+  ) => Promise<AgentOperationResult<AgentThreadResult>>;
+  setThreadName: (
+    requestId: AgentRequestId,
+    params: AgentThreadSetNameParams,
+  ) => Promise<AgentOperationResult<AgentThreadMutationResult>>;
   startTurn: (
     requestId: AgentRequestId,
     params: AgentTurnStartParams,
