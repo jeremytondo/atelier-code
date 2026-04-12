@@ -50,6 +50,13 @@ import type { Workspace } from "@/workspaces/schemas";
 
 export type ThreadsModule = Readonly<{
   lifecycle: LifecycleComponent;
+  isThreadLoadedForConnection: (
+    input: Readonly<{
+      connectionId: string;
+      threadId: string;
+    }>,
+  ) => boolean;
+  listLoadedThreadSubscribers: (threadId: string) => readonly string[];
   handleConnectionClosed: (connectionId: string) => void;
   handleWorkspaceOpened: (
     input: Readonly<{
@@ -498,6 +505,9 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
         options.logger.info("Threads module stopped", { reason });
       },
     }),
+    isThreadLoadedForConnection: ({ connectionId, threadId }) =>
+      loadedThreads.isLoaded({ connectionId, threadId }),
+    listLoadedThreadSubscribers: (threadId) => loadedThreads.listSubscribers(threadId),
     handleConnectionClosed: (connectionId) => {
       loadedThreads.clearConnection(connectionId);
     },

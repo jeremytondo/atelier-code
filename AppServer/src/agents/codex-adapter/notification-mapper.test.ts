@@ -4,7 +4,11 @@ import {
   mapCodexTransportNotification,
 } from "@/agents/codex-adapter/notification-mapper";
 import type {
+  CodexAgentMessageDeltaNotification,
+  CodexCommandExecutionOutputDeltaNotification,
   CodexCommandExecutionRequestApprovalParams,
+  CodexMcpToolCallProgressNotification,
+  CodexReasoningSummaryTextDeltaNotification,
   CodexReasoningTextDeltaNotification,
   CodexTurnDiffUpdatedNotification,
   CodexTurnPlanUpdatedNotification,
@@ -247,6 +251,127 @@ describe("mapCodexTransportNotification", () => {
         turnId: "turn-1",
         itemId: "item-1",
         delta: "Thinking...",
+      },
+    ]);
+  });
+
+  test("maps supported item delta fixtures into provider-neutral notifications", () => {
+    const messageFixture: CodexAgentMessageDeltaNotification = {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "item-message",
+      delta: "Working on it...",
+    };
+    const reasoningSummaryFixture: CodexReasoningSummaryTextDeltaNotification = {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "item-reasoning",
+      delta: "Short summary",
+      summaryIndex: 0,
+    };
+    const commandFixture: CodexCommandExecutionOutputDeltaNotification = {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "item-command",
+      delta: "stdout line\n",
+    };
+    const toolFixture: CodexMcpToolCallProgressNotification = {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "item-tool",
+      message: "Fetching results",
+    };
+
+    expect(
+      mapCodexTransportNotification(
+        {
+          method: "item/agentMessage/delta",
+          params: messageFixture,
+        },
+        context,
+      ),
+    ).toEqual([
+      {
+        agentId: "codex",
+        provider: "codex",
+        receivedAt: "2026-04-10T12:00:00.000Z",
+        rawMethod: "item/agentMessage/delta",
+        rawPayload: messageFixture,
+        type: "message",
+        event: "textDelta",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "item-message",
+        delta: "Working on it...",
+      },
+    ]);
+    expect(
+      mapCodexTransportNotification(
+        {
+          method: "item/reasoning/summaryTextDelta",
+          params: reasoningSummaryFixture,
+        },
+        context,
+      ),
+    ).toEqual([
+      {
+        agentId: "codex",
+        provider: "codex",
+        receivedAt: "2026-04-10T12:00:00.000Z",
+        rawMethod: "item/reasoning/summaryTextDelta",
+        rawPayload: reasoningSummaryFixture,
+        type: "reasoning",
+        event: "summaryTextDelta",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "item-reasoning",
+        delta: "Short summary",
+      },
+    ]);
+    expect(
+      mapCodexTransportNotification(
+        {
+          method: "item/commandExecution/outputDelta",
+          params: commandFixture,
+        },
+        context,
+      ),
+    ).toEqual([
+      {
+        agentId: "codex",
+        provider: "codex",
+        receivedAt: "2026-04-10T12:00:00.000Z",
+        rawMethod: "item/commandExecution/outputDelta",
+        rawPayload: commandFixture,
+        type: "command",
+        event: "outputDelta",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "item-command",
+        delta: "stdout line\n",
+      },
+    ]);
+    expect(
+      mapCodexTransportNotification(
+        {
+          method: "item/mcpToolCall/progress",
+          params: toolFixture,
+        },
+        context,
+      ),
+    ).toEqual([
+      {
+        agentId: "codex",
+        provider: "codex",
+        receivedAt: "2026-04-10T12:00:00.000Z",
+        rawMethod: "item/mcpToolCall/progress",
+        rawPayload: toolFixture,
+        type: "tool",
+        event: "progress",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "item-tool",
+        message: "Fetching results",
       },
     ]);
   });

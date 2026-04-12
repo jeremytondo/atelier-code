@@ -19,10 +19,11 @@ import {
   createFakeAgentSession,
   createTestAgentModel,
   createTestAgentThread,
+  createTestAgentTurn,
 } from "@/test-support/agents";
 import { getAvailablePort } from "@/test-support/network";
 import { createSqliteThreadsStore, createThreadsModule, type ThreadsStore } from "@/threads";
-import { createTurnsModulePlaceholder } from "@/turns";
+import { createTurnsModule } from "@/turns";
 import { createSqliteWorkspacesStore, createWorkspacesModule } from "@/workspaces";
 
 const runningServers: AppServer[] = [];
@@ -1237,6 +1238,837 @@ describe("App Server protocol harness", () => {
     }
   });
 
+  test("rejects turn/start when the thread is not loaded for the calling connection", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const session = createFakeAgentSession();
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-turn-start",
+        method: "turn/start",
+        params: {
+          threadId: "thread-not-loaded",
+          prompt: "Try to start a turn",
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-turn-start",
+        error: {
+          code: -33010,
+          message: "Thread is not loaded for this connection",
+          data: {
+            code: "THREAD_NOT_LOADED",
+            threadId: "thread-not-loaded",
+          },
+        },
+      });
+      expect(session.startTurnCalls).toHaveLength(0);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("rejects starting a second active turn on the same thread", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    let turnCounter = 0;
+    const session = createFakeAgentSession({
+      resumeThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: canonicalWorkspacePath,
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+      startTurn: async () => {
+        turnCounter += 1;
+
+        return {
+          ok: true,
+          data: {
+            turn: createTestAgentTurn({
+              id: `turn-${turnCounter}`,
+            }),
+          },
+        };
+      },
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-resume",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+      await client.nextMessage();
+
+      client.sendJson({
+        id: "req-turn-start-1",
+        method: "turn/start",
+        params: {
+          threadId: "thread-live",
+          prompt: "Start the first turn",
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-turn-start-1",
+        result: {
+          turn: {
+            id: "turn-1",
+            status: {
+              type: "inProgress",
+            },
+          },
+        },
+      });
+
+      client.sendJson({
+        id: "req-turn-start-2",
+        method: "turn/start",
+        params: {
+          threadId: "thread-live",
+          prompt: "Start another turn",
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-turn-start-2",
+        error: {
+          code: -33011,
+          message: "Thread already has an active turn",
+          data: {
+            code: "TURN_ALREADY_ACTIVE",
+            threadId: "thread-live",
+            activeTurnId: "turn-1",
+          },
+        },
+      });
+      expect(session.startTurnCalls).toHaveLength(1);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("fans out turn and item notifications in order only to subscribed clients and clears active turns on completion", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    let turnCounter = 0;
+    const session = createFakeAgentSession({
+      resumeThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: canonicalWorkspacePath,
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+      startTurn: async () => {
+        turnCounter += 1;
+
+        return {
+          ok: true,
+          data: {
+            turn: createTestAgentTurn({
+              id: `turn-${turnCounter}`,
+            }),
+          },
+        };
+      },
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const clientA = await connectProtocolClient(harness.port);
+    const clientB = await connectProtocolClient(harness.port);
+    const bystander = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(clientA);
+      await initializeClient(clientB);
+      await initializeClient(bystander);
+      await openWorkspaceClient(clientA, workspacePath);
+      await openWorkspaceClient(clientB, workspacePath);
+      await openWorkspaceClient(bystander, workspacePath);
+
+      clientA.sendJson({
+        id: "req-thread-resume-a",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+      clientB.sendJson({
+        id: "req-thread-resume-b",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+
+      await clientA.nextMessage();
+      await clientB.nextMessage();
+
+      clientA.sendJson({
+        id: "req-turn-start",
+        method: "turn/start",
+        params: {
+          threadId: "thread-live",
+          prompt: "Ship the event stream",
+        },
+      });
+
+      await expect(clientA.nextMessage()).resolves.toEqual({
+        id: "req-turn-start",
+        result: {
+          turn: {
+            id: "turn-1",
+            status: {
+              type: "inProgress",
+            },
+          },
+        },
+      });
+
+      const streamedNotifications = [
+        createTurnStartedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+        }),
+        createItemStartedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-message",
+          kind: "agent_message",
+        }),
+        createMessageDeltaNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-message",
+          delta: "Working on it...",
+        }),
+        createItemCompletedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-message",
+          kind: "agent_message",
+          rawItem: {
+            id: "item-message",
+            type: "agent_message",
+            status: "completed",
+            text: "Working on it...",
+          },
+        }),
+        createItemStartedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-reasoning",
+          kind: "reasoning",
+        }),
+        createReasoningTextDeltaNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-reasoning",
+          delta: "Thinking...",
+        }),
+        createReasoningSummaryTextDeltaNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-reasoning",
+          delta: "Short summary",
+        }),
+        createItemCompletedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-reasoning",
+          kind: "reasoning",
+          rawItem: {
+            id: "item-reasoning",
+            type: "reasoning",
+            status: "completed",
+          },
+        }),
+        createItemStartedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-command",
+          kind: "command_execution",
+        }),
+        createCommandOutputDeltaNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-command",
+          delta: "stdout line\n",
+        }),
+        createItemCompletedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-command",
+          kind: "command_execution",
+          rawItem: {
+            id: "item-command",
+            type: "command_execution",
+            status: "completed",
+          },
+        }),
+        createItemStartedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-tool",
+          kind: "mcp_tool_call",
+        }),
+        createToolProgressNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-tool",
+          message: "Fetching results",
+        }),
+        createItemCompletedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-tool",
+          kind: "mcp_tool_call",
+          rawItem: {
+            id: "item-tool",
+            type: "mcp_tool_call",
+            status: "completed",
+          },
+        }),
+        createTurnCompletedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+        }),
+      ] as const;
+
+      for (const notification of streamedNotifications) {
+        session.emitNotification(notification);
+      }
+
+      const clientAMessages = await Promise.all(
+        streamedNotifications.map(() => clientA.nextMessage()),
+      );
+      const clientBMessages = await Promise.all(
+        streamedNotifications.map(() => clientB.nextMessage()),
+      );
+
+      expect(clientAMessages).toEqual([
+        {
+          method: "turn/started",
+          params: {
+            threadId: "thread-live",
+            turn: {
+              id: "turn-1",
+              status: {
+                type: "inProgress",
+              },
+            },
+          },
+        },
+        {
+          method: "item/started",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-1",
+            item: {
+              id: "item-message",
+              kind: "agent_message",
+              rawItem: {
+                id: "item-message",
+                type: "agent_message",
+                status: "in_progress",
+              },
+            },
+          },
+        },
+        {
+          method: "item/message/textDelta",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-1",
+            itemId: "item-message",
+            delta: "Working on it...",
+          },
+        },
+        {
+          method: "item/completed",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-1",
+            item: {
+              id: "item-message",
+              kind: "agent_message",
+              rawItem: {
+                id: "item-message",
+                type: "agent_message",
+                status: "completed",
+                text: "Working on it...",
+              },
+            },
+          },
+        },
+        {
+          method: "item/started",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-1",
+            item: {
+              id: "item-reasoning",
+              kind: "reasoning",
+              rawItem: {
+                id: "item-reasoning",
+                type: "reasoning",
+                status: "in_progress",
+              },
+            },
+          },
+        },
+        {
+          method: "item/reasoning/textDelta",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-1",
+            itemId: "item-reasoning",
+            delta: "Thinking...",
+          },
+        },
+        {
+          method: "item/reasoning/summaryTextDelta",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-1",
+            itemId: "item-reasoning",
+            delta: "Short summary",
+          },
+        },
+        {
+          method: "item/completed",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-1",
+            item: {
+              id: "item-reasoning",
+              kind: "reasoning",
+              rawItem: {
+                id: "item-reasoning",
+                type: "reasoning",
+                status: "completed",
+              },
+            },
+          },
+        },
+        {
+          method: "item/started",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-1",
+            item: {
+              id: "item-command",
+              kind: "command_execution",
+              rawItem: {
+                id: "item-command",
+                type: "command_execution",
+                status: "in_progress",
+              },
+            },
+          },
+        },
+        {
+          method: "item/commandExecution/outputDelta",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-1",
+            itemId: "item-command",
+            delta: "stdout line\n",
+          },
+        },
+        {
+          method: "item/completed",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-1",
+            item: {
+              id: "item-command",
+              kind: "command_execution",
+              rawItem: {
+                id: "item-command",
+                type: "command_execution",
+                status: "completed",
+              },
+            },
+          },
+        },
+        {
+          method: "item/started",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-1",
+            item: {
+              id: "item-tool",
+              kind: "mcp_tool_call",
+              rawItem: {
+                id: "item-tool",
+                type: "mcp_tool_call",
+                status: "in_progress",
+              },
+            },
+          },
+        },
+        {
+          method: "item/tool/progress",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-1",
+            itemId: "item-tool",
+            message: "Fetching results",
+          },
+        },
+        {
+          method: "item/completed",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-1",
+            item: {
+              id: "item-tool",
+              kind: "mcp_tool_call",
+              rawItem: {
+                id: "item-tool",
+                type: "mcp_tool_call",
+                status: "completed",
+              },
+            },
+          },
+        },
+        {
+          method: "turn/completed",
+          params: {
+            threadId: "thread-live",
+            turn: {
+              id: "turn-1",
+              status: {
+                type: "completed",
+              },
+            },
+          },
+        },
+      ]);
+      expect(clientBMessages).toEqual(clientAMessages);
+      await expect(bystander.nextMessage(150)).rejects.toThrow("Timed out waiting for message");
+
+      clientA.sendJson({
+        id: "req-turn-start-2",
+        method: "turn/start",
+        params: {
+          threadId: "thread-live",
+          prompt: "Start another turn after completion",
+        },
+      });
+
+      await expect(clientA.nextMessage()).resolves.toEqual({
+        id: "req-turn-start-2",
+        result: {
+          turn: {
+            id: "turn-2",
+            status: {
+              type: "inProgress",
+            },
+          },
+        },
+      });
+    } finally {
+      await clientA.close();
+      await clientB.close();
+      await bystander.close();
+    }
+  });
+
+  test("preserves terminal turn status on turn/completed and allows a follow-up turn", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    let turnCounter = 0;
+    const session = createFakeAgentSession({
+      resumeThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: canonicalWorkspacePath,
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+      startTurn: async () => {
+        turnCounter += 1;
+
+        return {
+          ok: true,
+          data: {
+            turn: createTestAgentTurn({
+              id: `turn-${turnCounter}`,
+            }),
+          },
+        };
+      },
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-resume",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+      await client.nextMessage();
+
+      client.sendJson({
+        id: "req-turn-start-1",
+        method: "turn/start",
+        params: {
+          threadId: "thread-live",
+          prompt: "Start a turn that will fail",
+        },
+      });
+      await client.nextMessage();
+
+      session.emitNotification(
+        createTurnCompletedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          status: {
+            type: "failed",
+            message: "provider failed",
+          },
+        }),
+      );
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-live",
+          turn: {
+            id: "turn-1",
+            status: {
+              type: "failed",
+              message: "provider failed",
+            },
+          },
+        },
+      });
+
+      client.sendJson({
+        id: "req-turn-start-2",
+        method: "turn/start",
+        params: {
+          threadId: "thread-live",
+          prompt: "Start the follow-up turn",
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-turn-start-2",
+        result: {
+          turn: {
+            id: "turn-2",
+            status: {
+              type: "inProgress",
+            },
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("preserves pre-response turn notifications during the turn/start reservation window", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    let session!: ReturnType<typeof createFakeAgentSession>;
+    session = createFakeAgentSession({
+      resumeThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: canonicalWorkspacePath,
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+      startTurn: async () => {
+        session.emitNotification(
+          createTurnStartedNotification({
+            threadId: "thread-live",
+            turnId: "turn-1",
+          }),
+        );
+        session.emitNotification(
+          createItemStartedNotification({
+            threadId: "thread-live",
+            turnId: "turn-1",
+            itemId: "item-message",
+            kind: "agent_message",
+          }),
+        );
+        session.emitNotification(
+          createMessageDeltaNotification({
+            threadId: "thread-live",
+            turnId: "turn-1",
+            itemId: "item-message",
+            delta: "Working on it...",
+          }),
+        );
+
+        return {
+          ok: true,
+          data: {
+            turn: createTestAgentTurn({
+              id: "turn-1",
+            }),
+          },
+        };
+      },
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-resume",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+      await client.nextMessage();
+
+      client.sendJson({
+        id: "req-turn-start",
+        method: "turn/start",
+        params: {
+          threadId: "thread-live",
+          prompt: "Start a turn",
+        },
+      });
+
+      const messages = await Promise.all([
+        client.nextMessage(),
+        client.nextMessage(),
+        client.nextMessage(),
+        client.nextMessage(),
+      ]);
+
+      expect(messages[0]).toEqual({
+        method: "turn/started",
+        params: {
+          threadId: "thread-live",
+          turn: {
+            id: "turn-1",
+            status: {
+              type: "inProgress",
+            },
+          },
+        },
+      });
+      expect(messages).toContainEqual({
+        method: "item/started",
+        params: {
+          threadId: "thread-live",
+          turnId: "turn-1",
+          item: {
+            id: "item-message",
+            kind: "agent_message",
+            rawItem: {
+              id: "item-message",
+              type: "agent_message",
+              status: "in_progress",
+            },
+          },
+        },
+      });
+      expect(messages).toContainEqual({
+        method: "item/message/textDelta",
+        params: {
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-message",
+          delta: "Working on it...",
+        },
+      });
+      expect(messages).toContainEqual({
+        id: "req-turn-start",
+        result: {
+          turn: {
+            id: "turn-1",
+            status: {
+              type: "inProgress",
+            },
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
   test("clears loaded-thread subscriptions when the connection switches workspaces", async () => {
     const firstWorkspacePath = await createWorkspaceDirectory();
     const secondWorkspacePath = await createWorkspaceDirectory();
@@ -2149,6 +2981,17 @@ const createProtocolHarness = async (
     getOpenedWorkspace: workspacesModule.getOpenedWorkspace,
   });
   const finalizedThreadsModule = threadsModule;
+  const turnsModule = createTurnsModule({
+    logger: logger.withContext({ component: "module.turns" }),
+    registerMethod: appProtocolRuntime.registerMethod,
+    sendNotification: appProtocolRuntime.sendNotification,
+    registry: agentsModule.registry,
+    getOpenedWorkspace: workspacesModule.getOpenedWorkspace,
+    loadedThreads: {
+      isThreadLoadedForConnection: finalizedThreadsModule.isThreadLoadedForConnection,
+      listLoadedThreadSubscribers: finalizedThreadsModule.listLoadedThreadSubscribers,
+    },
+  });
   const transportComponent = createAppTransportComponent({
     config,
     logger,
@@ -2170,7 +3013,7 @@ const createProtocolHarness = async (
       agentsModule.lifecycle,
       workspacesModule.lifecycle,
       finalizedThreadsModule.lifecycle,
-      createTurnsModulePlaceholder(),
+      turnsModule.lifecycle,
       createApprovalsModulePlaceholder(),
       transportComponent,
     ],
@@ -2544,6 +3387,183 @@ const createThreadNameUpdatedNotification = (input: {
     archived: false,
     status: { type: "notLoaded" } as const,
   },
+});
+
+const createTurnStartedNotification = (input: { threadId: string; turnId: string }) => ({
+  agentId: "codex",
+  provider: "codex" as const,
+  receivedAt: "2026-04-10T12:00:00.000Z",
+  rawMethod: "turn/started",
+  threadId: input.threadId,
+  turnId: input.turnId,
+  type: "turn" as const,
+  event: "started" as const,
+  turn: {
+    id: input.turnId,
+    status: { type: "inProgress" } as const,
+  },
+});
+
+const createTurnCompletedNotification = (input: {
+  threadId: string;
+  turnId: string;
+  status?:
+    | { type: "completed" }
+    | { type: "failed"; message: string }
+    | { type: "cancelled" }
+    | { type: "interrupted" };
+}) => ({
+  agentId: "codex",
+  provider: "codex" as const,
+  receivedAt: "2026-04-10T12:00:00.000Z",
+  rawMethod: "turn/completed",
+  threadId: input.threadId,
+  turnId: input.turnId,
+  type: "turn" as const,
+  event: "completed" as const,
+  turn: {
+    id: input.turnId,
+    status: input.status ?? ({ type: "completed" } as const),
+  },
+});
+
+const createItemStartedNotification = (input: {
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  kind: string;
+}) => ({
+  agentId: "codex",
+  provider: "codex" as const,
+  receivedAt: "2026-04-10T12:00:00.000Z",
+  rawMethod: "item/started",
+  threadId: input.threadId,
+  turnId: input.turnId,
+  itemId: input.itemId,
+  type: "item" as const,
+  event: "started" as const,
+  item: {
+    id: input.itemId,
+    kind: input.kind,
+    rawItem: {
+      id: input.itemId,
+      type: input.kind,
+      status: "in_progress",
+    },
+  },
+});
+
+const createItemCompletedNotification = (input: {
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  kind: string;
+  rawItem: Record<string, unknown>;
+}) => ({
+  agentId: "codex",
+  provider: "codex" as const,
+  receivedAt: "2026-04-10T12:00:00.000Z",
+  rawMethod: "item/completed",
+  threadId: input.threadId,
+  turnId: input.turnId,
+  itemId: input.itemId,
+  type: "item" as const,
+  event: "completed" as const,
+  item: {
+    id: input.itemId,
+    kind: input.kind,
+    rawItem: input.rawItem,
+  },
+});
+
+const createMessageDeltaNotification = (input: {
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  delta: string;
+}) => ({
+  agentId: "codex",
+  provider: "codex" as const,
+  receivedAt: "2026-04-10T12:00:00.000Z",
+  rawMethod: "item/agentMessage/delta",
+  threadId: input.threadId,
+  turnId: input.turnId,
+  itemId: input.itemId,
+  type: "message" as const,
+  event: "textDelta" as const,
+  delta: input.delta,
+});
+
+const createReasoningTextDeltaNotification = (input: {
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  delta: string;
+}) => ({
+  agentId: "codex",
+  provider: "codex" as const,
+  receivedAt: "2026-04-10T12:00:00.000Z",
+  rawMethod: "item/reasoning/textDelta",
+  threadId: input.threadId,
+  turnId: input.turnId,
+  itemId: input.itemId,
+  type: "reasoning" as const,
+  event: "textDelta" as const,
+  delta: input.delta,
+});
+
+const createReasoningSummaryTextDeltaNotification = (input: {
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  delta: string;
+}) => ({
+  agentId: "codex",
+  provider: "codex" as const,
+  receivedAt: "2026-04-10T12:00:00.000Z",
+  rawMethod: "item/reasoning/summaryTextDelta",
+  threadId: input.threadId,
+  turnId: input.turnId,
+  itemId: input.itemId,
+  type: "reasoning" as const,
+  event: "summaryTextDelta" as const,
+  delta: input.delta,
+});
+
+const createCommandOutputDeltaNotification = (input: {
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  delta: string;
+}) => ({
+  agentId: "codex",
+  provider: "codex" as const,
+  receivedAt: "2026-04-10T12:00:00.000Z",
+  rawMethod: "item/commandExecution/outputDelta",
+  threadId: input.threadId,
+  turnId: input.turnId,
+  itemId: input.itemId,
+  type: "command" as const,
+  event: "outputDelta" as const,
+  delta: input.delta,
+});
+
+const createToolProgressNotification = (input: {
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  message: string;
+}) => ({
+  agentId: "codex",
+  provider: "codex" as const,
+  receivedAt: "2026-04-10T12:00:00.000Z",
+  rawMethod: "item/mcpToolCall/progress",
+  threadId: input.threadId,
+  turnId: input.turnId,
+  itemId: input.itemId,
+  type: "tool" as const,
+  event: "progress" as const,
+  message: input.message,
 });
 
 const toMessageText = (data: unknown): string => {

@@ -204,6 +204,47 @@ export const CodexReasoningTextDeltaNotificationSchema = Type.Object(
   { additionalProperties: true },
 );
 
+export const CodexAgentMessageDeltaNotificationSchema = Type.Object(
+  {
+    threadId: Type.String(),
+    turnId: Type.String(),
+    itemId: Type.String(),
+    delta: Type.String(),
+  },
+  { additionalProperties: true },
+);
+
+export const CodexReasoningSummaryTextDeltaNotificationSchema = Type.Object(
+  {
+    threadId: Type.String(),
+    turnId: Type.String(),
+    itemId: Type.String(),
+    delta: Type.String(),
+    summaryIndex: Type.Integer(),
+  },
+  { additionalProperties: true },
+);
+
+export const CodexCommandExecutionOutputDeltaNotificationSchema = Type.Object(
+  {
+    threadId: Type.String(),
+    turnId: Type.String(),
+    itemId: Type.String(),
+    delta: Type.String(),
+  },
+  { additionalProperties: true },
+);
+
+export const CodexMcpToolCallProgressNotificationSchema = Type.Object(
+  {
+    threadId: Type.String(),
+    turnId: Type.String(),
+    itemId: Type.String(),
+    message: Type.String(),
+  },
+  { additionalProperties: true },
+);
+
 export const CodexCommandExecutionRequestApprovalParamsSchema = Type.Object(
   {
     threadId: Type.String(),
@@ -233,6 +274,18 @@ export type CodexTurnDiffUpdatedNotification = Static<
 >;
 export type CodexReasoningTextDeltaNotification = Static<
   typeof CodexReasoningTextDeltaNotificationSchema
+>;
+export type CodexAgentMessageDeltaNotification = Static<
+  typeof CodexAgentMessageDeltaNotificationSchema
+>;
+export type CodexReasoningSummaryTextDeltaNotification = Static<
+  typeof CodexReasoningSummaryTextDeltaNotificationSchema
+>;
+export type CodexCommandExecutionOutputDeltaNotification = Static<
+  typeof CodexCommandExecutionOutputDeltaNotificationSchema
+>;
+export type CodexMcpToolCallProgressNotification = Static<
+  typeof CodexMcpToolCallProgressNotificationSchema
 >;
 export type CodexCommandExecutionRequestApprovalParams = Static<
   typeof CodexCommandExecutionRequestApprovalParamsSchema

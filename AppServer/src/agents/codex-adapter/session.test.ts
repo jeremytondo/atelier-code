@@ -638,6 +638,93 @@ describe("createCodexAgentSession", () => {
     });
   });
 
+  test("maps turn/start through the Codex transport contract", async () => {
+    const executablePath = createFakeExecutable();
+    const transport = new FakeTransport([
+      { userAgent: "Codex/Test" },
+      {
+        turn: {
+          id: "turn-1",
+          status: "inProgress",
+          error: null,
+        },
+      },
+    ]);
+    const sessionResult = await createCodexAgentSession({
+      agentId: "codex",
+      config: {
+        id: "codex",
+        provider: "codex",
+      },
+      logger: createSilentLogger(),
+      transport,
+      environmentResolver: new BaseEnvironmentResolver({
+        inheritedEnvironment: {
+          ATELIERCODE_CODEX_PATH: executablePath,
+          PATH: path.dirname(executablePath),
+          HOME: "/Users/tester",
+          SHELL: "/bin/zsh",
+        },
+      }),
+    });
+
+    expect(sessionResult.ok).toBe(true);
+    if (!sessionResult.ok) {
+      throw new Error("Expected the Codex session to be created.");
+    }
+
+    const turnResult = await sessionResult.data.startTurn("req-turn-start", {
+      threadId: "thread-1",
+      prompt: "Ship the turn execution layer",
+      cwd: "/tmp/project",
+    });
+
+    expect(transport.sent).toEqual([
+      {
+        id: "atelier-appserver-initialize",
+        method: "initialize",
+        params: {
+          clientInfo: {
+            name: "AtelierCode App Server",
+            title: null,
+            version: "0.1.0",
+          },
+          capabilities: {
+            experimentalApi: true,
+          },
+        },
+      },
+      {
+        id: "req-turn-start",
+        method: "turn/start",
+        params: {
+          threadId: "thread-1",
+          input: [
+            {
+              type: "text",
+              text: "Ship the turn execution layer",
+              text_elements: [],
+            },
+          ],
+          cwd: "/tmp/project",
+          model: undefined,
+          effort: undefined,
+        },
+      },
+    ]);
+    expect(turnResult).toEqual({
+      ok: true,
+      data: {
+        turn: {
+          id: "turn-1",
+          status: {
+            type: "inProgress",
+          },
+        },
+      },
+    });
+  });
+
   test("translates approval requests and resolves them through provider responses", async () => {
     const executablePath = createFakeExecutable();
     const transport = new FakeTransport([{ userAgent: "Codex/Test" }]);

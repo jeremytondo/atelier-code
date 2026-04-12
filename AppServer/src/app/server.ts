@@ -11,7 +11,7 @@ import { createApprovalsModulePlaceholder } from "@/approvals";
 import { getErrorMessage, type LifecycleComponent } from "@/core/shared";
 import { createStoreBootstrap } from "@/core/store";
 import { createSqliteThreadsStore, createThreadsModule } from "@/threads";
-import { createTurnsModulePlaceholder } from "@/turns";
+import { createTurnsModule } from "@/turns";
 import { createSqliteWorkspacesStore, createWorkspacesModule } from "@/workspaces";
 
 export type AppServerState = "idle" | "starting" | "started" | "stopping" | "stopped";
@@ -351,6 +351,17 @@ const createDefaultComponents = (
     getOpenedWorkspace: workspacesModule.getOpenedWorkspace,
   });
   const finalizedThreadsModule = threadsModule;
+  const turnsModule = createTurnsModule({
+    logger: logger.withContext({ component: "module.turns" }),
+    registerMethod: appProtocolRuntime.registerMethod,
+    sendNotification: appProtocolRuntime.sendNotification,
+    registry: agentsModule.registry,
+    getOpenedWorkspace: workspacesModule.getOpenedWorkspace,
+    loadedThreads: {
+      isThreadLoadedForConnection: finalizedThreadsModule.isThreadLoadedForConnection,
+      listLoadedThreadSubscribers: finalizedThreadsModule.listLoadedThreadSubscribers,
+    },
+  });
   const transportComponent = createAppTransportComponent({
     config,
     logger,
@@ -369,7 +380,7 @@ const createDefaultComponents = (
     agentsModule.lifecycle,
     workspacesModule.lifecycle,
     finalizedThreadsModule.lifecycle,
-    createTurnsModulePlaceholder(),
+    turnsModule.lifecycle,
     createApprovalsModulePlaceholder(),
     transportComponent,
   ]);

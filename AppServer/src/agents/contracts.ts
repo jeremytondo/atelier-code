@@ -158,12 +158,33 @@ export type AgentItemNotification = AgentNotificationBase &
     }>;
   }>;
 
+export type AgentMessageNotification = AgentNotificationBase &
+  Readonly<{
+    type: "message";
+    event: "textDelta";
+    delta: string;
+  }>;
+
 export type AgentReasoningNotification = AgentNotificationBase &
   Readonly<{
     type: "reasoning";
     event: "summaryTextDelta" | "summaryPartAdded" | "textDelta";
     delta?: string;
     summaryPart?: unknown;
+  }>;
+
+export type AgentCommandNotification = AgentNotificationBase &
+  Readonly<{
+    type: "command";
+    event: "outputDelta";
+    delta: string;
+  }>;
+
+export type AgentToolNotification = AgentNotificationBase &
+  Readonly<{
+    type: "tool";
+    event: "progress";
+    message: string;
   }>;
 
 export type AgentPlanNotification = AgentNotificationBase &
@@ -212,7 +233,10 @@ export type AgentNotification =
   | AgentThreadNotification
   | AgentTurnNotification
   | AgentItemNotification
+  | AgentMessageNotification
   | AgentReasoningNotification
+  | AgentCommandNotification
+  | AgentToolNotification
   | AgentPlanNotification
   | AgentDiffNotification
   | AgentApprovalNotification

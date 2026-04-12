@@ -19,6 +19,7 @@ import type {
   AgentThreadResult,
   AgentThreadSetNameParams,
   AgentThreadUnarchiveParams,
+  AgentTurnResult,
 } from "@/agents/contracts";
 import type { AgentRegistry } from "@/agents/registry";
 
@@ -75,6 +76,16 @@ export type FakeAgentSession = AgentSession &
       requestId: AgentRequestId;
       params: AgentThreadSetNameParams;
     }>[];
+    startTurnCalls: readonly Readonly<{
+      requestId: AgentRequestId;
+      params: Readonly<{
+        threadId: string;
+        prompt: string;
+        model?: string;
+        reasoningEffort?: AgentReasoningEffort;
+        cwd?: string;
+      }>;
+    }>[];
   }>;
 
 export type CreateFakeAgentSessionOptions = Readonly<{
@@ -130,6 +141,16 @@ export type CreateFakeAgentSessionOptions = Readonly<{
     requestId: AgentRequestId,
     params: AgentThreadSetNameParams,
   ) => Promise<AgentOperationResult<AgentThreadMutationResult>>;
+  startTurn?: (
+    requestId: AgentRequestId,
+    params: Readonly<{
+      threadId: string;
+      prompt: string;
+      model?: string;
+      reasoningEffort?: AgentReasoningEffort;
+      cwd?: string;
+    }>,
+  ) => Promise<AgentOperationResult<AgentTurnResult>>;
 }>;
 
 export const createFakeAgentSession = (
@@ -203,6 +224,18 @@ export const createFakeAgentSession = (
     Readonly<{
       requestId: AgentRequestId;
       params: AgentThreadSetNameParams;
+    }>
+  > = [];
+  const startTurnCalls: Array<
+    Readonly<{
+      requestId: AgentRequestId;
+      params: Readonly<{
+        threadId: string;
+        prompt: string;
+        model?: string;
+        reasoningEffort?: AgentReasoningEffort;
+        cwd?: string;
+      }>;
     }>
   > = [];
 
@@ -384,8 +417,22 @@ export const createFakeAgentSession = (
         }
       );
     },
-    startTurn: async () => {
-      throw new Error("startTurn should not be called in this test.");
+    startTurn: async (requestId, params) => {
+      startTurnCalls.push(
+        Object.freeze({
+          requestId,
+          params,
+        }),
+      );
+
+      return (
+        (await options.startTurn?.(requestId, params)) ?? {
+          ok: true,
+          data: {
+            turn: createTestAgentTurn(),
+          },
+        }
+      );
     },
     steerTurn: async () => {
       throw new Error("steerTurn should not be called in this test.");
@@ -413,6 +460,7 @@ export const createFakeAgentSession = (
     archiveThreadCalls,
     unarchiveThreadCalls,
     setThreadNameCalls,
+    startTurnCalls,
   };
 };
 
@@ -531,4 +579,17 @@ export const createTestAgentThread = (
     name: overrides.name ?? null,
     archived: overrides.archived ?? false,
     status: overrides.status ?? ({ type: "idle" } as const),
+  });
+
+export const createTestAgentTurn = (
+  overrides: Partial<
+    Readonly<{
+      id: string;
+      status: AgentTurnResult["turn"]["status"];
+    }>
+  > = {},
+) =>
+  Object.freeze({
+    id: overrides.id ?? "turn-1",
+    status: overrides.status ?? ({ type: "inProgress" } as const),
   });
