@@ -27,29 +27,29 @@ export type ActiveTurnRegistry = Readonly<{
   reserveThread: (
     threadId: string,
   ) => Result<Readonly<{ release: () => void }>, ActiveTurnConflictError>;
-  startTurn: (input: Readonly<{ threadId: string; turn: Turn }>) => void;
-  recordTurnCompleted: (input: Readonly<{ threadId: string; turn: Turn }>) => void;
+  startTurn: (input: Readonly<{ threadId: string; turn: Turn }>) => boolean;
+  recordTurnCompleted: (input: Readonly<{ threadId: string; turn: Turn }>) => boolean;
   recordItemStarted: (
     input: Readonly<{ threadId: string; turnId: string; item: TurnItem }>,
-  ) => void;
+  ) => boolean;
   recordItemCompleted: (
     input: Readonly<{ threadId: string; turnId: string; item: TurnItem }>,
-  ) => void;
+  ) => boolean;
   appendMessageText: (
     input: Readonly<{ threadId: string; turnId: string; itemId: string; delta: string }>,
-  ) => void;
+  ) => boolean;
   appendReasoningText: (
     input: Readonly<{ threadId: string; turnId: string; itemId: string; delta: string }>,
-  ) => void;
+  ) => boolean;
   appendReasoningSummaryText: (
     input: Readonly<{ threadId: string; turnId: string; itemId: string; delta: string }>,
-  ) => void;
+  ) => boolean;
   appendCommandOutput: (
     input: Readonly<{ threadId: string; turnId: string; itemId: string; delta: string }>,
-  ) => void;
+  ) => boolean;
   appendToolProgress: (
     input: Readonly<{ threadId: string; turnId: string; itemId: string; message: string }>,
-  ) => void;
+  ) => boolean;
   getActiveTurn: (threadId: string) => ActiveTurnSnapshot | undefined;
   clearThread: (threadId: string) => ActiveTurnSnapshot | undefined;
   clearAll: () => void;
@@ -86,15 +86,22 @@ export const createActiveTurnRegistry = (): ActiveTurnRegistry => {
     return state;
   };
 
-  const ensureObservedTurn = (threadId: string, turnId: string): MutableActiveTurnState => {
+  const ensureObservedTurn = (
+    threadId: string,
+    turnId: string,
+  ): MutableActiveTurnState | undefined => {
     const state = getOrCreateThreadState(threadId);
 
-    if (state.turn?.id !== turnId) {
+    if (state.turn === undefined) {
       state.turn = Object.freeze({
         id: turnId,
         status: Object.freeze({ type: "inProgress" as const }),
       });
-      state.itemsById.clear();
+      return state;
+    }
+
+    if (state.turn.id !== turnId) {
+      return undefined;
     }
 
     return state;
@@ -104,8 +111,13 @@ export const createActiveTurnRegistry = (): ActiveTurnRegistry => {
     threadId: string,
     turnId: string,
     itemId: string,
-  ): MutableActiveTurnItemState => {
+  ): MutableActiveTurnItemState | undefined => {
     const state = ensureObservedTurn(threadId, turnId);
+
+    if (state === undefined) {
+      return undefined;
+    }
+
     const existing = state.itemsById.get(itemId);
 
     if (existing !== undefined) {
@@ -171,34 +183,84 @@ export const createActiveTurnRegistry = (): ActiveTurnRegistry => {
     },
     startTurn: ({ threadId, turn }) => {
       const state = getOrCreateThreadState(threadId);
+      if (state.turn !== undefined && state.turn.id !== turn.id) {
+        return false;
+      }
+
       state.turn = turn;
+      return true;
     },
     recordTurnCompleted: ({ threadId, turn }) => {
       const state = ensureObservedTurn(threadId, turn.id);
+      if (state === undefined) {
+        return false;
+      }
+
       state.turn = turn;
+      return true;
     },
     recordItemStarted: ({ threadId, turnId, item }) => {
       const itemState = getOrCreateItemState(threadId, turnId, item.id);
+      if (itemState === undefined) {
+        return false;
+      }
+
       itemState.item = item;
+      return true;
     },
     recordItemCompleted: ({ threadId, turnId, item }) => {
       const itemState = getOrCreateItemState(threadId, turnId, item.id);
+      if (itemState === undefined) {
+        return false;
+      }
+
       itemState.item = item;
+      return true;
     },
     appendMessageText: ({ threadId, turnId, itemId, delta }) => {
-      getOrCreateItemState(threadId, turnId, itemId).messageText += delta;
+      const itemState = getOrCreateItemState(threadId, turnId, itemId);
+      if (itemState === undefined) {
+        return false;
+      }
+
+      itemState.messageText += delta;
+      return true;
     },
     appendReasoningText: ({ threadId, turnId, itemId, delta }) => {
-      getOrCreateItemState(threadId, turnId, itemId).reasoningText += delta;
+      const itemState = getOrCreateItemState(threadId, turnId, itemId);
+      if (itemState === undefined) {
+        return false;
+      }
+
+      itemState.reasoningText += delta;
+      return true;
     },
     appendReasoningSummaryText: ({ threadId, turnId, itemId, delta }) => {
-      getOrCreateItemState(threadId, turnId, itemId).reasoningSummaryText += delta;
+      const itemState = getOrCreateItemState(threadId, turnId, itemId);
+      if (itemState === undefined) {
+        return false;
+      }
+
+      itemState.reasoningSummaryText += delta;
+      return true;
     },
     appendCommandOutput: ({ threadId, turnId, itemId, delta }) => {
-      getOrCreateItemState(threadId, turnId, itemId).commandOutput += delta;
+      const itemState = getOrCreateItemState(threadId, turnId, itemId);
+      if (itemState === undefined) {
+        return false;
+      }
+
+      itemState.commandOutput += delta;
+      return true;
     },
     appendToolProgress: ({ threadId, turnId, itemId, message }) => {
-      getOrCreateItemState(threadId, turnId, itemId).toolProgress.push(message);
+      const itemState = getOrCreateItemState(threadId, turnId, itemId);
+      if (itemState === undefined) {
+        return false;
+      }
+
+      itemState.toolProgress.push(message);
+      return true;
     },
     getActiveTurn: (threadId) => {
       const state = statesByThreadId.get(threadId);

@@ -1817,6 +1817,258 @@ describe("App Server protocol harness", () => {
     }
   });
 
+  test("preserves terminal turn status on turn/completed and allows a follow-up turn", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    let turnCounter = 0;
+    const session = createFakeAgentSession({
+      resumeThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: canonicalWorkspacePath,
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+      startTurn: async () => {
+        turnCounter += 1;
+
+        return {
+          ok: true,
+          data: {
+            turn: createTestAgentTurn({
+              id: `turn-${turnCounter}`,
+            }),
+          },
+        };
+      },
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-resume",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+      await client.nextMessage();
+
+      client.sendJson({
+        id: "req-turn-start-1",
+        method: "turn/start",
+        params: {
+          threadId: "thread-live",
+          prompt: "Start a turn that will fail",
+        },
+      });
+      await client.nextMessage();
+
+      session.emitNotification(
+        createTurnCompletedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          status: {
+            type: "failed",
+            message: "provider failed",
+          },
+        }),
+      );
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-live",
+          turn: {
+            id: "turn-1",
+            status: {
+              type: "failed",
+              message: "provider failed",
+            },
+          },
+        },
+      });
+
+      client.sendJson({
+        id: "req-turn-start-2",
+        method: "turn/start",
+        params: {
+          threadId: "thread-live",
+          prompt: "Start the follow-up turn",
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-turn-start-2",
+        result: {
+          turn: {
+            id: "turn-2",
+            status: {
+              type: "inProgress",
+            },
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("preserves pre-response turn notifications during the turn/start reservation window", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    let session!: ReturnType<typeof createFakeAgentSession>;
+    session = createFakeAgentSession({
+      resumeThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: canonicalWorkspacePath,
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+      startTurn: async () => {
+        session.emitNotification(
+          createTurnStartedNotification({
+            threadId: "thread-live",
+            turnId: "turn-1",
+          }),
+        );
+        session.emitNotification(
+          createItemStartedNotification({
+            threadId: "thread-live",
+            turnId: "turn-1",
+            itemId: "item-message",
+            kind: "agent_message",
+          }),
+        );
+        session.emitNotification(
+          createMessageDeltaNotification({
+            threadId: "thread-live",
+            turnId: "turn-1",
+            itemId: "item-message",
+            delta: "Working on it...",
+          }),
+        );
+
+        return {
+          ok: true,
+          data: {
+            turn: createTestAgentTurn({
+              id: "turn-1",
+            }),
+          },
+        };
+      },
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-resume",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+      await client.nextMessage();
+
+      client.sendJson({
+        id: "req-turn-start",
+        method: "turn/start",
+        params: {
+          threadId: "thread-live",
+          prompt: "Start a turn",
+        },
+      });
+
+      const messages = await Promise.all([
+        client.nextMessage(),
+        client.nextMessage(),
+        client.nextMessage(),
+        client.nextMessage(),
+      ]);
+
+      expect(messages[0]).toEqual({
+        method: "turn/started",
+        params: {
+          threadId: "thread-live",
+          turn: {
+            id: "turn-1",
+            status: {
+              type: "inProgress",
+            },
+          },
+        },
+      });
+      expect(messages).toContainEqual({
+        method: "item/started",
+        params: {
+          threadId: "thread-live",
+          turnId: "turn-1",
+          item: {
+            id: "item-message",
+            kind: "agent_message",
+            rawItem: {
+              id: "item-message",
+              type: "agent_message",
+              status: "in_progress",
+            },
+          },
+        },
+      });
+      expect(messages).toContainEqual({
+        method: "item/message/textDelta",
+        params: {
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-message",
+          delta: "Working on it...",
+        },
+      });
+      expect(messages).toContainEqual({
+        id: "req-turn-start",
+        result: {
+          turn: {
+            id: "turn-1",
+            status: {
+              type: "inProgress",
+            },
+          },
+        },
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
   test("clears loaded-thread subscriptions when the connection switches workspaces", async () => {
     const firstWorkspacePath = await createWorkspaceDirectory();
     const secondWorkspacePath = await createWorkspaceDirectory();
@@ -3152,7 +3404,15 @@ const createTurnStartedNotification = (input: { threadId: string; turnId: string
   },
 });
 
-const createTurnCompletedNotification = (input: { threadId: string; turnId: string }) => ({
+const createTurnCompletedNotification = (input: {
+  threadId: string;
+  turnId: string;
+  status?:
+    | { type: "completed" }
+    | { type: "failed"; message: string }
+    | { type: "cancelled" }
+    | { type: "interrupted" };
+}) => ({
   agentId: "codex",
   provider: "codex" as const,
   receivedAt: "2026-04-10T12:00:00.000Z",
@@ -3163,7 +3423,7 @@ const createTurnCompletedNotification = (input: { threadId: string; turnId: stri
   event: "completed" as const,
   turn: {
     id: input.turnId,
-    status: { type: "completed" } as const,
+    status: input.status ?? ({ type: "completed" } as const),
   },
 });
 

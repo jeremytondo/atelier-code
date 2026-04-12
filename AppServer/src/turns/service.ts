@@ -59,10 +59,17 @@ export const createTurnsService = (options: CreateTurnsServiceOptions): TurnsSer
         id: startTurnResult.data.turn.id,
         status: mapTurnStatus(startTurnResult.data.turn.status),
       });
-      options.activeTurns.startTurn({
+      const wasRecorded = options.activeTurns.startTurn({
         threadId: params.threadId,
         turn,
       });
+      if (!wasRecorded) {
+        options.logger.warn("Ignored turn/start response with mismatched active turn", {
+          threadId: params.threadId,
+          turnId: turn.id,
+          activeTurnId: options.activeTurns.getActiveTurn(params.threadId)?.turn?.id ?? null,
+        });
+      }
 
       return ok({
         turn,

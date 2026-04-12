@@ -102,35 +102,34 @@ export type ItemStartedNotificationParams = Static<typeof ItemStartedNotificatio
 export const ItemCompletedNotificationParamsSchema = ItemStartedNotificationParamsSchema;
 export type ItemCompletedNotificationParams = Static<typeof ItemCompletedNotificationParamsSchema>;
 
-const createDeltaNotificationParamsSchema = () =>
-  Type.Object(
-    {
-      threadId: Type.String({ minLength: 1 }),
-      turnId: Type.String({ minLength: 1 }),
-      itemId: Type.String({ minLength: 1 }),
-      delta: Type.String(),
-    },
-    { additionalProperties: false },
-  );
+const ItemTextDeltaNotificationParamsSchema = Type.Object(
+  {
+    threadId: Type.String({ minLength: 1 }),
+    turnId: Type.String({ minLength: 1 }),
+    itemId: Type.String({ minLength: 1 }),
+    delta: Type.String(),
+  },
+  { additionalProperties: false },
+);
 
-export const ItemMessageTextDeltaNotificationParamsSchema = createDeltaNotificationParamsSchema();
+export const ItemMessageTextDeltaNotificationParamsSchema = ItemTextDeltaNotificationParamsSchema;
 export type ItemMessageTextDeltaNotificationParams = Static<
   typeof ItemMessageTextDeltaNotificationParamsSchema
 >;
 
-export const ItemReasoningTextDeltaNotificationParamsSchema = createDeltaNotificationParamsSchema();
+export const ItemReasoningTextDeltaNotificationParamsSchema = ItemTextDeltaNotificationParamsSchema;
 export type ItemReasoningTextDeltaNotificationParams = Static<
   typeof ItemReasoningTextDeltaNotificationParamsSchema
 >;
 
 export const ItemReasoningSummaryTextDeltaNotificationParamsSchema =
-  createDeltaNotificationParamsSchema();
+  ItemTextDeltaNotificationParamsSchema;
 export type ItemReasoningSummaryTextDeltaNotificationParams = Static<
   typeof ItemReasoningSummaryTextDeltaNotificationParamsSchema
 >;
 
 export const ItemCommandExecutionOutputDeltaNotificationParamsSchema =
-  createDeltaNotificationParamsSchema();
+  ItemTextDeltaNotificationParamsSchema;
 export type ItemCommandExecutionOutputDeltaNotificationParams = Static<
   typeof ItemCommandExecutionOutputDeltaNotificationParamsSchema
 >;

@@ -109,4 +109,102 @@ describe("active turn registry", () => {
     });
     expect(registry.getActiveTurn("thread-1")).toBeUndefined();
   });
+
+  test("rejects reserving a second active turn for the same thread", () => {
+    const registry = createActiveTurnRegistry();
+
+    expect(registry.reserveThread("thread-1")).toEqual({
+      ok: true,
+      data: {
+        release: expect.any(Function),
+      },
+    });
+    expect(registry.reserveThread("thread-1")).toEqual({
+      ok: false,
+      error: {
+        type: "activeTurnConflict",
+        threadId: "thread-1",
+        message: "Thread already has an active turn.",
+      },
+    });
+  });
+
+  test("ignores mismatched turn ids instead of clobbering active state", () => {
+    const registry = createActiveTurnRegistry();
+
+    registry.startTurn({
+      threadId: "thread-1",
+      turn: {
+        id: "turn-1",
+        status: {
+          type: "inProgress",
+        },
+      },
+    });
+    registry.recordItemStarted({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: {
+        id: "item-1",
+        kind: "agent_message",
+        rawItem: {
+          id: "item-1",
+          type: "agent_message",
+          status: "in_progress",
+        },
+      },
+    });
+
+    expect(
+      registry.appendMessageText({
+        threadId: "thread-1",
+        turnId: "turn-2",
+        itemId: "item-2",
+        delta: "late stray",
+      }),
+    ).toBe(false);
+    expect(
+      registry.recordItemCompleted({
+        threadId: "thread-1",
+        turnId: "turn-2",
+        item: {
+          id: "item-2",
+          kind: "agent_message",
+          rawItem: {
+            id: "item-2",
+            type: "agent_message",
+            status: "completed",
+          },
+        },
+      }),
+    ).toBe(false);
+
+    expect(registry.getActiveTurn("thread-1")).toEqual({
+      threadId: "thread-1",
+      turn: {
+        id: "turn-1",
+        status: {
+          type: "inProgress",
+        },
+      },
+      items: [
+        {
+          item: {
+            id: "item-1",
+            kind: "agent_message",
+            rawItem: {
+              id: "item-1",
+              type: "agent_message",
+              status: "in_progress",
+            },
+          },
+          messageText: "",
+          reasoningText: "",
+          reasoningSummaryText: "",
+          commandOutput: "",
+          toolProgress: [],
+        },
+      ],
+    });
+  });
 });

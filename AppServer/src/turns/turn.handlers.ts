@@ -141,6 +141,25 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
     }
   };
 
+  const warnIgnoredTurnNotification = (
+    details: Readonly<{
+      type: string;
+      event: string;
+      threadId: string;
+      turnId?: string;
+      itemId?: string;
+    }>,
+  ): void => {
+    options.logger.warn("Ignored turn notification with mismatched active turn", {
+      notificationType: details.type,
+      event: details.event,
+      threadId: details.threadId,
+      ...(details.turnId !== undefined ? { turnId: details.turnId } : {}),
+      ...(details.itemId !== undefined ? { itemId: details.itemId } : {}),
+      activeTurnId: activeTurns.getActiveTurn(details.threadId)?.turn?.id ?? null,
+    });
+  };
+
   const forwardAgentNotification = async (notification: AgentNotification): Promise<void> => {
     switch (notification.type) {
       case "disconnect":
@@ -158,7 +177,7 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
       case "item":
         await handleItemNotification(notification);
         return;
-      case "message":
+      case "message": {
         if (
           notification.threadId === undefined ||
           notification.turnId === undefined ||
@@ -167,12 +186,23 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
           return;
         }
 
-        activeTurns.appendMessageText({
+        const wasRecorded = activeTurns.appendMessageText({
           threadId: notification.threadId,
           turnId: notification.turnId,
           itemId: notification.itemId,
           delta: notification.delta,
         });
+        if (!wasRecorded) {
+          warnIgnoredTurnNotification({
+            type: notification.type,
+            event: notification.event,
+            threadId: notification.threadId,
+            turnId: notification.turnId,
+            itemId: notification.itemId,
+          });
+          return;
+        }
+
         await fanOutThreadNotification(notification.threadId, {
           method: "item/message/textDelta",
           params: {
@@ -183,7 +213,8 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
           },
         });
         return;
-      case "reasoning":
+      }
+      case "reasoning": {
         if (
           notification.threadId === undefined ||
           notification.turnId === undefined ||
@@ -193,13 +224,26 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
           return;
         }
 
+        // Only text deltas are surfaced live in this phase. Summary-part payloads
+        // are normalized at the adapter boundary but intentionally not relayed yet.
         if (notification.event === "textDelta") {
-          activeTurns.appendReasoningText({
+          const wasRecorded = activeTurns.appendReasoningText({
             threadId: notification.threadId,
             turnId: notification.turnId,
             itemId: notification.itemId,
             delta: notification.delta,
           });
+          if (!wasRecorded) {
+            warnIgnoredTurnNotification({
+              type: notification.type,
+              event: notification.event,
+              threadId: notification.threadId,
+              turnId: notification.turnId,
+              itemId: notification.itemId,
+            });
+            return;
+          }
+
           await fanOutThreadNotification(notification.threadId, {
             method: "item/reasoning/textDelta",
             params: {
@@ -210,12 +254,23 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
             },
           });
         } else if (notification.event === "summaryTextDelta") {
-          activeTurns.appendReasoningSummaryText({
+          const wasRecorded = activeTurns.appendReasoningSummaryText({
             threadId: notification.threadId,
             turnId: notification.turnId,
             itemId: notification.itemId,
             delta: notification.delta,
           });
+          if (!wasRecorded) {
+            warnIgnoredTurnNotification({
+              type: notification.type,
+              event: notification.event,
+              threadId: notification.threadId,
+              turnId: notification.turnId,
+              itemId: notification.itemId,
+            });
+            return;
+          }
+
           await fanOutThreadNotification(notification.threadId, {
             method: "item/reasoning/summaryTextDelta",
             params: {
@@ -227,7 +282,8 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
           });
         }
         return;
-      case "command":
+      }
+      case "command": {
         if (
           notification.threadId === undefined ||
           notification.turnId === undefined ||
@@ -236,12 +292,23 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
           return;
         }
 
-        activeTurns.appendCommandOutput({
+        const wasRecorded = activeTurns.appendCommandOutput({
           threadId: notification.threadId,
           turnId: notification.turnId,
           itemId: notification.itemId,
           delta: notification.delta,
         });
+        if (!wasRecorded) {
+          warnIgnoredTurnNotification({
+            type: notification.type,
+            event: notification.event,
+            threadId: notification.threadId,
+            turnId: notification.turnId,
+            itemId: notification.itemId,
+          });
+          return;
+        }
+
         await fanOutThreadNotification(notification.threadId, {
           method: "item/commandExecution/outputDelta",
           params: {
@@ -252,7 +319,8 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
           },
         });
         return;
-      case "tool":
+      }
+      case "tool": {
         if (
           notification.threadId === undefined ||
           notification.turnId === undefined ||
@@ -261,12 +329,23 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
           return;
         }
 
-        activeTurns.appendToolProgress({
+        const wasRecorded = activeTurns.appendToolProgress({
           threadId: notification.threadId,
           turnId: notification.turnId,
           itemId: notification.itemId,
           message: notification.message,
         });
+        if (!wasRecorded) {
+          warnIgnoredTurnNotification({
+            type: notification.type,
+            event: notification.event,
+            threadId: notification.threadId,
+            turnId: notification.turnId,
+            itemId: notification.itemId,
+          });
+          return;
+        }
+
         await fanOutThreadNotification(notification.threadId, {
           method: "item/tool/progress",
           params: {
@@ -277,6 +356,7 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
           },
         });
         return;
+      }
       case "approval":
       case "plan":
       case "diff":
@@ -294,33 +374,59 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
 
     const turn = mapTurnSummary(notification.turn);
 
-    if (notification.event === "started") {
-      activeTurns.startTurn({
-        threadId: notification.threadId,
-        turn,
-      });
-      await fanOutThreadNotification(notification.threadId, {
-        method: "turn/started",
-        params: {
+    switch (notification.event) {
+      case "started": {
+        const wasRecorded = activeTurns.startTurn({
           threadId: notification.threadId,
           turn,
-        },
-      });
-      return;
-    }
+        });
+        if (!wasRecorded) {
+          warnIgnoredTurnNotification({
+            type: notification.type,
+            event: notification.event,
+            threadId: notification.threadId,
+            turnId: notification.turnId,
+          });
+          return;
+        }
 
-    activeTurns.recordTurnCompleted({
-      threadId: notification.threadId,
-      turn,
-    });
-    await fanOutThreadNotification(notification.threadId, {
-      method: "turn/completed",
-      params: {
-        threadId: notification.threadId,
-        turn,
-      },
-    });
-    activeTurns.clearThread(notification.threadId);
+        await fanOutThreadNotification(notification.threadId, {
+          method: "turn/started",
+          params: {
+            threadId: notification.threadId,
+            turn,
+          },
+        });
+        return;
+      }
+      case "completed": {
+        const wasRecorded = activeTurns.recordTurnCompleted({
+          threadId: notification.threadId,
+          turn,
+        });
+        if (!wasRecorded) {
+          warnIgnoredTurnNotification({
+            type: notification.type,
+            event: notification.event,
+            threadId: notification.threadId,
+            turnId: notification.turnId,
+          });
+          return;
+        }
+
+        activeTurns.clearThread(notification.threadId);
+        await fanOutThreadNotification(notification.threadId, {
+          method: "turn/completed",
+          params: {
+            threadId: notification.threadId,
+            turn,
+          },
+        });
+        return;
+      }
+      default:
+        return assertNever(notification.event, "Unhandled turn notification event");
+    }
   };
 
   const handleItemNotification = async (
@@ -337,11 +443,22 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
     });
 
     if (notification.event === "started") {
-      activeTurns.recordItemStarted({
+      const wasRecorded = activeTurns.recordItemStarted({
         threadId: notification.threadId,
         turnId: notification.turnId,
         item,
       });
+      if (!wasRecorded) {
+        warnIgnoredTurnNotification({
+          type: notification.type,
+          event: notification.event,
+          threadId: notification.threadId,
+          turnId: notification.turnId,
+          itemId: notification.item.id,
+        });
+        return;
+      }
+
       await fanOutThreadNotification(notification.threadId, {
         method: "item/started",
         params: {
@@ -353,11 +470,22 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
       return;
     }
 
-    activeTurns.recordItemCompleted({
+    const wasRecorded = activeTurns.recordItemCompleted({
       threadId: notification.threadId,
       turnId: notification.turnId,
       item,
     });
+    if (!wasRecorded) {
+      warnIgnoredTurnNotification({
+        type: notification.type,
+        event: notification.event,
+        threadId: notification.threadId,
+        turnId: notification.turnId,
+        itemId: notification.item.id,
+      });
+      return;
+    }
+
     await fanOutThreadNotification(notification.threadId, {
       method: "item/completed",
       params: {
